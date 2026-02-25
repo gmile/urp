@@ -11,13 +11,19 @@
       devShells = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          beamPackages = pkgs.beam.packages.erlang_28;
         in
         {
           default = pkgs.mkShell {
             packages = [
-              pkgs.elixir
-              pkgs.erlang
+              beamPackages.erlang
+              beamPackages.elixir_1_19
+              pkgs.fish
             ];
+
+            shellHook = ''
+              exec fish
+            '';
           };
         }
       );
