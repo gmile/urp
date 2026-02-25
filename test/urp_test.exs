@@ -120,6 +120,40 @@ defmodule URPTest do
     end
   end
 
+  describe "URP.Pool" do
+    setup do
+      pid = start_supervised!({URP.Pool, name: :test_pool, pool_size: 2})
+      {:ok, pool: pid}
+    end
+
+    test "converts via pool" do
+      docx_bytes = build_test_docx()
+      assert {:ok, pdf} = URP.Pool.convert_stream(:test_pool, docx_bytes)
+      assert <<"%PDF-" <> _rest>> = pdf
+    end
+
+    test "converts file-backed via pool" do
+      id = System.unique_integer([:positive])
+      input = Path.join(@test_dir, "urp_test_#{id}.docx")
+      create_test_docx!(input)
+
+      try do
+        assert {:ok, pdf} = URP.Pool.convert_file_stream(:test_pool, input)
+        assert <<"%PDF-" <> _rest>> = pdf
+      after
+        File.rm(input)
+      end
+    end
+
+    test "handles consecutive streaming conversions" do
+      docx_bytes = build_test_docx()
+      assert {:ok, pdf1} = URP.Pool.convert_stream(:test_pool, docx_bytes)
+      assert {:ok, pdf2} = URP.Pool.convert_stream(:test_pool, docx_bytes)
+      assert <<"%PDF-" <> _rest>> = pdf1
+      assert <<"%PDF-" <> _rest>> = pdf2
+    end
+  end
+
   test "converts docx file to pdf via file-backed streaming" do
     id = System.unique_integer([:positive])
     input = Path.join(@test_dir, "urp_test_#{id}.docx")
