@@ -1,3 +1,7 @@
+defmodule URPTest.StubConverter do
+  use URP
+end
+
 defmodule URPTest do
   use ExUnit.Case, async: false
 
@@ -164,6 +168,53 @@ defmodule URPTest do
       assert <<"%PDF-" <> _rest>> = pdf
     after
       File.rm(input)
+    end
+  end
+
+  describe "URP.Test" do
+    test "stub bypasses real conversion" do
+      URP.Test.stub(URPTest.StubConverter, fn input, _opts ->
+        assert input == "hello"
+        {:ok, "fake PDF"}
+      end)
+
+      assert {:ok, "fake PDF"} = URPTest.StubConverter.convert_stream("hello")
+    end
+
+    test "stub works with convert_file_stream" do
+      URP.Test.stub(URPTest.StubConverter, fn input, _opts ->
+        assert input == "/tmp/test.docx"
+        {:ok, "fake PDF"}
+      end)
+
+      assert {:ok, "fake PDF"} = URPTest.StubConverter.convert_file_stream("/tmp/test.docx")
+    end
+
+    test "stub receives opts" do
+      URP.Test.stub(URPTest.StubConverter, fn _input, opts ->
+        assert opts[:filter] == "calc_pdf_Export"
+        {:ok, "filtered"}
+      end)
+
+      assert {:ok, "filtered"} =
+               URPTest.StubConverter.convert_stream("bytes", filter: "calc_pdf_Export")
+    end
+
+    test "stub is per-process via $callers" do
+      URP.Test.stub(URPTest.StubConverter, fn _input, _opts -> {:ok, "parent stub"} end)
+
+      task =
+        Task.async(fn ->
+          URPTest.StubConverter.convert_stream("bytes")
+        end)
+
+      assert {:ok, "parent stub"} = Task.await(task)
+    end
+
+    test "without stub, delegates to real URP" do
+      # No stub registered — URPTest.StubConverter.convert_stream delegates to URP.convert_stream
+      assert {:ok, pdf} = URPTest.StubConverter.convert_stream(build_test_docx())
+      assert <<"%PDF-" <> _rest>> = pdf
     end
   end
 

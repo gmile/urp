@@ -9,5 +9,7 @@ soffice_available? =
       false
   end
 
+URP.Test.start()
+
 exclude = if soffice_available?, do: [], else: [:integration]
 ExUnit.start(exclude: exclude)
