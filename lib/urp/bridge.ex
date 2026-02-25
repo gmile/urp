@@ -18,14 +18,17 @@ defmodule URP.Bridge do
       URP.Bridge.close_document!(conn, doc)
       URP.Bridge.close!(conn)
 
-  ## Streaming (not yet implemented)
+  ## Streaming
 
-  `load_document_stream!/2` and `store_to_stream!/2` will use UNO's
+  `load_document_stream!/2` and `store_to_stream!/3` use UNO's
   `XInputStream`/`XOutputStream` interfaces to transfer document bytes
-  over the URP socket itself, eliminating the need for a shared filesystem.
+  over the URP socket, eliminating the need for a shared filesystem.
 
-  This requires bidirectional URP — handling incoming method calls from
-  soffice on our exported stream objects.
+      conn = URP.Bridge.open!("localhost", 2002)
+      doc = URP.Bridge.load_document_stream!(conn, File.read!("input.docx"))
+      pdf = URP.Bridge.store_to_stream!(conn, doc)
+      URP.Bridge.close_document!(conn, doc)
+      URP.Bridge.close!(conn)
   """
 
   alias URP.Protocol, as: P
@@ -40,14 +43,20 @@ defmodule URP.Bridge do
   @xi_component_loader "com.sun.star.frame.XComponentLoader"
   @xi_storable2        "com.sun.star.frame.XStorable2"
   @xi_closeable        "com.sun.star.util.XCloseable"
+  @xi_input_stream     "com.sun.star.io.XInputStream"
+  @xi_output_stream    "com.sun.star.io.XOutputStream"
 
   # Special function IDs — binaryurp/source/specialfunctionids.hxx
   @func_query_interface 0
   @func_request_change  4
 
+  import Bitwise
+
   # UNO TypeClass values for property encoding — include/typelib/typeclass.h
-  @tc_boolean 2
-  @tc_string  12
+  @tc_boolean    2
+  @tc_string     12
+  @tc_interface  22
+  @tc_new        0x80
 
   # Minimum signed int32 — guarantees we lose the nonce negotiation
   @losing_nonce <<-2_147_483_648::32-signed>>
@@ -92,7 +101,7 @@ defmodule URP.Bridge do
         P.property("Hidden", @tc_boolean, <<1>>)
     )
 
-    case P.parse_interface_reply(P.recv_frame(conn.sock)) do
+    case P.parse_interface_reply(recv_reply!(conn.sock)) do
       nil -> raise "loadComponentFromURL returned null — file may not exist or be readable by soffice"
       oid -> oid
     end
@@ -121,7 +130,7 @@ defmodule URP.Bridge do
         P.property("FilterName", @tc_string, P.enc_str(filter))
     )
 
-    <<0x80>> = P.recv_frame(conn.sock)
+    <<0x80>> = recv_reply!(conn.sock)
   end
 
   @doc "Close a loaded document, releasing soffice resources."
@@ -141,24 +150,90 @@ defmodule URP.Bridge do
         P.null_ctx() <> <<1>>
     )
 
-    P.recv_frame(conn.sock)
+    recv_reply!(conn.sock)
   end
 
-  # TODO: XInputStream/XOutputStream streaming
-  #
-  # load_document_stream!(conn, bytes, format_hint)
-  #   Instead of a file:// URL, pass a MediaDescriptor with an InputStream
-  #   property pointing to an object we export. soffice calls readBytes()
-  #   on our object — we respond with chunks from `bytes`.
-  #
-  # store_to_stream!(conn, doc_oid, filter)
-  #   Pass a MediaDescriptor with an OutputStream property. soffice calls
-  #   writeBytes() on our object with PDF chunks. We accumulate and return
-  #   the complete binary.
-  #
-  # Both require bidirectional URP: a message dispatcher that routes incoming
-  # frames to either reply handling (for our requests) or method handlers
-  # (for soffice calling our exported objects).
+  @doc """
+  Load a document from in-memory bytes via XInputStream.
+
+  No shared filesystem needed — bytes are streamed over the URP socket.
+  soffice calls `readBytes()` on our exported stream object.
+
+  Returns the document OID.
+  """
+  def load_document_stream!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
+    stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
+
+    qi!(conn,
+      P.request(@func_query_interface,
+        type: {:cached, 1},
+        oid: {conn.desktop_oid, 4}
+      ),
+      P.type_new(@xi_component_loader, 5)
+    )
+
+    # loadComponentFromURL("private:stream", "_blank", 0, [Hidden, InputStream])
+    # funcID 3 on XComponentLoader
+    P.send_frame(conn.sock,
+      P.request(3, type: {:new, @xi_component_loader, 6}) <>
+        P.null_ctx() <>
+        P.enc_str("private:stream") <>
+        P.enc_str("_blank") <>
+        <<0::32>> <>
+        <<2>> <>
+        P.property("Hidden", @tc_boolean, <<1>>) <>
+        P.property("InputStream", @tc_interface ||| @tc_new,
+          <<10::16>> <> P.enc_str(@xi_input_stream) <>
+          P.enc_str(stream_oid) <> <<10::16>>
+        )
+    )
+
+    # soffice will call readBytes/available/closeInput on our stream
+    reply = URP.Stream.recv_handling_input(conn.sock, bytes)
+
+    case P.parse_interface_reply(reply) do
+      nil -> raise "loadComponentFromURL(stream) returned null"
+      oid -> oid
+    end
+  end
+
+  @doc """
+  Store a document to in-memory bytes via XOutputStream.
+
+  No shared filesystem needed — PDF bytes are streamed back over the URP socket.
+  soffice calls `writeBytes()` on our exported stream object.
+
+  Returns the output bytes (e.g. PDF content).
+  """
+  def store_to_stream!(%__MODULE__{} = conn, doc_oid, filter \\ "writer_pdf_Export") do
+    stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
+
+    qi!(conn,
+      P.request(@func_query_interface,
+        type: {:cached, 1},
+        oid: {doc_oid, 5}
+      ),
+      P.type_new(@xi_storable2, 7)
+    )
+
+    # storeToURL("private:stream", [FilterName, OutputStream])
+    # funcID 8: XInterface(0-2) + XStorable(3-8)
+    P.send_frame(conn.sock,
+      P.request(8, type: {:new, @xi_storable2, 8}) <>
+        P.null_ctx() <>
+        P.enc_str("private:stream") <>
+        <<2>> <>
+        P.property("FilterName", @tc_string, P.enc_str(filter)) <>
+        P.property("OutputStream", @tc_interface ||| @tc_new,
+          <<11::16>> <> P.enc_str(@xi_output_stream) <>
+          P.enc_str(stream_oid) <> <<11::16>>
+        )
+    )
+
+    # soffice will call writeBytes/flush/closeOutput on our stream
+    {_reply, output_bytes} = URP.Stream.recv_handling_output(conn.sock)
+    output_bytes
+  end
 
   ## Handshake
 
@@ -231,6 +306,20 @@ defmodule URP.Bridge do
 
   defp qi!(sock, header, body_type_param) do
     P.send_frame(sock, header <> P.null_ctx() <> body_type_param)
-    P.parse_qi_reply(P.recv_frame(sock))
+    P.parse_qi_reply(recv_reply!(sock))
+  end
+
+  ## Dispatching recv — handles stray incoming requests (e.g. release() on
+  ## exported stream objects) with a void reply, until we get the actual reply.
+
+  defp recv_reply!(sock) do
+    payload = P.recv_frame(sock)
+
+    if P.is_reply?(payload) do
+      payload
+    else
+      P.send_frame(sock, P.reply())
+      recv_reply!(sock)
+    end
   end
 end
