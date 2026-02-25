@@ -56,8 +56,23 @@ defmodule URPTest do
     end
   end
 
-  # Build a minimal .docx (Office Open XML) programmatically using :zip
+  test "converts docx to pdf via streaming" do
+    docx_bytes = build_test_docx()
+    assert {:ok, pdf} = URP.convert_stream(docx_bytes)
+    assert <<"%PDF-" <> _rest>> = pdf
+  end
+
+  test "converts txt to pdf via streaming" do
+    assert {:ok, pdf} = URP.convert_stream("Hello from streaming test")
+    assert <<"%PDF-" <> _rest>> = pdf
+  end
+
   defp create_test_docx!(path) do
+    File.write!(path, build_test_docx())
+  end
+
+  # Build a minimal .docx (Office Open XML) in memory using :zip
+  defp build_test_docx do
     content_types = """
     <?xml version="1.0" encoding="UTF-8"?>
     <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -93,6 +108,6 @@ defmodule URPTest do
         {~c"word/document.xml", String.trim(document)}
       ], [:memory])
 
-    File.write!(path, zip_binary)
+    zip_binary
   end
 end

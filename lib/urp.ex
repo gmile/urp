@@ -17,12 +17,12 @@ defmodule URP do
 
   Both paths must be accessible to the soffice process (shared filesystem).
 
-  ## Stream-based conversion (planned)
+  ## Stream-based conversion
 
-      {:ok, pdf_bytes} = URP.convert(docx_bytes, filter: "writer_pdf_Export")
+      {:ok, pdf_bytes} = URP.convert_stream(docx_bytes, filter: "writer_pdf_Export")
 
   Uses `XInputStream`/`XOutputStream` to transfer bytes over the URP socket.
-  No shared filesystem required.
+  No shared filesystem required — works with soffice on a remote host.
   """
 
   alias URP.Bridge
@@ -55,6 +55,35 @@ defmodule URP do
       Bridge.store_to_url!(conn, doc, out_url, filter)
       Bridge.close_document!(conn, doc)
       {:ok, output_path}
+    after
+      Bridge.close!(conn)
+    end
+  end
+
+  @doc """
+  Convert document bytes to PDF in memory via XInputStream/XOutputStream.
+
+  No shared filesystem needed — bytes are streamed over the URP socket.
+
+  ## Options
+
+    * `:host`   — soffice hostname (default `"localhost"`)
+    * `:port`   — soffice URP listener port (default `2002`)
+    * `:filter` — export filter name (default `"writer_pdf_Export"`)
+  """
+  def convert_stream(input_bytes, opts \\ []) when is_binary(input_bytes) do
+    host = Keyword.get(opts, :host, "localhost")
+    port = Keyword.get(opts, :port, 2002)
+    filter = Keyword.get(opts, :filter, "writer_pdf_Export")
+
+    conn = Bridge.open!(host, port)
+
+    try do
+      doc = Bridge.load_document_stream!(conn, input_bytes)
+      pdf_bytes = Bridge.store_to_stream!(conn, doc, filter)
+      # soffice closes the connection after streaming store, so we skip
+      # close_document! here — resources are released on disconnect.
+      {:ok, pdf_bytes}
     after
       Bridge.close!(conn)
     end
