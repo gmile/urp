@@ -115,11 +115,15 @@ defmodule URPTest do
     """
 
     {:ok, {_, zip_binary}} =
-      :zip.create(~c"test.docx", [
-        {~c"[Content_Types].xml", String.trim(content_types)},
-        {~c"_rels/.rels", String.trim(rels)},
-        {~c"word/document.xml", String.trim(document)}
-      ], [:memory])
+      :zip.create(
+        ~c"test.docx",
+        [
+          {~c"[Content_Types].xml", String.trim(content_types)},
+          {~c"_rels/.rels", String.trim(rels)},
+          {~c"word/document.xml", String.trim(document)}
+        ],
+        [:memory]
+      )
 
     zip_binary
   end

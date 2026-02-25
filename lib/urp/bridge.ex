@@ -36,27 +36,27 @@ defmodule URP.Bridge do
   defstruct [:sock, :desktop_oid]
 
   # UNO interface names
-  @xi_protocol_props   "com.sun.star.bridge.XProtocolProperties"
-  @xi_interface        "com.sun.star.uno.XInterface"
-  @xi_component_ctx    "com.sun.star.uno.XComponentContext"
-  @xi_multi_comp_fac   "com.sun.star.lang.XMultiComponentFactory"
+  @xi_protocol_props "com.sun.star.bridge.XProtocolProperties"
+  @xi_interface "com.sun.star.uno.XInterface"
+  @xi_component_ctx "com.sun.star.uno.XComponentContext"
+  @xi_multi_comp_fac "com.sun.star.lang.XMultiComponentFactory"
   @xi_component_loader "com.sun.star.frame.XComponentLoader"
-  @xi_storable2        "com.sun.star.frame.XStorable2"
-  @xi_closeable        "com.sun.star.util.XCloseable"
-  @xi_input_stream     "com.sun.star.io.XInputStream"
-  @xi_output_stream    "com.sun.star.io.XOutputStream"
+  @xi_storable2 "com.sun.star.frame.XStorable2"
+  @xi_closeable "com.sun.star.util.XCloseable"
+  @xi_input_stream "com.sun.star.io.XInputStream"
+  @xi_output_stream "com.sun.star.io.XOutputStream"
 
   # Special function IDs — binaryurp/source/specialfunctionids.hxx
   @func_query_interface 0
-  @func_request_change  4
+  @func_request_change 4
 
   import Bitwise
 
   # UNO TypeClass values for property encoding — include/typelib/typeclass.h
-  @tc_boolean    2
-  @tc_string     12
-  @tc_interface  22
-  @tc_new        0x80
+  @tc_boolean 2
+  @tc_string 12
+  @tc_interface 22
+  @tc_new 0x80
 
   # Minimum signed int32 — guarantees we lose the nonce negotiation
   @losing_nonce <<-2_147_483_648::32-signed>>
@@ -81,7 +81,8 @@ defmodule URP.Bridge do
   Raises if soffice cannot open the file.
   """
   def load_document!(%__MODULE__{} = conn, url) do
-    qi!(conn,
+    qi!(
+      conn,
       P.request(@func_query_interface,
         type: {:cached, 1},
         oid: {conn.desktop_oid, 4}
@@ -91,7 +92,8 @@ defmodule URP.Bridge do
 
     # loadComponentFromURL(url, "_blank", 0, [Hidden=true])
     # funcID 3 on XComponentLoader
-    P.send_frame(conn.sock,
+    P.send_frame(
+      conn.sock,
       P.request(3, type: {:new, @xi_component_loader, 6}) <>
         P.null_ctx() <>
         P.enc_str(url) <>
@@ -102,8 +104,11 @@ defmodule URP.Bridge do
     )
 
     case P.parse_interface_reply(recv_reply!(conn.sock)) do
-      nil -> raise "loadComponentFromURL returned null — file may not exist or be readable by soffice"
-      oid -> oid
+      nil ->
+        raise "loadComponentFromURL returned null — file may not exist or be readable by soffice"
+
+      oid ->
+        oid
     end
   end
 
@@ -113,7 +118,8 @@ defmodule URP.Bridge do
   Common filters: `"writer_pdf_Export"`, `"calc_pdf_Export"`, `"impress_pdf_Export"`.
   """
   def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter \\ "writer_pdf_Export") do
-    qi!(conn,
+    qi!(
+      conn,
       P.request(@func_query_interface,
         type: {:cached, 1},
         oid: {doc_oid, 5}
@@ -122,7 +128,8 @@ defmodule URP.Bridge do
     )
 
     # storeToURL — funcID 8: XInterface(0-2) + XStorable(3-8)
-    P.send_frame(conn.sock,
+    P.send_frame(
+      conn.sock,
       P.request(8, type: {:new, @xi_storable2, 8}) <>
         P.null_ctx() <>
         P.enc_str(url) <>
@@ -135,7 +142,8 @@ defmodule URP.Bridge do
 
   @doc "Close a loaded document, releasing soffice resources."
   def close_document!(%__MODULE__{} = conn, doc_oid) do
-    qi!(conn,
+    qi!(
+      conn,
       P.request(@func_query_interface,
         type: {:cached, 1},
         oid: {doc_oid, 6}
@@ -145,7 +153,8 @@ defmodule URP.Bridge do
 
     # close(deliverOwnership=true)
     # funcID 5: XInterface(0-2) + XCloseBroadcaster(3-4) + XCloseable(5)
-    P.send_frame(conn.sock,
+    P.send_frame(
+      conn.sock,
       P.request(5, type: {:cached, 9}) <>
         P.null_ctx() <> <<1>>
     )
@@ -188,7 +197,8 @@ defmodule URP.Bridge do
   defp load_from_input_source!(conn, source) do
     stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
 
-    qi!(conn,
+    qi!(
+      conn,
       P.request(@func_query_interface,
         type: {:cached, 1},
         oid: {conn.desktop_oid, 4}
@@ -198,7 +208,8 @@ defmodule URP.Bridge do
 
     # loadComponentFromURL("private:stream", "_blank", 0, [Hidden, InputStream])
     # funcID 3 on XComponentLoader
-    P.send_frame(conn.sock,
+    P.send_frame(
+      conn.sock,
       P.request(3, type: {:new, @xi_component_loader, 6}) <>
         P.null_ctx() <>
         P.enc_str("private:stream") <>
@@ -206,9 +217,12 @@ defmodule URP.Bridge do
         <<0::32>> <>
         <<2>> <>
         P.property("Hidden", @tc_boolean, <<1>>) <>
-        P.property("InputStream", @tc_interface ||| @tc_new,
-          <<10::16>> <> P.enc_str(@xi_input_stream) <>
-          P.enc_str(stream_oid) <> <<10::16>>
+        P.property(
+          "InputStream",
+          @tc_interface ||| @tc_new,
+          <<10::16>> <>
+            P.enc_str(@xi_input_stream) <>
+            P.enc_str(stream_oid) <> <<10::16>>
         )
     )
 
@@ -232,7 +246,8 @@ defmodule URP.Bridge do
   def store_to_stream!(%__MODULE__{} = conn, doc_oid, filter \\ "writer_pdf_Export") do
     stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
 
-    qi!(conn,
+    qi!(
+      conn,
       P.request(@func_query_interface,
         type: {:cached, 1},
         oid: {doc_oid, 5}
@@ -242,15 +257,19 @@ defmodule URP.Bridge do
 
     # storeToURL("private:stream", [FilterName, OutputStream])
     # funcID 8: XInterface(0-2) + XStorable(3-8)
-    P.send_frame(conn.sock,
+    P.send_frame(
+      conn.sock,
       P.request(8, type: {:new, @xi_storable2, 8}) <>
         P.null_ctx() <>
         P.enc_str("private:stream") <>
         <<2>> <>
         P.property("FilterName", @tc_string, P.enc_str(filter)) <>
-        P.property("OutputStream", @tc_interface ||| @tc_new,
-          <<11::16>> <> P.enc_str(@xi_output_stream) <>
-          P.enc_str(stream_oid) <> <<11::16>>
+        P.property(
+          "OutputStream",
+          @tc_interface ||| @tc_new,
+          <<11::16>> <>
+            P.enc_str(@xi_output_stream) <>
+            P.enc_str(stream_oid) <> <<11::16>>
         )
     )
 
@@ -266,7 +285,8 @@ defmodule URP.Bridge do
   defp handshake!(%__MODULE__{sock: sock}) do
     P.recv_frame(sock)
 
-    P.send_frame(sock,
+    P.send_frame(
+      sock,
       P.request(@func_request_change,
         type: {:new, @xi_protocol_props, 0},
         oid: {"UrpProtocolProperties", 0},
@@ -286,7 +306,8 @@ defmodule URP.Bridge do
     tid = :crypto.strong_rand_bytes(20)
 
     ctx_oid =
-      qi!(sock,
+      qi!(
+        sock,
         P.request(@func_query_interface,
           type: {:new, @xi_interface, 1},
           oid: {"StarOffice.ComponentContext", 1},
@@ -295,13 +316,15 @@ defmodule URP.Bridge do
         P.type_cached(1)
       )
 
-    qi!(sock,
+    qi!(
+      sock,
       P.request(@func_query_interface, oid: {ctx_oid, 2}),
       P.type_new(@xi_component_ctx, 2)
     )
 
     # getServiceManager — funcID 4 on XComponentContext
-    P.send_frame(sock,
+    P.send_frame(
+      sock,
       P.request(4, type: {:new, @xi_component_ctx, 3}) <> P.null_ctx()
     )
 
@@ -309,7 +332,8 @@ defmodule URP.Bridge do
 
     # createInstanceWithContext("com.sun.star.frame.Desktop")
     # funcID 3 on XMultiComponentFactory
-    P.send_frame(sock,
+    P.send_frame(
+      sock,
       P.request(3,
         type: {:new, @xi_multi_comp_fac, 4},
         oid: {smgr_oid, 3}

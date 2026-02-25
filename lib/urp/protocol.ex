@@ -16,16 +16,18 @@ defmodule URP.Protocol do
 
   # Header flags — binaryurp/source/reader.cxx, writer.cxx
   @longheader 0x80
-  @request    0x40
-  @newtype    0x20
-  @newoid     0x10
-  @newtid     0x08
-  @exception  0x20 # reply-specific, shares bit 5 with @newtype
+  @request 0x40
+  @newtype 0x20
+  @newoid 0x10
+  @newtid 0x08
+  # reply-specific, shares bit 5 with @newtype
+  @exception 0x20
 
   # UNO TypeClass — include/typelib/typeclass.h
   @tc_interface 22
-  @tc_new       0x80 # ORed into type class byte for uncached types
-  @tc_void      0
+  # ORed into type class byte for uncached types
+  @tc_new 0x80
+  @tc_void 0
 
   @recv_timeout 120_000
 
@@ -68,7 +70,7 @@ defmodule URP.Protocol do
           {flags ||| @newtype, <<@tc_interface, cache::16>>}
 
         {:new, name, cache} ->
-          {flags ||| @newtype, <<(@tc_interface ||| @tc_new), cache::16>> <> enc_str(name)}
+          {flags ||| @newtype, <<@tc_interface ||| @tc_new, cache::16>> <> enc_str(name)}
       end
 
     {flags, oid_part} =
@@ -114,7 +116,7 @@ defmodule URP.Protocol do
 
   @doc "Register a new interface type in the peer's cache."
   def type_new(name, cache_idx) do
-    <<(@tc_interface ||| @tc_new), cache_idx::16>> <> enc_str(name)
+    <<@tc_interface ||| @tc_new, cache_idx::16>> <> enc_str(name)
   end
 
   ## UNO PropertyValue struct — Name(string) + Handle(int32) + Value(any) + State(int32)
@@ -140,7 +142,15 @@ defmodule URP.Protocol do
   """
   def parse_request(<<flags, rest::binary>>) when (flags &&& @longheader) != 0 do
     # Long header — skip optional flags2, then extract func_id and skip header fields
-    rest = if (flags &&& 0x01) != 0, do: (<<_, r::binary>> = rest; r), else: rest
+    rest =
+      if (flags &&& 0x01) != 0,
+        do:
+          (
+            <<_, r::binary>> = rest
+            r
+          ),
+        else: rest
+
     <<func_id, rest::binary>> = rest
 
     rest =
