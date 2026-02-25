@@ -11,6 +11,16 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
 
+    services:
+      soffice:
+        image: libreofficedocker/alpine:3.23
+        command: >-
+          soffice --headless --invisible --nologo
+          --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
+          --norestore
+        ports:
+          - 2002:2002
+
     steps:
       - uses: actions/checkout@v4
 
