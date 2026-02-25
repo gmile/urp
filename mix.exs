@@ -1,16 +1,19 @@
 defmodule URP.MixProject do
   use Mix.Project
 
+  @version File.read!("VERSION") |> String.trim()
+
   def project do
     [
       app: :urp,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       description:
         "Pure Elixir client for the UNO Remote Protocol — convert documents via LibreOffice over TCP",
       package: package(),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      docs: docs(),
       dialyzer: [
         plt_add_apps: [:crypto],
         plt_local_path: "priv/plts",
@@ -19,10 +22,18 @@ defmodule URP.MixProject do
     ]
   end
 
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md", "CHANGELOG.md"]
+    ]
+  end
+
   defp package do
     [
       licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/gmile/urp"}
+      links: %{"GitHub" => "https://github.com/gmile/urp"},
+      files: ~w(lib .formatter.exs mix.exs VERSION README.md LICENSE CHANGELOG.md)
     ]
   end
 
