@@ -93,6 +93,33 @@ defmodule URPTest do
     end
   end
 
+  describe "sink" do
+    test "sink: {:path, ...} writes to file" do
+      id = System.unique_integer([:positive])
+      output = Path.join(@test_dir, "urp_sink_#{id}.pdf")
+
+      try do
+        assert :ok = URP.convert_stream(build_test_docx(), sink: {:path, output})
+        assert <<"%PDF-" <> _rest>> = File.read!(output)
+      after
+        File.rm(output)
+      end
+    end
+
+    test "sink: fun/1 receives chunks" do
+      test_pid = self()
+
+      :ok =
+        URP.convert_stream(build_test_docx(),
+          sink: fn chunk -> send(test_pid, {:chunk, chunk}) end
+        )
+
+      chunks = collect_chunks()
+      pdf = IO.iodata_to_binary(chunks)
+      assert <<"%PDF-" <> _rest>> = pdf
+    end
+  end
+
   test "converts docx file to pdf via file-backed streaming" do
     id = System.unique_integer([:positive])
     input = Path.join(@test_dir, "urp_test_#{id}.docx")
@@ -103,6 +130,14 @@ defmodule URPTest do
       assert <<"%PDF-" <> _rest>> = pdf
     after
       File.rm(input)
+    end
+  end
+
+  defp collect_chunks(acc \\ []) do
+    receive do
+      {:chunk, chunk} -> collect_chunks([chunk | acc])
+    after
+      0 -> Enum.reverse(acc)
     end
   end
 

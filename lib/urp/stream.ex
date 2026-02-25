@@ -53,19 +53,42 @@ defmodule URP.Stream do
   @doc """
   Receive frames while handling XOutputStream calls from soffice.
 
-  Dispatches writeBytes/flush/closeOutput calls until we receive the reply
-  to our pending request. Returns `{reply_payload, output_bytes}`.
+  `sink` controls where output bytes go:
+
+    * `nil` (default) — accumulate in memory, returns `{reply, binary}`
+    * `{:path, path}` — write chunks to file as they arrive, returns `{reply, :ok}`
+    * `fun/1` — call with each chunk, returns `{reply, :ok}`
   """
-  def recv_handling_output(sock, chunks \\ []) do
+  def recv_handling_output(sock, sink \\ nil)
+
+  def recv_handling_output(sock, nil) do
+    do_recv_output(sock, {:mem, []})
+  end
+
+  def recv_handling_output(sock, {:path, path}) do
+    fd = File.open!(path, [:write, :binary, :raw])
+
+    try do
+      do_recv_output(sock, {:file, fd})
+    after
+      File.close(fd)
+    end
+  end
+
+  def recv_handling_output(sock, fun) when is_function(fun, 1) do
+    do_recv_output(sock, {:fun, fun})
+  end
+
+  defp do_recv_output(sock, sink) do
     payload = P.recv_frame(sock)
 
     if P.is_reply?(payload) do
-      {payload, chunks |> Enum.reverse() |> IO.iodata_to_binary()}
+      {payload, finalize_sink(sink)}
     else
       %{func_id: func_id, body: body} = P.parse_request(payload)
-      {reply, chunks} = handle_output(func_id, body, chunks)
+      {reply, sink} = handle_output(func_id, body, sink)
       P.send_frame(sock, reply)
-      recv_handling_output(sock, chunks)
+      do_recv_output(sock, sink)
     end
   end
 
@@ -103,23 +126,45 @@ defmodule URP.Stream do
   ## XOutputStream handlers
 
   # queryInterface — return null
-  defp handle_output(0, _body, chunks), do: {P.reply(<<@tc_void>>), chunks}
+  defp handle_output(0, _body, sink), do: {P.reply(<<@tc_void>>), sink}
   # acquire / release
-  defp handle_output(1, _body, chunks), do: {P.reply(), chunks}
-  defp handle_output(2, _body, chunks), do: {P.reply(), chunks}
+  defp handle_output(1, _body, sink), do: {P.reply(), sink}
+  defp handle_output(2, _body, sink), do: {P.reply(), sink}
 
   # writeBytes([in] sequence<byte>) → void
-  defp handle_output(3, body, chunks) do
+  defp handle_output(3, body, sink) do
     body = skip_null_ctx(body)
     {data, _rest} = P.dec_str(body)
-    {P.reply(), [data | chunks]}
+    {P.reply(), write_sink(sink, data)}
   end
 
   # flush() → void
-  defp handle_output(4, _body, chunks), do: {P.reply(), chunks}
+  defp handle_output(4, _body, sink), do: {P.reply(), sink}
 
   # closeOutput() → void
-  defp handle_output(5, _body, chunks), do: {P.reply(), chunks}
+  defp handle_output(5, _body, sink), do: {P.reply(), sink}
+
+  ## Sink helpers
+
+  defp write_sink({:mem, chunks}, data), do: {:mem, [data | chunks]}
+
+  defp write_sink({:file, fd} = sink, data),
+    do:
+      (
+        IO.binwrite(fd, data)
+        sink
+      )
+
+  defp write_sink({:fun, fun} = sink, data),
+    do:
+      (
+        fun.(data)
+        sink
+      )
+
+  defp finalize_sink({:mem, chunks}), do: chunks |> Enum.reverse() |> IO.iodata_to_binary()
+  defp finalize_sink({:file, _fd}), do: :ok
+  defp finalize_sink({:fun, _fun}), do: :ok
 
   ## Source-polymorphic helpers
 

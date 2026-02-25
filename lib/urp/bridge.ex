@@ -236,14 +236,20 @@ defmodule URP.Bridge do
   end
 
   @doc """
-  Store a document to in-memory bytes via XOutputStream.
+  Store a document via XOutputStream.
 
   No shared filesystem needed — PDF bytes are streamed back over the URP socket.
   soffice calls `writeBytes()` on our exported stream object.
 
-  Returns the output bytes (e.g. PDF content).
+  `sink` controls where output goes:
+
+    * `nil` (default) — accumulate in memory, returns the output bytes
+    * `{:path, path}` — write to file as chunks arrive, returns `:ok`
+    * `fun/1` — call with each chunk as it arrives, returns `:ok`
   """
-  def store_to_stream!(%__MODULE__{} = conn, doc_oid, filter \\ "writer_pdf_Export") do
+  def store_to_stream!(%__MODULE__{} = conn, doc_oid, opts \\ []) do
+    filter = Keyword.get(opts, :filter, "writer_pdf_Export")
+    sink = Keyword.get(opts, :sink)
     stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
 
     qi!(
@@ -274,8 +280,8 @@ defmodule URP.Bridge do
     )
 
     # soffice will call writeBytes/flush/closeOutput on our stream
-    {_reply, output_bytes} = URP.Stream.recv_handling_output(conn.sock)
-    output_bytes
+    {_reply, result} = URP.Stream.recv_handling_output(conn.sock, sink)
+    result
   end
 
   ## Handshake

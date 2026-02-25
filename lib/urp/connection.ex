@@ -63,6 +63,7 @@ defmodule URP.Connection do
   ## Options
 
     * `:filter`  — export filter name (default `"writer_pdf_Export"`)
+    * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
     * `:timeout` — call timeout in ms (default `#{@default_timeout}`)
   """
   def convert_stream(server \\ __MODULE__, input_bytes, opts \\ [])
@@ -79,6 +80,7 @@ defmodule URP.Connection do
   ## Options
 
     * `:filter`  — export filter name (default `"writer_pdf_Export"`)
+    * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
     * `:timeout` — call timeout in ms (default `#{@default_timeout}`)
   """
   def convert_file_stream(server \\ __MODULE__, input_path, opts \\ [])
@@ -113,19 +115,23 @@ defmodule URP.Connection do
 
   @impl true
   def handle_call({:convert_stream, bytes, opts}, _from, config) do
-    filter = Keyword.get(opts, :filter, "writer_pdf_Export")
+    store_opts = Keyword.take(opts, [:filter, :sink])
 
     result =
-      do_stream(config, fn conn -> Bridge.load_document_stream!(conn, bytes) end, filter)
+      do_stream(config, fn conn -> Bridge.load_document_stream!(conn, bytes) end, store_opts)
 
     {:reply, result, config}
   end
 
   def handle_call({:convert_file_stream, path, opts}, _from, config) do
-    filter = Keyword.get(opts, :filter, "writer_pdf_Export")
+    store_opts = Keyword.take(opts, [:filter, :sink])
 
     result =
-      do_stream(config, fn conn -> Bridge.load_document_file_stream!(conn, path) end, filter)
+      do_stream(
+        config,
+        fn conn -> Bridge.load_document_file_stream!(conn, path) end,
+        store_opts
+      )
 
     {:reply, result, config}
   end
@@ -147,11 +153,15 @@ defmodule URP.Connection do
     {:reply, result, config}
   end
 
-  defp do_stream(config, load_fn, filter) do
+  defp do_stream(config, load_fn, store_opts) do
     with_connection(config, fn conn ->
       doc = load_fn.(conn)
-      pdf_bytes = Bridge.store_to_stream!(conn, doc, filter)
-      {:ok, pdf_bytes}
+      result = Bridge.store_to_stream!(conn, doc, store_opts)
+
+      case result do
+        :ok -> :ok
+        bytes when is_binary(bytes) -> {:ok, bytes}
+      end
     end)
   end
 

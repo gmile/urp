@@ -59,7 +59,7 @@ defmodule URP do
   end
 
   @doc """
-  Convert document bytes to PDF in memory via XInputStream/XOutputStream.
+  Convert document bytes to PDF via XInputStream/XOutputStream.
 
   No shared filesystem needed — bytes are streamed over the URP socket.
 
@@ -68,15 +68,30 @@ defmodule URP do
     * `:host`   — soffice hostname (default `"localhost"`)
     * `:port`   — soffice URP listener port (default `2002`)
     * `:filter` — export filter name (default `"writer_pdf_Export"`)
+    * `:sink`   — output destination (see below)
+
+  ## Sink
+
+  Controls where the converted output goes:
+
+    * omitted — accumulate in memory, returns `{:ok, binary}`
+    * `{:path, path}` — write to file as chunks arrive, returns `:ok`
+    * `fun/1` — call with each chunk as it arrives, returns `:ok`
+
+  ## Examples
+
+      {:ok, pdf_bytes} = URP.convert_stream(docx_bytes)
+      :ok = URP.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
+      :ok = URP.convert_stream(docx_bytes, sink: fn chunk -> IO.binwrite(fd, chunk) end)
   """
   def convert_stream(input_bytes, opts \\ []) when is_binary(input_bytes) do
-    {host, port, filter} = stream_opts(opts)
-    conn = Bridge.open!(host, port)
+    {conn_opts, store_opts} = split_opts(opts)
+    conn = Bridge.open!(conn_opts.host, conn_opts.port)
 
     try do
       doc = Bridge.load_document_stream!(conn, input_bytes)
-      pdf_bytes = Bridge.store_to_stream!(conn, doc, filter)
-      {:ok, pdf_bytes}
+      result = Bridge.store_to_stream!(conn, doc, store_opts)
+      wrap_result(result)
     after
       Bridge.close!(conn)
     end
@@ -88,30 +103,31 @@ defmodule URP do
   Reads from the file on demand as soffice requests chunks. The file only needs
   to be accessible to the Elixir node, not to soffice.
 
-  ## Options
-
-    * `:host`   — soffice hostname (default `"localhost"`)
-    * `:port`   — soffice URP listener port (default `2002`)
-    * `:filter` — export filter name (default `"writer_pdf_Export"`)
+  Accepts the same options as `convert_stream/2`.
   """
   def convert_file_stream(input_path, opts \\ []) when is_binary(input_path) do
-    {host, port, filter} = stream_opts(opts)
-    conn = Bridge.open!(host, port)
+    {conn_opts, store_opts} = split_opts(opts)
+    conn = Bridge.open!(conn_opts.host, conn_opts.port)
 
     try do
       doc = Bridge.load_document_file_stream!(conn, input_path)
-      pdf_bytes = Bridge.store_to_stream!(conn, doc, filter)
-      {:ok, pdf_bytes}
+      result = Bridge.store_to_stream!(conn, doc, store_opts)
+      wrap_result(result)
     after
       Bridge.close!(conn)
     end
   end
 
-  defp stream_opts(opts) do
-    {
-      Keyword.get(opts, :host, "localhost"),
-      Keyword.get(opts, :port, 2002),
-      Keyword.get(opts, :filter, "writer_pdf_Export")
+  defp split_opts(opts) do
+    conn_opts = %{
+      host: Keyword.get(opts, :host, "localhost"),
+      port: Keyword.get(opts, :port, 2002)
     }
+
+    store_opts = Keyword.take(opts, [:filter, :sink])
+    {conn_opts, store_opts}
   end
+
+  defp wrap_result(:ok), do: :ok
+  defp wrap_result(bytes) when is_binary(bytes), do: {:ok, bytes}
 end
