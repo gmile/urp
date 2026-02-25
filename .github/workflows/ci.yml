@@ -14,8 +14,9 @@ jobs:
     services:
       soffice:
         image: libreofficedocker/alpine:3.23
+        entrypoint: soffice
         command: >-
-          soffice --headless --invisible --nologo
+          --headless --invisible --nologo
           --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
           --norestore
         ports:
