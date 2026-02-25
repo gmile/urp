@@ -18,12 +18,7 @@
             packages = [
               beamPackages.erlang
               beamPackages.elixir_1_19
-              pkgs.fish
             ];
-
-            shellHook = ''
-              exec fish
-            '';
           };
         }
       );
