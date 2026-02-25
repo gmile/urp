@@ -25,6 +25,13 @@ defmodule URP do
 
   alias URP.Bridge
 
+  @type sink :: {:path, Path.t()} | (binary() -> any())
+  @type stream_opt ::
+          {:host, String.t()}
+          | {:port, non_neg_integer()}
+          | {:filter, String.t()}
+          | {:sink, sink()}
+
   @doc """
   Convert a file to PDF via a running soffice instance.
 
@@ -37,6 +44,7 @@ defmodule URP do
     * `:port`   — soffice URP listener port (default `2002`)
     * `:filter` — export filter name (default `"writer_pdf_Export"`)
   """
+  @spec convert(Path.t(), Path.t() | nil, keyword()) :: {:ok, Path.t()}
   def convert(input_path, output_path \\ nil, opts \\ []) do
     output_path = output_path || Path.rootname(input_path) <> ".pdf"
     host = Keyword.get(opts, :host, "localhost")
@@ -84,6 +92,7 @@ defmodule URP do
       :ok = URP.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
       :ok = URP.convert_stream(docx_bytes, sink: fn chunk -> IO.binwrite(fd, chunk) end)
   """
+  @spec convert_stream(binary(), [stream_opt()]) :: {:ok, binary()} | :ok
   def convert_stream(input_bytes, opts \\ []) when is_binary(input_bytes) do
     {conn_opts, store_opts} = split_opts(opts)
     conn = Bridge.open!(conn_opts.host, conn_opts.port)
@@ -105,6 +114,7 @@ defmodule URP do
 
   Accepts the same options as `convert_stream/2`.
   """
+  @spec convert_file_stream(Path.t(), [stream_opt()]) :: {:ok, binary()} | :ok
   def convert_file_stream(input_path, opts \\ []) when is_binary(input_path) do
     {conn_opts, store_opts} = split_opts(opts)
     conn = Bridge.open!(conn_opts.host, conn_opts.port)

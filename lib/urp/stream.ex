@@ -20,6 +20,10 @@ defmodule URP.Stream do
 
   alias URP.Protocol, as: P
 
+  @type input_source :: binary() | {:file, pid(), non_neg_integer()}
+  @typep source :: {:mem, binary(), non_neg_integer()} | {:file, pid(), non_neg_integer()}
+  @type sink :: nil | {:path, Path.t()} | (binary() -> any())
+
   @tc_void 0
 
   @doc """
@@ -31,6 +35,8 @@ defmodule URP.Stream do
   Dispatches readBytes/readSomeBytes/available/closeInput/skipBytes calls
   until we receive the reply to our pending request. Returns the reply payload.
   """
+  @spec recv_handling_input(:gen_tcp.socket(), input_source() | source(), non_neg_integer()) ::
+          binary()
   def recv_handling_input(sock, data, pos \\ 0)
 
   def recv_handling_input(sock, data, pos) when is_binary(data) do
@@ -59,6 +65,7 @@ defmodule URP.Stream do
     * `{:path, path}` — write chunks to file as they arrive, returns `{reply, :ok}`
     * `fun/1` — call with each chunk, returns `{reply, :ok}`
   """
+  @spec recv_handling_output(:gen_tcp.socket(), sink()) :: {binary(), binary() | :ok}
   def recv_handling_output(sock, sink \\ nil)
 
   def recv_handling_output(sock, nil) do

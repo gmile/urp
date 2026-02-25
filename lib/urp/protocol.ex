@@ -34,12 +34,14 @@ defmodule URP.Protocol do
   ## Frame I/O
 
   @doc "Send a single URP block: `<<size::32, count::32, payload>>`."
+  @spec send_frame(:gen_tcp.socket(), iodata()) :: :ok
   def send_frame(sock, payload) do
     data = IO.iodata_to_binary(payload)
     :ok = :gen_tcp.send(sock, <<byte_size(data)::32, 1::32, data::binary>>)
   end
 
   @doc "Receive a single URP block, returning the payload."
+  @spec recv_frame(:gen_tcp.socket(), timeout()) :: binary()
   def recv_frame(sock, timeout \\ @recv_timeout) do
     {:ok, <<size::32, _count::32>>} = :gen_tcp.recv(sock, 8, timeout)
     {:ok, payload} = :gen_tcp.recv(sock, size, timeout)
@@ -58,6 +60,7 @@ defmodule URP.Protocol do
 
   Omitting an option reuses the value from the previous message on the wire.
   """
+  @spec request(non_neg_integer(), keyword()) :: binary()
   def request(func_id, opts \\ []) do
     flags = @longheader ||| @request
 
@@ -89,32 +92,39 @@ defmodule URP.Protocol do
   end
 
   @doc "Build a void reply (LONGHEADER only)."
+  @spec reply() :: binary()
   def reply, do: <<@longheader>>
 
   @doc "Build a reply with body."
+  @spec reply(binary()) :: binary()
   def reply(body), do: <<@longheader>> <> body
 
   ## Compressed string encoding — binaryurp/source/marshal.cxx
 
   @doc "Encode a string with URP compressed-length prefix."
+  @spec enc_str(binary()) :: binary()
   def enc_str(s) when byte_size(s) < 0xFF, do: <<byte_size(s), s::binary>>
   def enc_str(s), do: <<0xFF, byte_size(s)::32, s::binary>>
 
   @doc "Decode a compressed string, returning `{string, rest}`."
+  @spec dec_str(binary()) :: {binary(), binary()}
   def dec_str(<<0xFF, len::32, s::binary-size(len), rest::binary>>), do: {s, rest}
   def dec_str(<<len, s::binary-size(len), rest::binary>>), do: {s, rest}
 
   ## Null CurrentContext — prefix on every request body after handshake
 
   @doc "Null CurrentContext reference: empty OID (0x00) + cache sentinel (0xFFFF)."
+  @spec null_ctx() :: binary()
   def null_ctx, do: <<0x00, 0xFF, 0xFF>>
 
   ## Type parameters for queryInterface body
 
   @doc "Reference a type already in the peer's cache."
+  @spec type_cached(non_neg_integer()) :: binary()
   def type_cached(cache_idx), do: <<@tc_interface, cache_idx::16>>
 
   @doc "Register a new interface type in the peer's cache."
+  @spec type_new(String.t(), non_neg_integer()) :: binary()
   def type_new(name, cache_idx) do
     <<@tc_interface ||| @tc_new, cache_idx::16>> <> enc_str(name)
   end
@@ -122,6 +132,7 @@ defmodule URP.Protocol do
   ## UNO PropertyValue struct — Name(string) + Handle(int32) + Value(any) + State(int32)
 
   @doc "Encode a UNO PropertyValue struct."
+  @spec property(String.t(), non_neg_integer(), binary()) :: binary()
   def property(name, type_class, value_bytes) do
     enc_str(name) <> <<0::32, type_class>> <> value_bytes <> <<0::32>>
   end
@@ -132,6 +143,7 @@ defmodule URP.Protocol do
   True if the frame is a reply (long header, no REQUEST flag).
   Everything else (long-header request or short-header) is a request.
   """
+  @spec is_reply?(binary()) :: boolean()
   def is_reply?(<<flags, _::binary>>), do: (flags &&& 0xC0) == @longheader
 
   @doc """
@@ -140,6 +152,7 @@ defmodule URP.Protocol do
   Handles both long headers (LONGHEADER set, REQUEST set) and short headers
   (LONGHEADER not set — func_id in lower 6 bits, all cached values reused).
   """
+  @spec parse_request(binary()) :: %{func_id: non_neg_integer(), body: binary()}
   def parse_request(<<flags, rest::binary>>) when (flags &&& @longheader) != 0 do
     # Long header — skip optional flags2, then extract func_id and skip header fields
     rest =
@@ -190,6 +203,7 @@ defmodule URP.Protocol do
   ## Reply parsing
 
   @doc "Parse a queryInterface reply — extracts OID from `any(XInterface)` return value."
+  @spec parse_qi_reply(binary()) :: String.t() | nil
   def parse_qi_reply(payload) do
     {flags, rest} = skip_reply_header(payload)
 
@@ -208,6 +222,7 @@ defmodule URP.Protocol do
   end
 
   @doc "Parse a reply returning a single interface reference (OID string)."
+  @spec parse_interface_reply(binary()) :: String.t() | nil
   def parse_interface_reply(payload) do
     {flags, rest} = skip_reply_header(payload)
 

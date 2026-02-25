@@ -44,6 +44,7 @@ defmodule URP.Connection do
     * `:host` — soffice hostname (default `"localhost"`)
     * `:port` — soffice URP listener port (default `2002`)
   """
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, Map.new(opts), name: name)
@@ -66,6 +67,8 @@ defmodule URP.Connection do
     * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
     * `:timeout` — call timeout in ms (default `#{@default_timeout}`)
   """
+  @spec convert_stream(GenServer.server(), binary(), keyword()) ::
+          {:ok, binary()} | :ok | {:error, String.t()}
   def convert_stream(server \\ __MODULE__, input_bytes, opts \\ [])
       when is_binary(input_bytes) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
@@ -83,6 +86,8 @@ defmodule URP.Connection do
     * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
     * `:timeout` — call timeout in ms (default `#{@default_timeout}`)
   """
+  @spec convert_file_stream(GenServer.server(), Path.t(), keyword()) ::
+          {:ok, binary()} | :ok | {:error, String.t()}
   def convert_file_stream(server \\ __MODULE__, input_path, opts \\ [])
       when is_binary(input_path) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
@@ -97,6 +102,8 @@ defmodule URP.Connection do
     * `:filter`  — export filter name (default `"writer_pdf_Export"`)
     * `:timeout` — call timeout in ms (default `#{@default_timeout}`)
   """
+  @spec convert(GenServer.server(), Path.t(), Path.t() | nil, keyword()) ::
+          {:ok, Path.t()} | {:error, String.t()}
   def convert(server \\ __MODULE__, input_path, output_path \\ nil, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     GenServer.call(server, {:convert, input_path, output_path, opts}, timeout)

@@ -33,6 +33,9 @@ defmodule URP.Bridge do
 
   alias URP.Protocol, as: P
 
+  @type t :: %__MODULE__{sock: :gen_tcp.socket(), desktop_oid: String.t()}
+  @type doc_oid :: String.t()
+
   defstruct [:sock, :desktop_oid]
 
   # UNO interface names
@@ -62,6 +65,7 @@ defmodule URP.Bridge do
   @losing_nonce <<-2_147_483_648::32-signed>>
 
   @doc "Connect to soffice, perform URP handshake, and bootstrap a Desktop reference."
+  @spec open!(String.t(), non_neg_integer()) :: t()
   def open!(host \\ "localhost", port \\ 2002) do
     {:ok, sock} = :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false])
     conn = %__MODULE__{sock: sock}
@@ -71,6 +75,7 @@ defmodule URP.Bridge do
   end
 
   @doc "Close the TCP connection."
+  @spec close!(t()) :: :ok
   def close!(%__MODULE__{sock: sock}) do
     :gen_tcp.close(sock)
   end
@@ -80,6 +85,7 @@ defmodule URP.Bridge do
 
   Raises if soffice cannot open the file.
   """
+  @spec load_document!(t(), String.t()) :: doc_oid()
   def load_document!(%__MODULE__{} = conn, url) do
     qi!(
       conn,
@@ -117,6 +123,7 @@ defmodule URP.Bridge do
 
   Common filters: `"writer_pdf_Export"`, `"calc_pdf_Export"`, `"impress_pdf_Export"`.
   """
+  @spec store_to_url!(t(), doc_oid(), String.t(), String.t()) :: binary()
   def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter \\ "writer_pdf_Export") do
     qi!(
       conn,
@@ -141,6 +148,7 @@ defmodule URP.Bridge do
   end
 
   @doc "Close a loaded document, releasing soffice resources."
+  @spec close_document!(t(), doc_oid()) :: binary()
   def close_document!(%__MODULE__{} = conn, doc_oid) do
     qi!(
       conn,
@@ -170,6 +178,7 @@ defmodule URP.Bridge do
 
   Returns the document OID.
   """
+  @spec load_document_stream!(t(), binary()) :: doc_oid()
   def load_document_stream!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     load_from_input_source!(conn, bytes)
   end
@@ -183,6 +192,7 @@ defmodule URP.Bridge do
 
   Returns the document OID.
   """
+  @spec load_document_file_stream!(t(), Path.t()) :: doc_oid()
   def load_document_file_stream!(%__MODULE__{} = conn, path) when is_binary(path) do
     %{size: size} = File.stat!(path)
     fd = File.open!(path, [:read, :binary, :raw])
@@ -247,6 +257,7 @@ defmodule URP.Bridge do
     * `{:path, path}` — write to file as chunks arrive, returns `:ok`
     * `fun/1` — call with each chunk as it arrives, returns `:ok`
   """
+  @spec store_to_stream!(t(), doc_oid(), keyword()) :: binary() | :ok
   def store_to_stream!(%__MODULE__{} = conn, doc_oid, opts \\ []) do
     filter = Keyword.get(opts, :filter, "writer_pdf_Export")
     sink = Keyword.get(opts, :sink)
