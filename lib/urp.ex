@@ -5,24 +5,22 @@ defmodule URP do
   Talks directly to a `soffice` process over TCP.
   No Python, no unoserver, no Gotenberg.
 
-  ## File-based conversion
+  ## Direct usage (scripts, IEx, tests)
 
-      URP.convert("/shared/input.docx", "/shared/output.pdf")
+      {:ok, pdf_bytes} = URP.convert_stream(docx_bytes)
+      {:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
+      {:ok, output}    = URP.convert("/shared/input.docx", "/shared/output.pdf")
 
-      URP.convert("/shared/input.docx", "/shared/output.pdf",
-        host: "soffice",
-        port: 2002,
-        filter: "writer_pdf_Export"
-      )
+  ## Supervised usage (production)
 
-  Both paths must be accessible to the soffice process (shared filesystem).
+  Add `URP.Connection` to your supervision tree for serialized access
+  and backpressure:
 
-  ## Stream-based conversion
+      children = [
+        {URP.Connection, host: "soffice", port: 2002}
+      ]
 
-      {:ok, pdf_bytes} = URP.convert_stream(docx_bytes, filter: "writer_pdf_Export")
-
-  Uses `XInputStream`/`XOutputStream` to transfer bytes over the URP socket.
-  No shared filesystem required — works with soffice on a remote host.
+      {:ok, pdf_bytes} = URP.Connection.convert_stream(docx_bytes)
   """
 
   alias URP.Bridge

@@ -29,35 +29,56 @@ docker run -d --name soffice \
 
 ## Usage
 
-```elixir
-# File-based — both paths must be visible to soffice at the same paths
-URP.convert("/shared/input.docx", "/shared/output.pdf")
+### Direct (scripts, IEx, tests)
 
-# With options
-URP.convert("/shared/input.docx", "/shared/output.pdf",
-  host: "soffice",
-  port: 2002,
-  filter: "writer_pdf_Export"
-)
+No supervision tree needed:
+
+```elixir
+# In-memory bytes — no shared filesystem needed
+{:ok, pdf_bytes} = URP.convert_stream(docx_bytes)
+
+# File-backed streaming — reads on demand, not loaded into memory
+{:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
+
+# File-based — both paths must be visible to soffice
+{:ok, output_path} = URP.convert("/shared/input.docx", "/shared/output.pdf")
 ```
 
-Or use the mid-level Bridge API directly:
+### Supervised (production)
+
+Add `URP.Connection` to your supervision tree for serialized access.
+soffice is single-threaded — the GenServer ensures only one conversion
+runs at a time, with callers queuing and timing out predictably.
 
 ```elixir
-conn = URP.Bridge.open!("localhost", 2002)
-doc = URP.Bridge.load_document!(conn, "file:///shared/input.docx")
-URP.Bridge.store_to_url!(conn, doc, "file:///shared/output.pdf")
-URP.Bridge.close_document!(conn, doc)
-URP.Bridge.close!(conn)
+# application.ex
+children = [
+  {URP.Connection, host: "soffice", port: 2002}
+]
+
+# anywhere in your app
+{:ok, pdf} = URP.Connection.convert_stream(docx_bytes)
+{:ok, pdf} = URP.Connection.convert_file_stream("/path/to/input.docx")
+{:ok, path} = URP.Connection.convert("/shared/in.docx", "/shared/out.pdf")
+```
+
+Multiple named connections for multiple soffice instances:
+
+```elixir
+children = [
+  {URP.Connection, name: :soffice_1, host: "soffice-1", port: 2002},
+  {URP.Connection, name: :soffice_2, host: "soffice-2", port: 2002}
+]
+
+URP.Connection.convert_stream(:soffice_1, docx_bytes)
 ```
 
 ## Architecture
 
-Three layers:
-
 | Module | Role |
 |---|---|
-| `URP` | Public API — `convert/3`, `convert_stream/2` |
+| `URP` | Direct API — `convert/3`, `convert_stream/2`, `convert_file_stream/2` |
+| `URP.Connection` | Supervised GenServer — serialization, backpressure, timeouts |
 | `URP.Bridge` | Mid-level — UNO operations (handshake, load, store, close, streaming) |
 | `URP.Stream` | Bidirectional URP dispatch for XInputStream/XOutputStream |
 | `URP.Protocol` | Low-level — binary wire format (framing, encoding, reply parsing) |
