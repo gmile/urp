@@ -162,6 +162,30 @@ defmodule URP.Bridge do
   Returns the document OID.
   """
   def load_document_stream!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
+    load_from_input_source!(conn, bytes)
+  end
+
+  @doc """
+  Load a document from a local file via XInputStream.
+
+  Like `load_document_stream!/2` but reads from a file on demand instead of
+  holding the entire document in memory. The file must be accessible to the
+  Elixir node (not soffice).
+
+  Returns the document OID.
+  """
+  def load_document_file_stream!(%__MODULE__{} = conn, path) when is_binary(path) do
+    %{size: size} = File.stat!(path)
+    fd = File.open!(path, [:read, :binary, :raw])
+
+    try do
+      load_from_input_source!(conn, {:file, fd, size})
+    after
+      File.close(fd)
+    end
+  end
+
+  defp load_from_input_source!(conn, source) do
     stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
 
     qi!(conn,
@@ -189,7 +213,7 @@ defmodule URP.Bridge do
     )
 
     # soffice will call readBytes/available/closeInput on our stream
-    reply = URP.Stream.recv_handling_input(conn.sock, bytes)
+    reply = URP.Stream.recv_handling_input(conn.sock, source)
 
     case P.parse_interface_reply(reply) do
       nil -> raise "loadComponentFromURL(stream) returned null"

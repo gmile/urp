@@ -67,6 +67,19 @@ defmodule URPTest do
     assert <<"%PDF-" <> _rest>> = pdf
   end
 
+  test "converts docx file to pdf via file-backed streaming" do
+    id = System.unique_integer([:positive])
+    input = Path.join(@test_dir, "urp_test_#{id}.docx")
+    create_test_docx!(input)
+
+    try do
+      assert {:ok, pdf} = URP.convert_file_stream(input)
+      assert <<"%PDF-" <> _rest>> = pdf
+    after
+      File.rm(input)
+    end
+  end
+
   defp create_test_docx!(path) do
     File.write!(path, build_test_docx())
   end

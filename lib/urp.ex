@@ -72,20 +72,48 @@ defmodule URP do
     * `:filter` — export filter name (default `"writer_pdf_Export"`)
   """
   def convert_stream(input_bytes, opts \\ []) when is_binary(input_bytes) do
-    host = Keyword.get(opts, :host, "localhost")
-    port = Keyword.get(opts, :port, 2002)
-    filter = Keyword.get(opts, :filter, "writer_pdf_Export")
-
+    {host, port, filter} = stream_opts(opts)
     conn = Bridge.open!(host, port)
 
     try do
       doc = Bridge.load_document_stream!(conn, input_bytes)
       pdf_bytes = Bridge.store_to_stream!(conn, doc, filter)
-      # soffice closes the connection after streaming store, so we skip
-      # close_document! here — resources are released on disconnect.
       {:ok, pdf_bytes}
     after
       Bridge.close!(conn)
     end
+  end
+
+  @doc """
+  Convert a local file to PDF via streaming, without loading it all into memory.
+
+  Reads from the file on demand as soffice requests chunks. The file only needs
+  to be accessible to the Elixir node, not to soffice.
+
+  ## Options
+
+    * `:host`   — soffice hostname (default `"localhost"`)
+    * `:port`   — soffice URP listener port (default `2002`)
+    * `:filter` — export filter name (default `"writer_pdf_Export"`)
+  """
+  def convert_file_stream(input_path, opts \\ []) when is_binary(input_path) do
+    {host, port, filter} = stream_opts(opts)
+    conn = Bridge.open!(host, port)
+
+    try do
+      doc = Bridge.load_document_file_stream!(conn, input_path)
+      pdf_bytes = Bridge.store_to_stream!(conn, doc, filter)
+      {:ok, pdf_bytes}
+    after
+      Bridge.close!(conn)
+    end
+  end
+
+  defp stream_opts(opts) do
+    {
+      Keyword.get(opts, :host, "localhost"),
+      Keyword.get(opts, :port, 2002),
+      Keyword.get(opts, :filter, "writer_pdf_Export")
+    }
   end
 end

@@ -25,19 +25,28 @@ defmodule URP.Stream do
   @doc """
   Receive frames while handling XInputStream calls from soffice.
 
+  `source` is either a binary (in-memory) or `{:file, pid, size}` for
+  file-backed streaming via `File.open!/2`.
+
   Dispatches readBytes/readSomeBytes/available/closeInput/skipBytes calls
   until we receive the reply to our pending request. Returns the reply payload.
   """
-  def recv_handling_input(sock, data, pos \\ 0) do
+  def recv_handling_input(sock, data, pos \\ 0)
+
+  def recv_handling_input(sock, data, pos) when is_binary(data) do
+    recv_handling_input(sock, {:mem, data, byte_size(data)}, pos)
+  end
+
+  def recv_handling_input(sock, source, _pos) do
     payload = P.recv_frame(sock)
 
     if P.is_reply?(payload) do
       payload
     else
       %{func_id: func_id, body: body} = P.parse_request(payload)
-      {reply, pos} = handle_input(func_id, body, data, pos)
+      {reply, source} = handle_input(func_id, body, source)
       P.send_frame(sock, reply)
-      recv_handling_input(sock, data, pos)
+      recv_handling_input(sock, source, 0)
     end
   end
 
@@ -63,33 +72,33 @@ defmodule URP.Stream do
   ## XInputStream handlers
 
   # queryInterface — return null for all types
-  defp handle_input(0, _body, _data, pos), do: {P.reply(<<@tc_void>>), pos}
+  defp handle_input(0, _body, src), do: {P.reply(<<@tc_void>>), src}
   # acquire / release — acknowledge
-  defp handle_input(1, _body, _data, pos), do: {P.reply(), pos}
-  defp handle_input(2, _body, _data, pos), do: {P.reply(), pos}
+  defp handle_input(1, _body, src), do: {P.reply(), src}
+  defp handle_input(2, _body, src), do: {P.reply(), src}
 
   # readBytes([in] long nBytesToRead) → long + [out] sequence<byte>
-  defp handle_input(3, body, data, pos) do
+  defp handle_input(3, body, src) do
     n = parse_long_param(body)
-    {chunk, pos} = read_chunk(data, pos, n)
-    {P.reply(<<byte_size(chunk)::32-signed>> <> P.enc_str(chunk)), pos}
+    {chunk, src} = read_chunk(src, n)
+    {P.reply(<<byte_size(chunk)::32-signed>> <> P.enc_str(chunk)), src}
   end
 
-  # readSomeBytes — same behavior as readBytes for an in-memory buffer
-  defp handle_input(4, body, data, pos), do: handle_input(3, body, data, pos)
+  # readSomeBytes — same behavior as readBytes
+  defp handle_input(4, body, src), do: handle_input(3, body, src)
 
   # skipBytes([in] long nBytesToSkip) → void
-  defp handle_input(5, body, _data, pos) do
-    {P.reply(), pos + parse_long_param(body)}
+  defp handle_input(5, body, src) do
+    {P.reply(), skip_chunk(src, parse_long_param(body))}
   end
 
   # available() → long
-  defp handle_input(6, _body, data, pos) do
-    {P.reply(<<byte_size(data) - pos::32-signed>>), pos}
+  defp handle_input(6, _body, src) do
+    {P.reply(<<available(src)::32-signed>>), src}
   end
 
   # closeInput() → void
-  defp handle_input(7, _body, _data, pos), do: {P.reply(), pos}
+  defp handle_input(7, _body, src), do: {P.reply(), src}
 
   ## XOutputStream handlers
 
@@ -112,13 +121,39 @@ defmodule URP.Stream do
   # closeOutput() → void
   defp handle_output(5, _body, chunks), do: {P.reply(), chunks}
 
-  ## Helpers
+  ## Source-polymorphic helpers
 
-  defp read_chunk(data, pos, n) do
-    remaining = byte_size(data) - pos
-    to_read = min(n, max(remaining, 0))
-    {binary_part(data, pos, to_read), pos + to_read}
+  # In-memory binary
+  defp read_chunk({:mem, data, size} = _src, n) do
+    pos = byte_size(data) - size
+    to_read = min(n, max(size, 0))
+    chunk = binary_part(data, pos, to_read)
+    {chunk, {:mem, data, size - to_read}}
   end
+
+  # File-backed
+  defp read_chunk({:file, fd, remaining}, n) do
+    to_read = min(n, max(remaining, 0))
+
+    chunk =
+      case IO.binread(fd, to_read) do
+        data when is_binary(data) -> data
+        _ -> <<>>
+      end
+
+    {chunk, {:file, fd, remaining - byte_size(chunk)}}
+  end
+
+  defp skip_chunk({:mem, data, size}, n), do: {:mem, data, size - min(n, size)}
+
+  defp skip_chunk({:file, fd, remaining}, n) do
+    skip = min(n, remaining)
+    {:ok, _} = :file.position(fd, {:cur, skip})
+    {:file, fd, remaining - skip}
+  end
+
+  defp available({:mem, _data, size}), do: size
+  defp available({:file, _fd, remaining}), do: remaining
 
   defp parse_long_param(body) do
     <<_null_ctx::3-bytes, n::32-signed, _::binary>> = body
