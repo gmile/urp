@@ -124,6 +124,59 @@ defmodule URP.Protocol do
     enc_str(name) <> <<0::32, type_class>> <> value_bytes <> <<0::32>>
   end
 
+  ## Incoming frame classification
+
+  @doc """
+  True if the frame is a reply (long header, no REQUEST flag).
+  Everything else (long-header request or short-header) is a request.
+  """
+  def is_reply?(<<flags, _::binary>>), do: (flags &&& 0xC0) == @longheader
+
+  @doc """
+  Parse an incoming request, extracting `func_id` and `body`.
+
+  Handles both long headers (LONGHEADER set, REQUEST set) and short headers
+  (LONGHEADER not set — func_id in lower 6 bits, all cached values reused).
+  """
+  def parse_request(<<flags, rest::binary>>) when (flags &&& @longheader) != 0 do
+    # Long header — skip optional flags2, then extract func_id and skip header fields
+    rest = if (flags &&& 0x01) != 0, do: (<<_, r::binary>> = rest; r), else: rest
+    <<func_id, rest::binary>> = rest
+
+    rest =
+      if (flags &&& @newtype) != 0 do
+        <<tc, _cache::16, rest::binary>> = rest
+        if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
+      else
+        rest
+      end
+
+    rest =
+      if (flags &&& @newoid) != 0 do
+        {_oid, rest} = dec_str(rest)
+        <<_cache::16, rest::binary>> = rest
+        rest
+      else
+        rest
+      end
+
+    rest =
+      if (flags &&& @newtid) != 0 do
+        {_tid, rest} = dec_str(rest)
+        <<_cache::16, rest::binary>> = rest
+        rest
+      else
+        rest
+      end
+
+    %{func_id: func_id, body: rest}
+  end
+
+  def parse_request(<<header, rest::binary>>) do
+    # Short header — func_id in lower 6 bits, reuses all cached values
+    %{func_id: header &&& 0x3F, body: rest}
+  end
+
   ## Reply parsing
 
   @doc "Parse a queryInterface reply — extracts OID from `any(XInterface)` return value."
