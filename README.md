@@ -6,6 +6,29 @@ process over a TCP socket.
 
 No Python. No unoserver. No Gotenberg.
 
+## Installation
+
+Add `urp` to your dependencies in `mix.exs`:
+
+```elixir
+def deps do
+  [
+    {:urp, "~> 0.1.0"}
+  ]
+end
+```
+
+For test stubbing support (optional):
+
+```elixir
+def deps do
+  [
+    {:urp, "~> 0.1.0"},
+    {:nimble_ownership, "~> 1.0", only: :test}
+  ]
+end
+```
+
 ## Prerequisites
 
 A running `soffice` process with a URP socket listener:
@@ -27,28 +50,53 @@ docker run -d --name soffice \
     --norestore
 ```
 
-## Usage
+## Configuration
 
-### Direct (scripts, IEx, tests)
-
-No supervision tree needed:
+Define a converter module and configure it via application config:
 
 ```elixir
-# In-memory bytes — no shared filesystem needed
-{:ok, pdf_bytes} = URP.convert_stream(docx_bytes)
+# lib/my_app/converter.ex
+defmodule MyApp.Converter do
+  use URP, otp_app: :my_app
+end
+```
 
-# File-backed streaming — reads on demand, not loaded into memory
+```elixir
+# config/runtime.exs
+config :my_app, MyApp.Converter,
+  host: "soffice",
+  port: 2002
+```
+
+Then call it anywhere in your app:
+
+```elixir
+{:ok, pdf_bytes} = MyApp.Converter.convert_stream(docx_bytes)
+{:ok, pdf_bytes} = MyApp.Converter.convert_file_stream("/path/to/input.docx")
+{:ok, output}    = MyApp.Converter.convert("/shared/input.docx", "/shared/output.pdf")
+```
+
+Config is resolved in this order (last wins):
+
+1. Compile-time defaults from `use URP, ...`
+2. Runtime config from `Application.get_env/3`
+3. Per-call opts
+
+## Usage
+
+### Direct (scripts, IEx)
+
+No wrapper module or supervision tree needed:
+
+```elixir
+{:ok, pdf_bytes} = URP.convert_stream(docx_bytes, host: "localhost", port: 2002)
 {:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
-
-# File-based — both paths must be visible to soffice
 {:ok, output_path} = URP.convert("/shared/input.docx", "/shared/output.pdf")
 ```
 
 ### Supervised (production)
 
-Add `URP.Connection` to your supervision tree for serialized access.
-soffice is single-threaded — the GenServer ensures only one conversion
-runs at a time, with callers queuing and timing out predictably.
+For serialized access (one conversion at a time), add `URP.Connection`:
 
 ```elixir
 # application.ex
@@ -58,52 +106,74 @@ children = [
 
 # anywhere in your app
 {:ok, pdf} = URP.Connection.convert_stream(docx_bytes)
-{:ok, pdf} = URP.Connection.convert_file_stream("/path/to/input.docx")
-{:ok, path} = URP.Connection.convert("/shared/in.docx", "/shared/out.pdf")
 ```
 
-Multiple named connections for multiple soffice instances:
+For concurrent conversions, add `URP.Pool`:
 
 ```elixir
+# application.ex
 children = [
-  {URP.Connection, name: :soffice_1, host: "soffice-1", port: 2002},
-  {URP.Connection, name: :soffice_2, host: "soffice-2", port: 2002}
+  {URP.Pool, host: "soffice", port: 2002, pool_size: 4}
 ]
 
-URP.Connection.convert_stream(:soffice_1, docx_bytes)
+# anywhere in your app
+{:ok, pdf} = URP.Pool.convert_stream(docx_bytes)
+```
+
+### Sink (streaming output)
+
+By default, converted bytes accumulate in memory. Use `:sink` to stream
+output as it arrives:
+
+```elixir
+# Write to file
+:ok = URP.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
+
+# Stream to an HTTP response, S3 upload, etc.
+:ok = URP.convert_stream(docx_bytes, sink: fn chunk -> send_chunk(chunk) end)
+```
+
+## Testing
+
+Define a converter module with `use URP` and stub it in tests — no
+running soffice needed:
+
+```elixir
+# test/test_helper.exs
+URP.Test.start()
+ExUnit.start()
+
+# test/my_app/invoice_test.exs
+test "generates invoice PDF" do
+  URP.Test.stub(MyApp.Converter, fn _input, _opts ->
+    {:ok, "%PDF-fake"}
+  end)
+
+  assert {:ok, _pdf} = MyApp.generate_invoice(order)
+end
+```
+
+Stubs are per-process and propagate through `$callers` (Tasks, GenServers).
+See `URP.Test` for details.
+
+Integration tests in this repo require soffice on `localhost:2002` and are
+skipped automatically when it's not reachable:
+
+```sh
+mix test
 ```
 
 ## Architecture
 
 | Module | Role |
 |---|---|
-| `URP` | Direct API — `convert/3`, `convert_stream/2`, `convert_file_stream/2` |
+| `URP` | Public API + `use URP` macro for wrapper modules |
 | `URP.Connection` | Supervised GenServer — serialization, backpressure, timeouts |
+| `URP.Pool` | NimblePool — concurrent conversions with connection pooling |
+| `URP.Test` | Test helpers — per-process stubs via NimbleOwnership |
 | `URP.Bridge` | Mid-level — UNO operations (handshake, load, store, close, streaming) |
 | `URP.Stream` | Bidirectional URP dispatch for XInputStream/XOutputStream |
 | `URP.Protocol` | Low-level — binary wire format (framing, encoding, reply parsing) |
-
-## Streaming
-
-No shared filesystem needed — bytes are transferred over the URP socket:
-
-```elixir
-{:ok, pdf_bytes} = URP.convert_stream(docx_bytes, filter: "writer_pdf_Export")
-```
-
-Uses `loadComponentFromURL("private:stream", ...)` with an `InputStream`
-property and `storeToURL("private:stream", ...)` with an `OutputStream` property.
-soffice calls `readBytes()`/`writeBytes()` on objects we export over the same
-TCP connection (bidirectional URP).
-
-## Tests
-
-Integration tests require soffice on `localhost:2002`. They are included
-automatically when soffice is reachable, skipped otherwise.
-
-```sh
-mix test
-```
 
 ## References
 
