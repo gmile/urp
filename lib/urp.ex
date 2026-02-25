@@ -128,7 +128,7 @@ defmodule URP do
 
     * `:host`   — soffice hostname (default `"localhost"`)
     * `:port`   — soffice URP listener port (default `2002`)
-    * `:filter` — export filter name (default `"writer_pdf_Export"`)
+    * `:filter` — [export filter name](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html) (default `"writer_pdf_Export"`)
   """
   @spec convert(Path.t(), Path.t() | nil, keyword()) :: {:ok, Path.t()}
   def convert(input_path, output_path \\ nil, opts \\ []) do
@@ -161,7 +161,7 @@ defmodule URP do
 
     * `:host`   — soffice hostname (default `"localhost"`)
     * `:port`   — soffice URP listener port (default `2002`)
-    * `:filter` — export filter name (default `"writer_pdf_Export"`)
+    * `:filter` — [export filter name](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html) (default `"writer_pdf_Export"`)
     * `:sink`   — output destination (see below)
 
   ## Sink

@@ -119,7 +119,7 @@ defmodule URP.Bridge do
   end
 
   @doc """
-  Store a document to a `file://` URL with the given export filter.
+  Store a document to a `file://` URL with the given [export filter](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html).
 
   Common filters: `"writer_pdf_Export"`, `"calc_pdf_Export"`, `"impress_pdf_Export"`.
   """
