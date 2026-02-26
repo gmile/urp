@@ -10,7 +10,7 @@ defmodule URP.Pool do
 
       # In your application supervision tree
       children = [
-        {URP.Pool, host: "soffice", port: 2002, pool_size: 4}
+        {URP.Pool, otp_app: :my_app, pool_size: 4}
       ]
 
   ## Usage
@@ -39,17 +39,29 @@ defmodule URP.Pool do
   ## Options
 
     * `:name`      — process name (default `URP.Pool`)
+    * `:otp_app`   — application to read config from (reads
+      `Application.get_env(otp_app, URP.Pool, [])` at runtime)
     * `:host`      — soffice hostname (default `"localhost"`)
     * `:port`      — soffice URP listener port (default `2002`)
     * `:pool_size` — number of connections (default `4`)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {pool_size, opts} = Keyword.pop(opts, :pool_size, 4)
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
+    {otp_app, opts} = Keyword.pop(opts, :otp_app)
+
+    resolved =
+      if otp_app do
+        runtime = Application.get_env(otp_app, __MODULE__, [])
+        Keyword.merge(opts, runtime)
+      else
+        opts
+      end
+
+    {pool_size, resolved} = Keyword.pop(resolved, :pool_size, 4)
 
     NimblePool.start_link(
-      worker: {__MODULE__, Map.new(opts)},
+      worker: {__MODULE__, Map.new(resolved)},
       pool_size: pool_size,
       name: name
     )

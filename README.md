@@ -66,6 +66,15 @@ end
 config :my_app, MyApp.Converter,
   host: "soffice",
   port: 2002
+
+# URP.Connection and URP.Pool read their own keys:
+config :my_app, URP.Connection,
+  host: "soffice",
+  port: 2002
+
+config :my_app, URP.Pool,
+  host: "soffice",
+  port: 2002
 ```
 
 Then call it anywhere in your app:
@@ -101,7 +110,7 @@ For serialized access (one conversion at a time), add `URP.Connection`:
 ```elixir
 # application.ex
 children = [
-  {URP.Connection, host: "soffice", port: 2002}
+  {URP.Connection, otp_app: :my_app}
 ]
 
 # anywhere in your app
@@ -113,7 +122,7 @@ For concurrent conversions, add `URP.Pool`:
 ```elixir
 # application.ex
 children = [
-  {URP.Pool, host: "soffice", port: 2002, pool_size: 4}
+  {URP.Pool, otp_app: :my_app, pool_size: 4}
 ]
 
 # anywhere in your app

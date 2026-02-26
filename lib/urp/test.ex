@@ -16,7 +16,7 @@ defmodule URP.Test do
   Define a wrapper module with `use URP`:
 
       defmodule MyApp.Converter do
-        use URP, host: "soffice", port: 2002
+        use URP, otp_app: :my_app
       end
 
   In tests, stub it:

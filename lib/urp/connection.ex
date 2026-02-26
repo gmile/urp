@@ -14,7 +14,7 @@ defmodule URP.Connection do
 
       # In your application supervision tree
       children = [
-        {URP.Connection, host: "soffice", port: 2002}
+        {URP.Connection, otp_app: :my_app}
       ]
 
   ## Usage
@@ -41,13 +41,25 @@ defmodule URP.Connection do
   ## Options
 
     * `:name` — process name (default `URP.Connection`)
+    * `:otp_app` — application to read config from (reads
+      `Application.get_env(otp_app, URP.Connection, [])` at runtime)
     * `:host` — soffice hostname (default `"localhost"`)
     * `:port` — soffice URP listener port (default `2002`)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
+    {otp_app, opts} = Keyword.pop(opts, :otp_app)
+
+    resolved =
+      if otp_app do
+        runtime = Application.get_env(otp_app, __MODULE__, [])
+        Keyword.merge(opts, runtime)
+      else
+        opts
+      end
+
+    GenServer.start_link(__MODULE__, Map.new(resolved), name: name)
   end
 
   @doc false

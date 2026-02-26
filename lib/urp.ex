@@ -17,7 +17,7 @@ defmodule URP do
   and backpressure:
 
       children = [
-        {URP.Connection, host: "soffice", port: 2002}
+        {URP.Connection, otp_app: :my_app}
       ]
 
       {:ok, pdf_bytes} = URP.Connection.convert_stream(docx_bytes)
