@@ -71,31 +71,6 @@ defmodule URPTest do
     assert <<"%PDF-" <> _rest>> = pdf
   end
 
-  describe "URP.Connection" do
-    setup do
-      pid = start_supervised!({URP.Connection, name: :test_conn})
-      {:ok, conn: pid}
-    end
-
-    test "converts via GenServer" do
-      docx_bytes = build_test_docx()
-      assert {:ok, pdf} = URP.Connection.convert_stream(:test_conn, docx_bytes)
-      assert <<"%PDF-" <> _rest>> = pdf
-    end
-
-    test "converts file-backed via GenServer" do
-      id = System.unique_integer([:positive])
-      input = Path.join(@test_dir, "urp_test_#{id}.docx")
-      create_test_docx!(input)
-
-      try do
-        assert {:ok, pdf} = URP.Connection.convert_file_stream(:test_conn, input)
-        assert <<"%PDF-" <> _rest>> = pdf
-      after
-        File.rm(input)
-      end
-    end
-  end
 
   describe "sink" do
     test "sink: {:path, ...} writes to file" do

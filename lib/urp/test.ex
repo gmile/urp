@@ -31,7 +31,7 @@ defmodule URP.Test do
       end
 
   The stub intercepts calls on wrapper modules defined with `use URP`.
-  Core modules (`URP`, `URP.Connection`, `URP.Pool`) are never modified.
+  Core modules (`URP`, `URP.Pool`) are never modified.
 
   ## Stub function
 
