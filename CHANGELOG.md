@@ -1,5 +1,9 @@
 # Changelog
 
+## [v0.3.1] - 2026-02-26
+
+- Exclude `Mix.Tasks.Bump` from hex package to avoid module conflicts
+
 ## [v0.3.0] - 2026-02-26
 
 - Fix protocol correctness: validate block count, support FUNCTIONID16/14, skip MOREFLAGS byte
