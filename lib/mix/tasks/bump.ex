@@ -1,24 +1,5 @@
 defmodule Mix.Tasks.Bump do
-  @moduledoc """
-  Prepares a new release by bumping version, updating changelog, and creating a git tag.
-
-  ## Usage
-
-      mix bump         # 0.1.2 -> 0.1.3 (patch by default)
-      mix bump patch   # 0.1.2 -> 0.1.3
-      mix bump minor   # 0.1.2 -> 0.2.0
-      mix bump major   # 0.1.2 -> 1.0.0
-
-  This task will:
-  1. Bump the version in VERSION file
-  2. Add merged PRs to CHANGELOG.md
-  3. Commit the changes
-  4. Create a git tag
-
-  After running this task, push with tags to trigger the release workflow:
-
-      git push origin main --tags
-  """
+  @moduledoc false
 
   use Mix.Task
 

@@ -66,15 +66,6 @@ end
 config :my_app, MyApp.Converter,
   host: "soffice",
   port: 2002
-
-# URP.Connection and URP.Pool read their own keys:
-config :my_app, URP.Connection,
-  host: "soffice",
-  port: 2002
-
-config :my_app, URP.Pool,
-  host: "soffice",
-  port: 2002
 ```
 
 Then call it anywhere in your app:
@@ -85,11 +76,6 @@ Then call it anywhere in your app:
 {:ok, output}    = MyApp.Converter.convert("/shared/input.docx", "/shared/output.pdf")
 ```
 
-Config is resolved in this order (last wins):
-
-1. Compile-time defaults from `use URP, ...`
-2. Runtime config from `Application.get_env/3`
-3. Per-call opts
 
 ## Usage
 
@@ -113,7 +99,6 @@ children = [
   {URP.Connection, otp_app: :my_app}
 ]
 
-# anywhere in your app
 {:ok, pdf} = URP.Connection.convert_stream(docx_bytes)
 ```
 
@@ -125,7 +110,6 @@ children = [
   {URP.Pool, otp_app: :my_app, pool_size: 4}
 ]
 
-# anywhere in your app
 {:ok, pdf} = URP.Pool.convert_stream(docx_bytes)
 ```
 
@@ -165,8 +149,7 @@ end
 Stubs are per-process and propagate through `$callers` (Tasks, GenServers).
 See `URP.Test` for details.
 
-Integration tests in this repo require soffice on `localhost:2002` and are
-skipped automatically when it's not reachable:
+Integration tests require soffice on `localhost:2002`:
 
 ```sh
 mix test
