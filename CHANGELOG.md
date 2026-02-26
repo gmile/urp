@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- Fix protocol correctness: validate block count, support FUNCTIONID16/14, skip MOREFLAGS byte
+- Fix one-way detection: use func_id (only `release` is one-way), not unreliable header flags
+- Add `parse_exception/1` — extract human-readable messages from UNO exception replies
+- Include exception details in error messages from `load_document!` and `store_to_url!`
+- Add protocol unit tests (28 tests covering header parsing, encoding, reply classification)
+- Add error handling integration tests
+- Simplify `mix bump` task (remove network dependencies, fix editor hang with gpg signing)
+
 ## [v0.2.0] - 2026-02-26
 
 - **Breaking:** remove `URP.Connection` — all calls go through `URP.Pool` via wrapper modules
