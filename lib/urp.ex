@@ -5,26 +5,9 @@ defmodule URP do
   Talks directly to a `soffice` process over TCP.
   No Python, no unoserver, no Gotenberg.
 
-  ## Direct usage (scripts, IEx, tests)
+  ## Setup
 
-      {:ok, pdf_bytes} = URP.convert_stream(docx_bytes)
-      {:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
-      {:ok, output}    = URP.convert("/shared/input.docx", "/shared/output.pdf")
-
-  ## Supervised usage (production)
-
-  Add `URP.Connection` to your supervision tree for serialized access
-  and backpressure:
-
-      children = [
-        {URP.Connection, otp_app: :my_app}
-      ]
-
-      {:ok, pdf_bytes} = URP.Connection.convert_stream(docx_bytes)
-
-  ## Stubbable wrapper modules
-
-  Define a module with `use URP` to get a stubbable wrapper for testing:
+  Define a converter module and add it to your supervision tree:
 
       defmodule MyApp.Converter do
         use URP, otp_app: :my_app
@@ -33,12 +16,22 @@ defmodule URP do
       # config/runtime.exs
       config :my_app, MyApp.Converter,
         host: "soffice",
-        port: 2002
+        port: 2002,
+        pool_size: 4
 
-      # Production — delegates to URP with config defaults
-      {:ok, pdf} = MyApp.Converter.convert_stream(docx_bytes)
+      # application.ex
+      children = [
+        MyApp.Converter
+      ]
 
-      # Tests — no soffice needed
+  ## Usage
+
+      {:ok, pdf_bytes} = MyApp.Converter.convert_stream(docx_bytes)
+      {:ok, pdf_bytes} = MyApp.Converter.convert_file_stream("/path/to/input.docx")
+      :ok = MyApp.Converter.convert_stream(docx_bytes, sink: {:path, "/tmp/out.pdf"})
+
+  ## Testing
+
       URP.Test.stub(MyApp.Converter, fn _input, _opts -> {:ok, "fake"} end)
       {:ok, "fake"} = MyApp.Converter.convert_stream(docx_bytes)
 
@@ -48,66 +41,67 @@ defmodule URP do
   alias URP.Bridge
 
   @doc """
-  Generates a stubbable wrapper module with `convert_stream/2`,
-  `convert_file_stream/2`, and `convert/3`.
+  Generates a supervised converter module backed by a connection pool.
 
   ## Options
 
-    * `:otp_app` — application to read config from (reads
+    * `:otp_app` (required) — application to read config from (reads
       `Application.get_env(otp_app, __MODULE__, [])` at runtime)
 
-  Any other options are used as compile-time defaults (merged under
-  runtime config). Per-call opts always win.
+  ## Config keys
 
-  ## Config resolution order (last wins)
+    * `:host` — soffice hostname (default `"localhost"`)
+    * `:port` — soffice URP listener port (default `2002`)
+    * `:pool_size` — number of connections (default `4`)
 
-    1. Compile-time defaults from `use URP, ...`
-    2. Runtime config from `Application.get_env/3`
-    3. Per-call opts
+  ## Generated functions
+
+    * `child_spec/1` — for adding to a supervision tree
+    * `convert_stream/2` — convert bytes to PDF
+    * `convert_file_stream/2` — convert a local file to PDF
+    * `convert/3` — convert via file:// URLs (requires shared filesystem)
+
+  All functions are stubbable via `URP.Test.stub/2`.
   """
   defmacro __using__(opts) do
     quote do
-      @urp_otp_app Keyword.get(unquote(opts), :otp_app)
-      @urp_compile_defaults Keyword.drop(unquote(opts), [:otp_app])
+      @urp_otp_app Keyword.fetch!(unquote(opts), :otp_app)
 
-      defp urp_opts(call_opts) do
-        runtime =
-          if @urp_otp_app do
-            Application.get_env(@urp_otp_app, __MODULE__, [])
-          else
-            []
-          end
+      def child_spec(override_opts \\ []) do
+        runtime = Application.get_env(@urp_otp_app, __MODULE__, [])
+        opts = Keyword.merge(runtime, override_opts)
 
-        @urp_compile_defaults
-        |> Keyword.merge(runtime)
-        |> Keyword.merge(call_opts)
+        %{
+          id: __MODULE__,
+          start: {URP.Pool, :start_link, [Keyword.put(opts, :name, __MODULE__)]}
+        }
       end
 
-      @doc "Convert document bytes to PDF. See `URP.convert_stream/2`."
+      @doc "Convert document bytes to PDF. See `URP.Pool.convert_stream/3`."
       def convert_stream(input_bytes, opts \\ []) when is_binary(input_bytes) do
         case URP.Test.__fetch_stub__(__MODULE__) do
           {:ok, fun} -> fun.(input_bytes, opts)
-          :error -> URP.convert_stream(input_bytes, urp_opts(opts))
+          :error -> URP.Pool.convert_stream(__MODULE__, input_bytes, opts)
         end
       end
 
-      @doc "Convert a local file to PDF via streaming. See `URP.convert_file_stream/2`."
+      @doc "Convert a local file to PDF via streaming. See `URP.Pool.convert_file_stream/3`."
       def convert_file_stream(input_path, opts \\ []) when is_binary(input_path) do
         case URP.Test.__fetch_stub__(__MODULE__) do
           {:ok, fun} -> fun.(input_path, opts)
-          :error -> URP.convert_file_stream(input_path, urp_opts(opts))
+          :error -> URP.Pool.convert_file_stream(__MODULE__, input_path, opts)
         end
       end
 
-      @doc "Convert a file to PDF via file:// URLs. See `URP.convert/3`."
+      @doc "Convert a file to PDF via file:// URLs. See `URP.Pool.convert/4`."
       def convert(input_path, output_path \\ nil, opts \\ []) do
         case URP.Test.__fetch_stub__(__MODULE__) do
           {:ok, fun} -> fun.(input_path, opts)
-          :error -> URP.convert(input_path, output_path, urp_opts(opts))
+          :error -> URP.Pool.convert(__MODULE__, input_path, output_path, opts)
         end
       end
 
-      defoverridable convert_stream: 2, convert_file_stream: 2, convert: 3
+      defoverridable child_spec: 1, convert_stream: 2, convert_file_stream: 2, convert: 3
     end
   end
 
