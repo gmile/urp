@@ -1,12 +1,12 @@
 defmodule URPTest.StubConverter do
-  use URP
+  use URP, otp_app: :urp
 end
 
 defmodule URPTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
-  @moduletag timeout: 30_000
+  @moduletag timeout: 15_000
 
   # Use /tmp (not System.tmp_dir!) so paths match inside the soffice Docker container
   @test_dir "/tmp"
@@ -146,6 +146,41 @@ defmodule URPTest do
     end
   end
 
+  describe "error handling" do
+    test "convert_file_stream with nonexistent file raises" do
+      assert_raise File.Error, fn ->
+        URP.convert_file_stream("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx")
+      end
+    end
+
+    test "convert with nonexistent file raises" do
+      id = System.unique_integer([:positive])
+
+      assert_raise RuntimeError, ~r/loadComponentFromURL failed/, fn ->
+        URP.convert("/tmp/nonexistent_#{id}.docx", "/tmp/nonexistent_#{id}.pdf")
+      end
+    end
+
+    test "pool returns error for nonexistent file" do
+      _pid = start_supervised!({URP.Pool, name: :error_pool, pool_size: 1})
+      id = System.unique_integer([:positive])
+
+      assert {:error, _message} =
+               URP.Pool.convert_file_stream(:error_pool, "/tmp/nonexistent_#{id}.docx")
+    end
+
+    test "pool returns {:error, _} and stays alive after error" do
+      _pid = start_supervised!({URP.Pool, name: :error_pool2, pool_size: 1})
+      id = System.unique_integer([:positive])
+
+      assert {:error, _} =
+               URP.Pool.convert_file_stream(:error_pool2, "/tmp/nonexistent_#{id}.docx")
+
+      # Pool process should still be alive (not crashed)
+      assert Process.whereis(:error_pool2) != nil
+    end
+  end
+
   describe "URP.Test" do
     test "stub bypasses real conversion" do
       URP.Test.stub(URPTest.StubConverter, fn input, _opts ->
@@ -186,8 +221,9 @@ defmodule URPTest do
       assert {:ok, "parent stub"} = Task.await(task)
     end
 
-    test "without stub, delegates to real URP" do
-      # No stub registered — URPTest.StubConverter.convert_stream delegates to URP.convert_stream
+    test "without stub, delegates to pool" do
+      # No stub registered — routes through Pool. Start one for this test.
+      start_supervised!({URP.Pool, name: URPTest.StubConverter})
       assert {:ok, pdf} = URPTest.StubConverter.convert_stream(build_test_docx())
       assert <<"%PDF-" <> _rest>> = pdf
     end

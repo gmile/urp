@@ -9,25 +9,19 @@ defmodule URP.ProtocolTest do
     test "basic long header with 8-bit func_id" do
       # LONGHEADER | REQUEST | NEWTYPE, func_id=3, cached type (tc=22, cache=1)
       header = <<0xC0 ||| 0x20, 3, 22, 0::16>>
-      %{func_id: 3, one_way: true, body: <<>>} = P.parse_request(header)
+      %{func_id: 3, body: <<>>} = P.parse_request(header)
     end
 
     test "FUNCTIONID16 reads 16-bit func_id" do
       # LONGHEADER | REQUEST | FUNCTIONID16 (0x04), func_id=300
       header = <<0xC0 ||| 0x04, 300::16>>
-      %{func_id: 300, one_way: true, body: <<>>} = P.parse_request(header)
+      %{func_id: 300, body: <<>>} = P.parse_request(header)
     end
 
-    test "MOREFLAGS with MUSTREPLY makes one_way false" do
-      # LONGHEADER | REQUEST | MOREFLAGS (0x01), flags2 with MUSTREPLY (0x80)
+    test "MOREFLAGS byte is skipped" do
+      # LONGHEADER | REQUEST | MOREFLAGS (0x01), flags2=0x80
       header = <<0xC0 ||| 0x01, 0x80, 5>>
-      %{func_id: 5, one_way: false, body: <<>>} = P.parse_request(header)
-    end
-
-    test "MOREFLAGS without MUSTREPLY is one_way" do
-      # LONGHEADER | REQUEST | MOREFLAGS (0x01), flags2=0x00 (no MUSTREPLY)
-      header = <<0xC0 ||| 0x01, 0x00, 5>>
-      %{func_id: 5, one_way: true, body: <<>>} = P.parse_request(header)
+      %{func_id: 5, body: <<>>} = P.parse_request(header)
     end
 
     test "skips NEWTYPE with cached type" do
@@ -79,7 +73,7 @@ defmodule URP.ProtocolTest do
           P.enc_str(tid) <> <<1::16>> <>
           body
 
-      %{func_id: 3, one_way: false, body: ^body} = P.parse_request(header)
+      %{func_id: 3, body: ^body} = P.parse_request(header)
     end
   end
 
@@ -88,7 +82,7 @@ defmodule URP.ProtocolTest do
       body = <<1, 2, 3>>
       # Short header: bit 7 clear, func_id in lower 6 bits
       header = <<42>> <> body
-      %{func_id: 42, one_way: true, body: ^body} = P.parse_request(header)
+      %{func_id: 42, body: ^body} = P.parse_request(header)
     end
 
     test "14-bit func_id (FUNCTIONID14)" do
@@ -96,11 +90,20 @@ defmodule URP.ProtocolTest do
       # Short header with bit 6 set: func_id = bits[5:0] << 8 | next_byte
       # func_id = 0x03 << 8 | 0x05 = 773
       header = <<0x40 ||| 0x03, 0x05>> <> body
-      %{func_id: 773, one_way: true, body: ^body} = P.parse_request(header)
+      %{func_id: 773, body: ^body} = P.parse_request(header)
+    end
+  end
+
+  describe "one_way?/1" do
+    test "release (func_id 2) is one-way" do
+      assert P.one_way?(2)
     end
 
-    test "short header is always one_way" do
-      %{one_way: true} = P.parse_request(<<0x02, "body">>)
+    test "other func_ids are not one-way" do
+      refute P.one_way?(0)
+      refute P.one_way?(1)
+      refute P.one_way?(3)
+      refute P.one_way?(7)
     end
   end
 
