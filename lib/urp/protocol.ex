@@ -166,17 +166,15 @@ defmodule URP.Protocol do
   `one_way` is true when the sender does not expect a reply (MOREFLAGS absent
   or MUSTREPLY not set). One-way calls like `release` must not receive replies.
   """
-  @spec parse_request(binary()) :: %{func_id: non_neg_integer(), body: binary(), one_way: boolean()}
+  @spec parse_request(binary()) :: %{func_id: non_neg_integer(), body: binary()}
   def parse_request(<<flags, rest::binary>>) when (flags &&& @longheader) != 0 do
     # Long header — skip optional flags2, then extract func_id and skip header fields
-    {one_way, rest} =
+    rest =
       if (flags &&& 0x01) != 0 do
-        <<flags2, r::binary>> = rest
-        # MUSTREPLY is bit 7 of flags2 — if not set, this is a one-way call
-        {(flags2 &&& 0x80) == 0, r}
+        <<_flags2, r::binary>> = rest
+        r
       else
-        # No MOREFLAGS byte — one-way (no MUSTREPLY)
-        {true, rest}
+        rest
       end
 
     # FUNCTIONID16 (bit 2): if set, func_id is uint16; otherwise uint8
@@ -215,22 +213,32 @@ defmodule URP.Protocol do
         rest
       end
 
-    %{func_id: func_id, body: rest, one_way: one_way}
+    %{func_id: func_id, body: rest}
   end
 
   def parse_request(<<header, rest::binary>>) do
     # Short header — reuses all cached values.
-    # Short headers never carry MOREFLAGS, so one_way defaults to true.
     #
     # Bit 6 (0x40) = FUNCTIONID14: if set, func_id is 14-bit (bits[5:0] << 8 | next byte).
     # If clear, func_id is 6-bit (bits[5:0]).
     if (header &&& 0x40) != 0 do
       <<lo, body::binary>> = rest
-      %{func_id: (header &&& 0x3F) <<< 8 ||| lo, body: body, one_way: true}
+      %{func_id: (header &&& 0x3F) <<< 8 ||| lo, body: body}
     else
-      %{func_id: header &&& 0x3F, body: rest, one_way: true}
+      %{func_id: header &&& 0x3F, body: rest}
     end
   end
+
+  @doc """
+  True if the given func_id is `release` (one-way, no reply expected).
+
+  Per the URP spec, `release` (func_id 2) is the only one-way call we'll
+  encounter from soffice. Sending a reply to a one-way call is a protocol
+  violation.
+  """
+  @spec one_way?(non_neg_integer()) :: boolean()
+  def one_way?(2), do: true
+  def one_way?(_), do: false
 
   ## Reply parsing
 

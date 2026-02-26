@@ -389,8 +389,8 @@ defmodule URP.Bridge do
     if P.is_reply?(payload) do
       payload
     else
-      %{one_way: one_way} = P.parse_request(payload)
-      unless one_way, do: P.send_frame(sock, P.reply())
+      %{func_id: func_id} = P.parse_request(payload)
+      unless P.one_way?(func_id), do: P.send_frame(sock, P.reply())
       recv_reply!(sock)
     end
   end
