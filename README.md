@@ -91,27 +91,8 @@ No wrapper module or supervision tree needed:
 
 ### Supervised (production)
 
-For serialized access (one conversion at a time), add `URP.Connection`:
-
-```elixir
-# application.ex
-children = [
-  {URP.Connection, otp_app: :my_app}
-]
-
-{:ok, pdf} = URP.Connection.convert_stream(docx_bytes)
-```
-
-For concurrent conversions, add `URP.Pool`:
-
-```elixir
-# application.ex
-children = [
-  {URP.Pool, otp_app: :my_app, pool_size: 4}
-]
-
-{:ok, pdf} = URP.Pool.convert_stream(docx_bytes)
-```
+See the [Configuration](#configuration) section above — `MyApp.Converter` is
+added to your supervision tree and handles connection pooling automatically.
 
 ### Sink (streaming output)
 
@@ -160,12 +141,33 @@ mix test
 | Module | Role |
 |---|---|
 | `URP` | Public API + `use URP` macro for wrapper modules |
-| `URP.Connection` | Supervised GenServer — serialization, backpressure, timeouts |
-| `URP.Pool` | NimblePool — concurrent conversions with connection pooling |
+| `URP.Pool` | NimblePool — connection pooling (used internally by `use URP`) |
 | `URP.Test` | Test helpers — per-process stubs via NimbleOwnership |
 | `URP.Bridge` | Mid-level — UNO operations (handshake, load, store, close, streaming) |
 | `URP.Stream` | Bidirectional URP dispatch for XInputStream/XOutputStream |
 | `URP.Protocol` | Low-level — binary wire format (framing, encoding, reply parsing) |
+
+## Design: soffice as a network service
+
+This library treats soffice as an external network service — your Elixir app
+connects to it over TCP. soffice must be deployed and scaled separately
+(e.g. as a sidecar container, a separate Kubernetes deployment, or a standalone
+server).
+
+An alternative approach would be to bundle soffice into the same image as
+the Elixir app and manage it via Erlang Ports:
+
+| | Network service (this library) | Embedded via Port |
+|---|---|---|
+| **Scaling** | Scale soffice independently | Tied to app instances |
+| **Isolation** | soffice crash doesn't affect the BEAM | Port crash is contained but messier |
+| **Deployment** | Separate image, simpler app image | Single image, larger and more complex |
+| **Latency** | TCP overhead (negligible on local network) | No network hop |
+| **Multiple instances** | Deploy N soffice containers | Spawn N Ports per app node |
+| **Complexity** | Needs orchestration (Docker/K8s) | Needs Port supervision, lifecycle management |
+
+The network approach is simpler to implement and fits well with containerized
+deployments where soffice already runs as a separate service.
 
 ## References
 
