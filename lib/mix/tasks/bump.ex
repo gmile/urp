@@ -17,11 +17,11 @@ defmodule Mix.Tasks.Bump do
     update_changelog(new_version)
 
     Mix.shell().info("Committing changes...")
-    System.cmd("git", ["add", "VERSION", "CHANGELOG.md"])
-    System.cmd("git", ["commit", "-m", "Release v#{new_version}"])
+    {_, 0} = System.cmd("git", ["add", "VERSION", "CHANGELOG.md"])
+    {_, 0} = System.cmd("git", ["commit", "-m", "Release v#{new_version}"])
 
     Mix.shell().info("Creating tag v#{new_version}...")
-    System.cmd("git", ["tag", "v#{new_version}"])
+    {_, 0} = System.cmd("git", ["tag", "-m", "v#{new_version}", "v#{new_version}"])
 
     Mix.shell().info("""
 
@@ -67,75 +67,13 @@ defmodule Mix.Tasks.Bump do
   defp update_changelog(new_version) do
     changelog = File.read!("CHANGELOG.md")
     today = Date.utc_today() |> Date.to_iso8601()
-    prs = get_merged_prs_since_last_tag()
 
-    pr_list =
-      case prs do
-        [] ->
-          "- No PRs merged\n"
+    updated = String.replace(changelog, "## [Unreleased]", "## [v#{new_version}] - #{today}")
 
-        prs ->
-          Enum.map_join(prs, "\n", fn {number, title} -> "- #{title} (##{number})" end) <> "\n"
-      end
-
-    new_section = """
-    ## [v#{new_version}] - #{today}
-
-    #{pr_list}
-    """
-
-    # Insert after the header (first ## line marks the start of versions)
-    updated =
-      case String.split(changelog, ~r/^## \[v/m, parts: 2) do
-        [header, rest] ->
-          header <> new_section <> "## [v" <> rest
-
-        [_only_header] ->
-          changelog <> "\n" <> new_section
-      end
+    if updated == changelog do
+      Mix.raise("No [Unreleased] section found in CHANGELOG.md — add one before bumping")
+    end
 
     File.write!("CHANGELOG.md", updated)
-  end
-
-  defp get_merged_prs_since_last_tag do
-    case System.cmd("git", ["describe", "--tags", "--abbrev=0"], stderr_to_stdout: true) do
-      {tag, 0} ->
-        last_tag = String.trim(tag)
-        {date, 0} = System.cmd("git", ["log", "-1", "--format=%cs", last_tag])
-        fetch_merged_prs(String.trim(date))
-
-      _ ->
-        # No tags yet, get all merged PRs
-        fetch_merged_prs(nil)
-    end
-  end
-
-  defp fetch_merged_prs(since_date) do
-    args =
-      [
-        "pr",
-        "list",
-        "--state",
-        "merged",
-        "--json",
-        "number,title",
-        "--jq",
-        ".[] | \"\\(.number)\\t\\(.title)\""
-      ] ++
-        if(since_date, do: ["--search", "merged:>=#{since_date}"], else: [])
-
-    case System.cmd("gh", args) do
-      {output, 0} ->
-        output
-        |> String.trim()
-        |> String.split("\n", trim: true)
-        |> Enum.map(fn line ->
-          [number, title] = String.split(line, "\t", parts: 2)
-          {number, title}
-        end)
-
-      _ ->
-        []
-    end
   end
 end
