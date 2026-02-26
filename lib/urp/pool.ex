@@ -2,15 +2,18 @@ defmodule URP.Pool do
   @moduledoc """
   Connection pool for concurrent document conversion.
 
-  Manages a pool of `URP.Bridge` connections via `NimblePool`, allowing
-  multiple conversions to run concurrently against separate soffice instances
-  or serialized against a single one (pool_size: 1).
+  Manages a pool of `URP.Bridge` connections via `NimblePool`.
+
+  The default pool size is **1** — appropriate when talking to a single soffice
+  instance (soffice is single-threaded, so concurrent connections don't improve
+  throughput). Increase `pool_size` when you have multiple soffice replicas
+  behind a load balancer or round-robin DNS.
 
   ## Setup
 
       # In your application supervision tree
       children = [
-        {URP.Pool, otp_app: :my_app, pool_size: 4}
+        {URP.Pool, otp_app: :my_app}
       ]
 
   ## Usage
@@ -43,7 +46,8 @@ defmodule URP.Pool do
       `Application.get_env(otp_app, URP.Pool, [])` at runtime)
     * `:host`      — soffice hostname (default `"localhost"`)
     * `:port`      — soffice URP listener port (default `2002`)
-    * `:pool_size` — number of connections (default `4`)
+    * `:pool_size` — number of connections (default `1`). Increase when
+      running multiple soffice replicas behind a load balancer.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -58,7 +62,7 @@ defmodule URP.Pool do
         opts
       end
 
-    {pool_size, resolved} = Keyword.pop(resolved, :pool_size, 4)
+    {pool_size, resolved} = Keyword.pop(resolved, :pool_size, 1)
 
     NimblePool.start_link(
       worker: {__MODULE__, Map.new(resolved)},

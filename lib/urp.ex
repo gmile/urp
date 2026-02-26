@@ -16,8 +16,7 @@ defmodule URP do
       # config/runtime.exs
       config :my_app, MyApp.Converter,
         host: "soffice",
-        port: 2002,
-        pool_size: 4
+        port: 2002
 
       # application.ex
       children = [
@@ -52,7 +51,8 @@ defmodule URP do
 
     * `:host` — soffice hostname (default `"localhost"`)
     * `:port` — soffice URP listener port (default `2002`)
-    * `:pool_size` — number of connections (default `4`)
+    * `:pool_size` — number of connections (default `1`). Increase when
+      running multiple soffice replicas behind a load balancer.
 
   ## Generated functions
 
