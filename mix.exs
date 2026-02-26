@@ -15,7 +15,7 @@ defmodule URP.MixProject do
       deps: deps(),
       docs: docs(),
       dialyzer: [
-        plt_add_apps: [:crypto],
+        plt_add_apps: [:crypto, :mix],
         plt_local_path: "priv/plts",
         plt_core_path: "priv/plts"
       ]
