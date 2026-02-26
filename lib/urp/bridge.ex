@@ -12,11 +12,11 @@ defmodule URP.Bridge do
 
   ## Example
 
-      conn = URP.Bridge.open!("localhost", 2002)
-      doc = URP.Bridge.load_document!(conn, "file:///tmp/input.docx")
-      URP.Bridge.store_to_url!(conn, doc, "file:///tmp/output.pdf")
-      URP.Bridge.close_document!(conn, doc)
-      URP.Bridge.close!(conn)
+      URP.Bridge.open!("localhost", 2002)
+      |> URP.Bridge.load_document!("file:///tmp/input.docx")
+      |> URP.Bridge.store_to_url!("file:///tmp/output.pdf")
+      |> URP.Bridge.close_document!()
+      |> URP.Bridge.close!()
 
   ## Streaming
 
@@ -25,10 +25,10 @@ defmodule URP.Bridge do
   over the URP socket, eliminating the need for a shared filesystem.
 
       conn = URP.Bridge.open!("localhost", 2002)
-      doc = URP.Bridge.load_document_stream!(conn, File.read!("input.docx"))
-      pdf = URP.Bridge.store_to_stream!(conn, doc)
-      URP.Bridge.close_document!(conn, doc)
-      URP.Bridge.close!(conn)
+      doc = conn |> URP.Bridge.load_document_stream!(File.read!("input.docx"))
+      pdf = conn |> URP.Bridge.store_to_stream!(doc)
+
+      conn |> URP.Bridge.close!()
   """
 
   alias URP.Protocol, as: P
