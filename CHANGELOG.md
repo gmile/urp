@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.3.0] - 2026-02-26
 
 - Fix protocol correctness: validate block count, support FUNCTIONID16/14, skip MOREFLAGS byte
 - Fix one-way detection: use func_id (only `release` is one-way), not unreliable header flags
