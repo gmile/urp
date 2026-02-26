@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.1.2] - 2026-02-26
+
+- Add `otp_app` config support for `URP.Connection` and `URP.Pool`
+- Add soffice service to CI for integration tests
+- Add `:mix` to dialyzer PLT apps
+- Add release workflow and `mix bump` task
+- Remove stale `urp_convert.exs` script
+- Fix license year
+
 ## [v0.1.1] - 2026-02-25
 
 - Add streaming conversion via `XInputStream`/`XOutputStream` (no shared filesystem needed)
