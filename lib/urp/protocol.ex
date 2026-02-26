@@ -20,6 +20,7 @@ defmodule URP.Protocol do
   @newtype 0x20
   @newoid 0x10
   @newtid 0x08
+  @functionid16 0x04
   # reply-specific, shares bit 5 with @newtype
   @exception 0x20
 
@@ -40,10 +41,20 @@ defmodule URP.Protocol do
     :ok = :gen_tcp.send(sock, <<byte_size(data)::32, 1::32, data::binary>>)
   end
 
-  @doc "Receive a single URP block, returning the payload."
+  @doc """
+  Receive a single URP block, returning the payload.
+
+  Raises if the block contains more than one message (the C++ writer always
+  sends count=1, but the spec allows count>1).
+  """
   @spec recv_frame(:gen_tcp.socket(), timeout()) :: binary()
   def recv_frame(sock, timeout \\ @recv_timeout) do
-    {:ok, <<size::32, _count::32>>} = :gen_tcp.recv(sock, 8, timeout)
+    {:ok, <<size::32, count::32>>} = :gen_tcp.recv(sock, 8, timeout)
+
+    if count != 1 do
+      raise "URP: received block with count=#{count}, expected 1 (multi-message blocks not supported)"
+    end
+
     {:ok, payload} = :gen_tcp.recv(sock, size, timeout)
     payload
   end
@@ -147,24 +158,36 @@ defmodule URP.Protocol do
   def is_reply?(<<flags, _::binary>>), do: (flags &&& 0xC0) == @longheader
 
   @doc """
-  Parse an incoming request, extracting `func_id` and `body`.
+  Parse an incoming request, extracting `func_id`, `body`, and `one_way` flag.
 
   Handles both long headers (LONGHEADER set, REQUEST set) and short headers
   (LONGHEADER not set — func_id in lower 6 bits, all cached values reused).
+
+  `one_way` is true when the sender does not expect a reply (MOREFLAGS absent
+  or MUSTREPLY not set). One-way calls like `release` must not receive replies.
   """
-  @spec parse_request(binary()) :: %{func_id: non_neg_integer(), body: binary()}
+  @spec parse_request(binary()) :: %{func_id: non_neg_integer(), body: binary(), one_way: boolean()}
   def parse_request(<<flags, rest::binary>>) when (flags &&& @longheader) != 0 do
     # Long header — skip optional flags2, then extract func_id and skip header fields
-    rest =
-      if (flags &&& 0x01) != 0,
-        do:
-          (
-            <<_, r::binary>> = rest
-            r
-          ),
-        else: rest
+    {one_way, rest} =
+      if (flags &&& 0x01) != 0 do
+        <<flags2, r::binary>> = rest
+        # MUSTREPLY is bit 7 of flags2 — if not set, this is a one-way call
+        {(flags2 &&& 0x80) == 0, r}
+      else
+        # No MOREFLAGS byte — one-way (no MUSTREPLY)
+        {true, rest}
+      end
 
-    <<func_id, rest::binary>> = rest
+    # FUNCTIONID16 (bit 2): if set, func_id is uint16; otherwise uint8
+    {func_id, rest} =
+      if (flags &&& @functionid16) != 0 do
+        <<fid::16, r::binary>> = rest
+        {fid, r}
+      else
+        <<fid, r::binary>> = rest
+        {fid, r}
+      end
 
     rest =
       if (flags &&& @newtype) != 0 do
@@ -192,12 +215,21 @@ defmodule URP.Protocol do
         rest
       end
 
-    %{func_id: func_id, body: rest}
+    %{func_id: func_id, body: rest, one_way: one_way}
   end
 
   def parse_request(<<header, rest::binary>>) do
-    # Short header — func_id in lower 6 bits, reuses all cached values
-    %{func_id: header &&& 0x3F, body: rest}
+    # Short header — reuses all cached values.
+    # Short headers never carry MOREFLAGS, so one_way defaults to true.
+    #
+    # Bit 6 (0x40) = FUNCTIONID14: if set, func_id is 14-bit (bits[5:0] << 8 | next byte).
+    # If clear, func_id is 6-bit (bits[5:0]).
+    if (header &&& 0x40) != 0 do
+      <<lo, body::binary>> = rest
+      %{func_id: (header &&& 0x3F) <<< 8 ||| lo, body: body, one_way: true}
+    else
+      %{func_id: header &&& 0x3F, body: rest, one_way: true}
+    end
   end
 
   ## Reply parsing
@@ -231,6 +263,44 @@ defmodule URP.Protocol do
     else
       {oid, _} = dec_str(rest)
       if oid == "", do: nil, else: oid
+    end
+  end
+
+  @doc """
+  Extract a human-readable error message from an exception reply.
+
+  UNO exceptions are `Any` values containing a struct. The first member
+  of all exception structs is `Message` (string). Returns the message
+  string, or a fallback if parsing fails.
+  """
+  @spec parse_exception(binary()) :: String.t()
+  def parse_exception(payload) do
+    {flags, rest} = skip_reply_header(payload)
+
+    if (flags &&& @exception) != 0 do
+      # Exception body is Any(type + value). Skip the type encoding
+      # to get to the struct value, whose first member is Message (string).
+      try do
+        # Skip the type class byte
+        <<tc, rest::binary>> = rest
+
+        # Skip cache index + optional type name for complex types
+        rest =
+          if tc > 14 do
+            <<_cache::16, rest::binary>> = rest
+            if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
+          else
+            rest
+          end
+
+        # First struct member is Message (string)
+        {message, _} = dec_str(rest)
+        message
+      rescue
+        _ -> "UNO exception (could not parse message)"
+      end
+    else
+      "no exception"
     end
   end
 

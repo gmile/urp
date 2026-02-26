@@ -49,9 +49,9 @@ defmodule URP.Stream do
     if P.is_reply?(payload) do
       payload
     else
-      %{func_id: func_id, body: body} = P.parse_request(payload)
+      %{func_id: func_id, body: body, one_way: one_way} = P.parse_request(payload)
       {reply, source} = handle_input(func_id, body, source)
-      P.send_frame(sock, reply)
+      unless one_way, do: P.send_frame(sock, reply)
       recv_handling_input(sock, source, 0)
     end
   end
@@ -92,9 +92,9 @@ defmodule URP.Stream do
     if P.is_reply?(payload) do
       {payload, finalize_sink(sink)}
     else
-      %{func_id: func_id, body: body} = P.parse_request(payload)
+      %{func_id: func_id, body: body, one_way: one_way} = P.parse_request(payload)
       {reply, sink} = handle_output(func_id, body, sink)
-      P.send_frame(sock, reply)
+      unless one_way, do: P.send_frame(sock, reply)
       do_recv_output(sock, sink)
     end
   end

@@ -108,9 +108,11 @@ defmodule URP.Bridge do
         P.property("Hidden", @tc_boolean, <<1>>)
     )
 
-    case P.parse_interface_reply(recv_reply!(conn.sock)) do
+    reply = recv_reply!(conn.sock)
+
+    case P.parse_interface_reply(reply) do
       nil ->
-        raise "loadComponentFromURL returned null — file may not exist or be readable by soffice"
+        raise "loadComponentFromURL failed: #{P.parse_exception(reply)}"
 
       oid ->
         oid
@@ -143,7 +145,11 @@ defmodule URP.Bridge do
         P.property("FilterName", @tc_string, P.enc_str(filter))
     )
 
-    <<0x80>> = recv_reply!(conn.sock)
+    reply = recv_reply!(conn.sock)
+
+    if reply != <<0x80>> do
+      raise "storeToURL failed: #{P.parse_exception(reply)}"
+    end
   end
 
   @doc "Close a loaded document, releasing soffice resources."
@@ -239,7 +245,7 @@ defmodule URP.Bridge do
     reply = URP.Stream.recv_handling_input(conn.sock, source)
 
     case P.parse_interface_reply(reply) do
-      nil -> raise "loadComponentFromURL(stream) returned null"
+      nil -> raise "loadComponentFromURL(stream) failed: #{P.parse_exception(reply)}"
       oid -> oid
     end
   end
@@ -375,6 +381,7 @@ defmodule URP.Bridge do
 
   ## Dispatching recv — handles stray incoming requests (e.g. release() on
   ## exported stream objects) with a void reply, until we get the actual reply.
+  ## One-way calls (like release) must not receive a reply.
 
   defp recv_reply!(sock) do
     payload = P.recv_frame(sock)
@@ -382,7 +389,8 @@ defmodule URP.Bridge do
     if P.is_reply?(payload) do
       payload
     else
-      P.send_frame(sock, P.reply())
+      %{one_way: one_way} = P.parse_request(payload)
+      unless one_way, do: P.send_frame(sock, P.reply())
       recv_reply!(sock)
     end
   end
