@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.2.0] - 2026-02-26
 
 - **Breaking:** remove `URP.Connection` — all calls go through `URP.Pool` via wrapper modules
 - Make `use URP` route all calls through a supervised Pool
