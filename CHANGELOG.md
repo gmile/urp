@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- **Breaking:** remove `URP.Connection` — all calls go through `URP.Pool` via wrapper modules
+- Make `use URP` route all calls through a supervised Pool
+- Change default `pool_size` from 4 to 1 (matches single soffice instance)
+- Rewrite README: clarify setup steps, explain function differences, add design tradeoffs
+- Add Kubernetes scaling note
+- Fail hard when soffice is not reachable in tests (instead of silently skipping)
+- Hide `mix bump` from hexdocs
+
 ## [v0.1.2] - 2026-02-26
 
 - Add `otp_app` config support for `URP.Pool`
