@@ -59,46 +59,46 @@ docker run \
 
 1. Define a converter module:
 
-```elixir
-# lib/my_app/converter.ex
-defmodule MyApp.Converter do
-  use URP, otp_app: :my_app
-end
-```
+    ```elixir
+    # lib/my_app/converter.ex
+    defmodule MyApp.Converter do
+      use URP, otp_app: :my_app
+    end
+    ```
 
 2. Configure it:
 
-```elixir
-# config/runtime.exs
-config :my_app, MyApp.Converter,
-  host: "soffice",
-  port: 2002
-```
+    ```elixir
+    # config/runtime.exs
+    config :my_app, MyApp.Converter,
+      host: "soffice",
+      port: 2002
+    ```
 
 3. Add it to your supervision tree:
 
-```elixir
-# lib/my_app/application.ex
-children = [
-  MyApp.Converter
-]
-```
+    ```elixir
+    # lib/my_app/application.ex
+    children = [
+      MyApp.Converter
+    ]
+    ```
 
 This starts a connection pool supervised by your application. If the pool
 crashes, the supervisor restarts it.
 
 4. Convert documents:
 
-```elixir
-# Stream bytes over the URP socket (no shared filesystem needed)
-{:ok, pdf_bytes} = MyApp.Converter.convert_stream(docx_bytes)
+    ```elixir
+    # Stream bytes over the URP socket (no shared filesystem needed)
+    {:ok, pdf_bytes} = MyApp.Converter.convert_stream(docx_bytes)
 
-# Same, but reads from a local file without loading it all into memory
-{:ok, pdf_bytes} = MyApp.Converter.convert_file_stream("/path/to/input.docx")
+    # Same, but reads from a local file without loading it all into memory
+    {:ok, pdf_bytes} = MyApp.Converter.convert_file_stream("/path/to/input.docx")
 
-# Via file:// URLs — requires soffice to see the same paths (e.g. shared volume)
-{:ok, output} = MyApp.Converter.convert("/shared/input.docx", "/shared/output.pdf")
-```
+    # Via file:// URLs — requires soffice to see the same paths (e.g. shared volume)
+    {:ok, output} = MyApp.Converter.convert("/shared/input.docx", "/shared/output.pdf")
+    ```
 
 ### Sink (streaming output)
 
