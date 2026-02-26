@@ -1,10 +1,23 @@
 # URP
 
 Pure Elixir client for the [UNO Remote Protocol](https://wiki.openoffice.org/wiki/Uno/Binary/Spec/Protocol).
-Converts documents to PDF by talking directly to a LibreOffice `soffice`
-process over a TCP socket.
+Converts documents to PDF by talking directly to an off-the-shelf `soffice`
+container over a TCP socket — no custom images, wrappers, or sidecars needed.
 
-No Python. No unoserver. No Gotenberg.
+## Why?
+
+LibreOffice is the best open-source tool for converting office documents to
+PDF, but integrating it into a web app typically requires intermediate layers:
+
+- **[unoserver](https://github.com/unoconv/unoserver)** — Python daemon that wraps soffice and exposes an HTTP API
+- **[Gotenberg](https://gotenberg.dev/)** — Go service that wraps unoserver (which wraps soffice)
+- **Python UNO bindings** (`uno`, `unoconv`) — require Python and LibreOffice's UNO runtime installed together
+
+Each layer adds deployment complexity, resource overhead, and failure modes.
+
+URP skips all of that. It speaks the binary UNO Remote Protocol directly over
+TCP to a stock `soffice` process — the same protocol LibreOffice uses
+internally. No Python runtime, no wrapper services, no custom Docker images.
 
 ## Installation
 
@@ -13,18 +26,8 @@ Add `urp` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:urp, "~> 0.1.0"}
-  ]
-end
-```
-
-For test stubbing support (optional):
-
-```elixir
-def deps do
-  [
-    {:urp, "~> 0.1.0"},
-    {:nimble_ownership, "~> 1.0", only: :test}
+    {:urp, "~> 0.1"},
+    {:nimble_ownership, "~> 1.0", only: :test}  # optional — enables test stubs
   ]
 end
 ```
@@ -39,20 +42,22 @@ soffice --headless --invisible --nologo \
   --norestore
 ```
 
-Or via Docker (volume mount only needed for file-based conversion):
+Or via Docker:
 
 ```sh
-docker run -d --name soffice \
-  -p 2002:2002 \
+docker run \
+  --detach \
+  --name soffice \
+  --publish 2002:2002 \
   libreofficedocker/alpine:3.23 \
   soffice --headless --invisible --nologo \
     --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;" \
     --norestore
 ```
 
-## Configuration
+## Setup
 
-Define a converter module and configure it via application config:
+1. Define a converter module:
 
 ```elixir
 # lib/my_app/converter.ex
@@ -61,6 +66,8 @@ defmodule MyApp.Converter do
 end
 ```
 
+2. Configure it:
+
 ```elixir
 # config/runtime.exs
 config :my_app, MyApp.Converter,
@@ -68,31 +75,30 @@ config :my_app, MyApp.Converter,
   port: 2002
 ```
 
-Then call it anywhere in your app:
+3. Add it to your supervision tree:
 
 ```elixir
+# lib/my_app/application.ex
+children = [
+  MyApp.Converter
+]
+```
+
+This starts a connection pool supervised by your application. If the pool
+crashes, the supervisor restarts it.
+
+4. Convert documents:
+
+```elixir
+# Stream bytes over the URP socket (no shared filesystem needed)
 {:ok, pdf_bytes} = MyApp.Converter.convert_stream(docx_bytes)
+
+# Same, but reads from a local file without loading it all into memory
 {:ok, pdf_bytes} = MyApp.Converter.convert_file_stream("/path/to/input.docx")
-{:ok, output}    = MyApp.Converter.convert("/shared/input.docx", "/shared/output.pdf")
+
+# Via file:// URLs — requires soffice to see the same paths (e.g. shared volume)
+{:ok, output} = MyApp.Converter.convert("/shared/input.docx", "/shared/output.pdf")
 ```
-
-
-## Usage
-
-### Direct (scripts, IEx)
-
-No wrapper module or supervision tree needed:
-
-```elixir
-{:ok, pdf_bytes} = URP.convert_stream(docx_bytes, host: "localhost", port: 2002)
-{:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
-{:ok, output_path} = URP.convert("/shared/input.docx", "/shared/output.pdf")
-```
-
-### Supervised (production)
-
-See the [Configuration](#configuration) section above — `MyApp.Converter` is
-added to your supervision tree and handles connection pooling automatically.
 
 ### Sink (streaming output)
 
@@ -100,17 +106,23 @@ By default, converted bytes accumulate in memory. Use `:sink` to stream
 output as it arrives:
 
 ```elixir
-# Write to file
-:ok = URP.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
+:ok = MyApp.Converter.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
+:ok = MyApp.Converter.convert_stream(docx_bytes, sink: fn chunk -> send_chunk(chunk) end)
+```
 
-# Stream to an HTTP response, S3 upload, etc.
-:ok = URP.convert_stream(docx_bytes, sink: fn chunk -> send_chunk(chunk) end)
+### Direct usage (scripts, IEx)
+
+For one-off use without a supervision tree:
+
+```elixir
+{:ok, pdf_bytes} = URP.convert_stream(docx_bytes, host: "localhost", port: 2002)
+{:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
+{:ok, output_path} = URP.convert("/shared/input.docx", "/shared/output.pdf")
 ```
 
 ## Testing
 
-Define a converter module with `use URP` and stub it in tests — no
-running soffice needed:
+Stub your converter in tests — no running soffice needed:
 
 ```elixir
 # test/test_helper.exs
