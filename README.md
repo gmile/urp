@@ -169,6 +169,19 @@ the Elixir app and manage it via Erlang Ports:
 The network approach is simpler to implement and fits well with containerized
 deployments where soffice already runs as a separate service.
 
+### Kubernetes: scaling note
+
+The soffice Docker image is ~1.7GB, but image layers are shared across all
+containers on the same node — running 10 pods doesn't use 10× the disk.
+Each soffice process uses ~50-150MB RSS (spiking during conversion). The
+per-container namespace overhead (~10-20MB) is negligible in comparison.
+
+Multiple pods give you health checks, restart policies, and per-instance
+resource limits for free. The equivalent with embedded Ports means managing
+all of that in application code.
+
+Tested with [`libreofficedocker/alpine:3.23`](https://hub.docker.com/r/libreofficedocker/alpine).
+
 ## References
 
 - [UNO Binary Protocol Spec](https://wiki.openoffice.org/wiki/Uno/Binary/Spec/Protocol)
