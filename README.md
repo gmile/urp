@@ -148,6 +148,24 @@ Integration tests require soffice on `localhost:2002`:
 mix test
 ```
 
+## Scope
+
+URP implements the subset of the UNO API needed for document conversion:
+
+| UNO interface | Methods used | Purpose |
+|---|---|---|
+| [`XComponentLoader`](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1frame_1_1XComponentLoader.html) | `loadComponentFromURL` | Open documents (from file URL or `private:stream`) |
+| [`XStorable2`](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1frame_1_1XStorable2.html) | `storeToURL` | Export documents (to file URL or `private:stream`) |
+| [`XCloseable`](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1util_1_1XCloseable.html) | `close` | Release document resources |
+| [`XInputStream`](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1io_1_1XInputStream.html) | `readBytes`, `readSomeBytes`, `skipBytes`, `available`, `closeInput` | Feed document bytes to soffice |
+| [`XOutputStream`](https://api.libreoffice.org/docs/idl/ref/interfacecom_1_1sun_1_1star_1_1io_1_1XOutputStream.html) | `writeBytes`, `flush`, `closeOutput` | Receive converted output from soffice |
+
+The output format is controlled by [export filter names](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
+passed via [`MediaDescriptor`](https://api.libreoffice.org/docs/idl/ref/servicecom_1_1sun_1_1star_1_1document_1_1MediaDescriptor.html).
+Common filters: `writer_pdf_Export`, `calc_pdf_Export`, `impress_pdf_Export`.
+
+Other UNO APIs (editing, formatting, macros, etc.) are not implemented.
+
 ## Architecture
 
 | Module | Role |
