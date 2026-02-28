@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.4.0] - 2026-02-28
 
 - **Breaking:** remove `use URP, otp_app: :my_app` macro — call `URP.convert_stream/2`, `URP.convert_file_stream/2`, `URP.convert/3` directly
 - **Breaking:** `URP.Test.stub/1` replaces `URP.Test.stub/2` — stubs are global, no module name needed
