@@ -1,7 +1,3 @@
-defmodule URPTest.StubConverter do
-  use URP, otp_app: :urp
-end
-
 defmodule URPTest do
   use ExUnit.Case, async: false
 
@@ -71,7 +67,6 @@ defmodule URPTest do
     assert <<"%PDF-" <> _rest>> = pdf
   end
 
-
   describe "sink" do
     test "sink: {:path, ...} writes to file" do
       id = System.unique_integer([:positive])
@@ -99,25 +94,20 @@ defmodule URPTest do
     end
   end
 
-  describe "URP.Pool" do
-    setup do
-      pid = start_supervised!({URP.Pool, name: :test_pool, pool_size: 2})
-      {:ok, pool: pid}
-    end
-
-    test "converts via pool" do
+  describe "pool" do
+    test "converts via default pool" do
       docx_bytes = build_test_docx()
-      assert {:ok, pdf} = URP.Pool.convert_stream(:test_pool, docx_bytes)
+      assert {:ok, pdf} = URP.convert_stream(docx_bytes)
       assert <<"%PDF-" <> _rest>> = pdf
     end
 
-    test "converts file-backed via pool" do
+    test "converts file-backed via default pool" do
       id = System.unique_integer([:positive])
       input = Path.join(@test_dir, "urp_test_#{id}.docx")
       create_test_docx!(input)
 
       try do
-        assert {:ok, pdf} = URP.Pool.convert_file_stream(:test_pool, input)
+        assert {:ok, pdf} = URP.convert_file_stream(input)
         assert <<"%PDF-" <> _rest>> = pdf
       after
         File.rm(input)
@@ -126,8 +116,8 @@ defmodule URPTest do
 
     test "handles consecutive streaming conversions" do
       docx_bytes = build_test_docx()
-      assert {:ok, pdf1} = URP.Pool.convert_stream(:test_pool, docx_bytes)
-      assert {:ok, pdf2} = URP.Pool.convert_stream(:test_pool, docx_bytes)
+      assert {:ok, pdf1} = URP.convert_stream(docx_bytes)
+      assert {:ok, pdf2} = URP.convert_stream(docx_bytes)
       assert <<"%PDF-" <> _rest>> = pdf1
       assert <<"%PDF-" <> _rest>> = pdf2
     end
@@ -147,85 +137,68 @@ defmodule URPTest do
   end
 
   describe "error handling" do
-    test "convert_file_stream with nonexistent file raises" do
-      assert_raise File.Error, fn ->
-        URP.convert_file_stream("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx")
-      end
+    test "convert_file_stream with nonexistent file returns error" do
+      assert {:error, _message} =
+               URP.convert_file_stream("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx")
     end
 
-    test "convert with nonexistent file raises" do
-      id = System.unique_integer([:positive])
-
-      assert_raise RuntimeError, ~r/loadComponentFromURL failed/, fn ->
-        URP.convert("/tmp/nonexistent_#{id}.docx", "/tmp/nonexistent_#{id}.pdf")
-      end
-    end
-
-    test "pool returns error for nonexistent file" do
-      _pid = start_supervised!({URP.Pool, name: :error_pool, pool_size: 1})
+    test "convert with nonexistent file returns error" do
       id = System.unique_integer([:positive])
 
       assert {:error, _message} =
-               URP.Pool.convert_file_stream(:error_pool, "/tmp/nonexistent_#{id}.docx")
+               URP.convert("/tmp/nonexistent_#{id}.docx", "/tmp/nonexistent_#{id}.pdf")
     end
 
-    test "pool returns {:error, _} and stays alive after error" do
-      _pid = start_supervised!({URP.Pool, name: :error_pool2, pool_size: 1})
+    test "pool stays alive after error" do
       id = System.unique_integer([:positive])
 
       assert {:error, _} =
-               URP.Pool.convert_file_stream(:error_pool2, "/tmp/nonexistent_#{id}.docx")
+               URP.convert_file_stream("/tmp/nonexistent_#{id}.docx")
 
-      # Pool process should still be alive (not crashed)
-      assert Process.whereis(:error_pool2) != nil
+      # Default pool should still be alive
+      assert {:ok, pdf} = URP.convert_stream(build_test_docx())
+      assert <<"%PDF-" <> _rest>> = pdf
     end
   end
 
   describe "URP.Test" do
     test "stub bypasses real conversion" do
-      URP.Test.stub(URPTest.StubConverter, fn input, _opts ->
+      URP.Test.stub(fn input, _opts ->
         assert input == "hello"
         {:ok, "fake PDF"}
       end)
 
-      assert {:ok, "fake PDF"} = URPTest.StubConverter.convert_stream("hello")
+      assert {:ok, "fake PDF"} = URP.convert_stream("hello")
     end
 
     test "stub works with convert_file_stream" do
-      URP.Test.stub(URPTest.StubConverter, fn input, _opts ->
+      URP.Test.stub(fn input, _opts ->
         assert input == "/tmp/test.docx"
         {:ok, "fake PDF"}
       end)
 
-      assert {:ok, "fake PDF"} = URPTest.StubConverter.convert_file_stream("/tmp/test.docx")
+      assert {:ok, "fake PDF"} = URP.convert_file_stream("/tmp/test.docx")
     end
 
     test "stub receives opts" do
-      URP.Test.stub(URPTest.StubConverter, fn _input, opts ->
+      URP.Test.stub(fn _input, opts ->
         assert opts[:filter] == "calc_pdf_Export"
         {:ok, "filtered"}
       end)
 
       assert {:ok, "filtered"} =
-               URPTest.StubConverter.convert_stream("bytes", filter: "calc_pdf_Export")
+               URP.convert_stream("bytes", filter: "calc_pdf_Export")
     end
 
     test "stub is per-process via $callers" do
-      URP.Test.stub(URPTest.StubConverter, fn _input, _opts -> {:ok, "parent stub"} end)
+      URP.Test.stub(fn _input, _opts -> {:ok, "parent stub"} end)
 
       task =
         Task.async(fn ->
-          URPTest.StubConverter.convert_stream("bytes")
+          URP.convert_stream("bytes")
         end)
 
       assert {:ok, "parent stub"} = Task.await(task)
-    end
-
-    test "without stub, delegates to pool" do
-      # No stub registered — routes through Pool. Start one for this test.
-      start_supervised!({URP.Pool, name: URPTest.StubConverter})
-      assert {:ok, pdf} = URPTest.StubConverter.convert_stream(build_test_docx())
-      assert <<"%PDF-" <> _rest>> = pdf
     end
   end
 
