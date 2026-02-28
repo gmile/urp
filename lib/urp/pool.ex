@@ -30,6 +30,15 @@ defmodule URP.Pool do
 
   @default_timeout 120_000
 
+  # soffice's URP bridge transitions to STATE_TERMINATED when a connection
+  # closes, revoking stubs from the UNO environment. If we reconnect before
+  # that cleanup finishes, the new bridge may throw DisposedException
+  # ("Binary URP bridge already disposed"). The C++ callers handle this
+  # reactively — catch DisposedException and retry — and so do we.
+  @max_retries 5
+  @retry_interval_ms 50
+  @bridge_disposed "bridge already disposed"
+
   @doc """
   Start a connection pool.
 
@@ -77,20 +86,11 @@ defmodule URP.Pool do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     store_opts = Keyword.take(opts, [:filter, :sink])
 
-    NimblePool.checkout!(
-      pool,
-      :checkout,
-      fn _from, conn ->
-        try do
-          doc = Bridge.load_document_stream!(conn, input_bytes)
-          result = Bridge.store_to_stream!(conn, doc, store_opts)
-          {wrap_result(result), :closed}
-        rescue
-          e -> {{:error, Exception.message(e)}, :closed}
-        end
-      end,
-      timeout
-    )
+    do_checkout(pool, timeout, fn conn ->
+      doc = Bridge.load_document_stream!(conn, input_bytes)
+      result = Bridge.store_to_stream!(conn, doc, store_opts)
+      {wrap_result(result), :closed}
+    end)
   end
 
   @doc """
@@ -109,20 +109,11 @@ defmodule URP.Pool do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     store_opts = Keyword.take(opts, [:filter, :sink])
 
-    NimblePool.checkout!(
-      pool,
-      :checkout,
-      fn _from, conn ->
-        try do
-          doc = Bridge.load_document_file_stream!(conn, input_path)
-          result = Bridge.store_to_stream!(conn, doc, store_opts)
-          {wrap_result(result), :closed}
-        rescue
-          e -> {{:error, Exception.message(e)}, :closed}
-        end
-      end,
-      timeout
-    )
+    do_checkout(pool, timeout, fn conn ->
+      doc = Bridge.load_document_file_stream!(conn, input_path)
+      result = Bridge.store_to_stream!(conn, doc, store_opts)
+      {wrap_result(result), :closed}
+    end)
   end
 
   @doc """
@@ -144,21 +135,41 @@ defmodule URP.Pool do
     in_url = "file://" <> Path.expand(input_path)
     out_url = "file://" <> Path.expand(output_path)
 
-    NimblePool.checkout!(
-      pool,
-      :checkout,
-      fn _from, conn ->
-        try do
-          doc = Bridge.load_document!(conn, in_url)
-          Bridge.store_to_url!(conn, doc, out_url, filter)
-          Bridge.close_document!(conn, doc)
-          {{:ok, output_path}, {:ok, conn}}
-        rescue
-          e -> {{:error, Exception.message(e)}, :closed}
+    do_checkout(pool, timeout, fn conn ->
+      doc = Bridge.load_document!(conn, in_url)
+      Bridge.store_to_url!(conn, doc, out_url, filter)
+      Bridge.close_document!(conn, doc)
+      {{:ok, output_path}, {:ok, conn}}
+    end)
+  end
+
+  defp do_checkout(pool, timeout, fun, attempt \\ 1) do
+    result =
+      NimblePool.checkout!(
+        pool,
+        :checkout,
+        fn _from, conn ->
+          try do
+            fun.(conn)
+          rescue
+            e -> {{:error, Exception.message(e)}, :closed}
+          end
+        end,
+        timeout
+      )
+
+    case result do
+      {:error, msg} when is_binary(msg) and attempt < @max_retries ->
+        if String.contains?(msg, @bridge_disposed) do
+          Process.sleep(@retry_interval_ms * attempt)
+          do_checkout(pool, timeout, fun, attempt + 1)
+        else
+          result
         end
-      end,
-      timeout
-    )
+
+      _ ->
+        result
+    end
   end
 
   ## NimblePool callbacks
@@ -172,8 +183,20 @@ defmodule URP.Pool do
   def init_worker(config) do
     host = Map.get(config, :host, "localhost")
     port = Map.get(config, :port, 2002)
-    conn = Bridge.open!(host, port)
+    conn = open_with_retry(host, port)
     {:ok, conn, config}
+  end
+
+  defp open_with_retry(host, port, attempt \\ 1) do
+    Bridge.open!(host, port)
+  rescue
+    e ->
+      if attempt < @max_retries do
+        Process.sleep(@retry_interval_ms * attempt)
+        open_with_retry(host, port, attempt + 1)
+      else
+        reraise e, __STACKTRACE__
+      end
   end
 
   @impl NimblePool
