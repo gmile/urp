@@ -42,12 +42,15 @@ defmodule URP.MixProject do
     [
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
-      {:nimble_ownership, "~> 1.0", optional: true},
+      {:nimble_ownership, "~> 1.0"},
       {:nimble_pool, "~> 1.1"}
     ]
   end
 
   def application do
-    [extra_applications: [:crypto]]
+    [
+      extra_applications: [:crypto],
+      mod: {URP.Application, []}
+    ]
   end
 end
