@@ -3,24 +3,18 @@ defmodule URP.Pool do
   Connection pool for concurrent document conversion.
 
   Manages a pool of `URP.Bridge` connections via `NimblePool`.
+  Pools are started and managed by `URP.Application` — you don't need to
+  add `URP.Pool` to your own supervision tree.
 
   The default pool size is **1** — appropriate when talking to a single soffice
   instance (soffice is single-threaded, so concurrent connections don't improve
   throughput). Increase `pool_size` when you have multiple soffice replicas
   behind a load balancer or round-robin DNS.
 
-  ## Setup
-
-      # In your application supervision tree
-      children = [
-        {URP.Pool, otp_app: :my_app}
-      ]
-
   ## Usage
 
-      {:ok, pdf} = URP.Pool.convert_stream(bytes)
-      {:ok, pdf} = URP.Pool.convert_stream(MyPool, bytes, filter: "calc_pdf_Export")
-      :ok = URP.Pool.convert_stream(bytes, sink: {:path, "/tmp/out.pdf"})
+      {:ok, pdf} = URP.Pool.convert_stream(URP.Pool.Default, bytes)
+      {:ok, pdf} = URP.Pool.convert_stream(URP.Pool.Default, bytes, filter: "calc_pdf_Export")
 
   ## Connection lifecycle
 
@@ -41,9 +35,7 @@ defmodule URP.Pool do
 
   ## Options
 
-    * `:name`      — process name (default `URP.Pool`)
-    * `:otp_app`   — application to read config from (reads
-      `Application.get_env(otp_app, URP.Pool, [])` at runtime)
+    * `:name`      — process name (required)
     * `:host`      — soffice hostname (default `"localhost"`)
     * `:port`      — soffice URP listener port (default `2002`)
     * `:pool_size` — number of connections (default `1`). Increase when
@@ -51,21 +43,11 @@ defmodule URP.Pool do
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    {otp_app, opts} = Keyword.pop(opts, :otp_app)
-
-    resolved =
-      if otp_app do
-        runtime = Application.get_env(otp_app, __MODULE__, [])
-        Keyword.merge(opts, runtime)
-      else
-        opts
-      end
-
-    {pool_size, resolved} = Keyword.pop(resolved, :pool_size, 1)
+    {name, opts} = Keyword.pop!(opts, :name)
+    {pool_size, opts} = Keyword.pop(opts, :pool_size, 1)
 
     NimblePool.start_link(
-      worker: {__MODULE__, Map.new(resolved)},
+      worker: {__MODULE__, Map.new(opts)},
       pool_size: pool_size,
       name: name
     )
@@ -74,7 +56,7 @@ defmodule URP.Pool do
   @doc false
   def child_spec(opts) do
     %{
-      id: Keyword.get(opts, :name, __MODULE__),
+      id: Keyword.fetch!(opts, :name),
       start: {__MODULE__, :start_link, [opts]}
     }
   end
