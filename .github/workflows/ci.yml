@@ -26,6 +26,7 @@ jobs:
           timeout 30 bash -c 'until nc -z localhost 2002; do sleep 1; done'
 
       - uses: erlef/setup-beam@v1
+        id: beam
         with:
           elixir-version: 1.19.5
           otp-version: 28.3
@@ -43,8 +44,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: priv/plts
-          key: ${{ runner.os }}-plt-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-plt-
+          key: ${{ runner.os }}-plt-otp${{ steps.beam.outputs.otp-version }}-${{ hashFiles('**/mix.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-plt-otp${{ steps.beam.outputs.otp-version }}-${{ hashFiles('**/mix.lock') }}-
+            ${{ runner.os }}-plt-otp${{ steps.beam.outputs.otp-version }}-
 
       - name: Install dependencies
         run: mix deps.get
