@@ -124,7 +124,7 @@ defmodule URP.Bridge do
 
   Common filters: `"writer_pdf_Export"`, `"calc_pdf_Export"`, `"impress_pdf_Export"`.
   """
-  @spec store_to_url!(t(), doc_oid(), String.t(), String.t()) :: binary()
+  @spec store_to_url!(t(), doc_oid(), String.t(), String.t()) :: nil
   def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter \\ "writer_pdf_Export") do
     qi!(
       conn,

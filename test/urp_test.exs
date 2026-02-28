@@ -139,7 +139,9 @@ defmodule URPTest do
   describe "error handling" do
     test "convert_file_stream with nonexistent file returns error" do
       assert {:error, _message} =
-               URP.convert_file_stream("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx")
+               URP.convert_file_stream(
+                 "/tmp/nonexistent_#{System.unique_integer([:positive])}.docx"
+               )
     end
 
     test "convert with nonexistent file returns error" do

@@ -64,13 +64,17 @@ defmodule URP.ProtocolTest do
 
       # LONGHEADER | REQUEST | MOREFLAGS | NEWTYPE | NEWOID | NEWTID
       flags = 0xC0 ||| 0x01 ||| 0x20 ||| 0x10 ||| 0x08
-      flags2 = 0x80  # MUSTREPLY
+      # MUSTREPLY
+      flags2 = 0x80
 
       header =
         <<flags, flags2, 3>> <>
-          <<22 ||| 0x80, 5::16>> <> P.enc_str(type_name) <>
-          P.enc_str(oid) <> <<7::16>> <>
-          P.enc_str(tid) <> <<1::16>> <>
+          <<22 ||| 0x80, 5::16>> <>
+          P.enc_str(type_name) <>
+          P.enc_str(oid) <>
+          <<7::16>> <>
+          P.enc_str(tid) <>
+          <<1::16>> <>
           body
 
       %{func_id: 3, body: ^body} = P.parse_request(header)
@@ -128,11 +132,14 @@ defmodule URP.ProtocolTest do
   describe "parse_exception/1" do
     test "extracts message from exception with new type" do
       message = "file not found"
+
       # Reply with EXCEPTION flag, Any body: new exception type (tc=19|0x80) + cache + name + message
       exc_type = "com.sun.star.io.IOException"
+
       payload =
         <<0x80 ||| 0x20>> <>
-          <<19 ||| 0x80, 0::16>> <> P.enc_str(exc_type) <>
+          <<19 ||| 0x80, 0::16>> <>
+          P.enc_str(exc_type) <>
           P.enc_str(message)
 
       assert P.parse_exception(payload) == message
@@ -196,8 +203,10 @@ defmodule URP.ProtocolTest do
     test "with new type" do
       header = P.request(0, type: {:new, "com.sun.star.uno.XInterface", 1})
       <<flags, 0, tc, cache::16, rest::binary>> = header
-      assert (flags &&& 0x20) != 0  # NEWTYPE
-      assert tc == (22 ||| 0x80)    # tc_interface | tc_new
+      # NEWTYPE
+      assert (flags &&& 0x20) != 0
+      # tc_interface | tc_new
+      assert tc == (22 ||| 0x80)
       assert cache == 1
       {"com.sun.star.uno.XInterface", ""} = P.dec_str(rest)
     end
