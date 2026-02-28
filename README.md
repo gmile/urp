@@ -26,8 +26,7 @@ Add `urp` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:urp, "~> 0.1"},
-    {:nimble_ownership, "~> 1.0", only: :test}  # optional — enables test stubs
+    {:urp, "~> 0.1"}
   ]
 end
 ```
@@ -55,50 +54,30 @@ docker run \
     --norestore
 ```
 
-## Setup
+## Usage
 
-1. Define a converter module:
+A default connection pool starts automatically, connecting to `localhost:2002`.
+No supervision tree setup needed.
 
-    ```elixir
-    # lib/my_app/converter.ex
-    defmodule MyApp.Converter do
-      use URP, otp_app: :my_app
-    end
-    ```
+```elixir
+# Stream bytes over the URP socket (no shared filesystem needed)
+{:ok, pdf_bytes} = URP.convert_stream(docx_bytes)
 
-2. Configure it:
+# Same, but reads from a local file without loading it all into memory
+{:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
 
-    ```elixir
-    # config/runtime.exs
-    config :my_app, MyApp.Converter,
-      host: "soffice",
-      port: 2002
-    ```
+# Via file:// URLs — requires soffice to see the same paths (e.g. shared volume)
+{:ok, output} = URP.convert("/shared/input.docx", "/shared/output.pdf")
+```
 
-3. Add it to your supervision tree:
+Configure the default pool in `config/runtime.exs`:
 
-    ```elixir
-    # lib/my_app/application.ex
-    children = [
-      MyApp.Converter
-    ]
-    ```
-
-This starts a connection pool supervised by your application. If the pool
-crashes, the supervisor restarts it.
-
-4. Convert documents:
-
-    ```elixir
-    # Stream bytes over the URP socket (no shared filesystem needed)
-    {:ok, pdf_bytes} = MyApp.Converter.convert_stream(docx_bytes)
-
-    # Same, but reads from a local file without loading it all into memory
-    {:ok, pdf_bytes} = MyApp.Converter.convert_file_stream("/path/to/input.docx")
-
-    # Via file:// URLs — requires soffice to see the same paths (e.g. shared volume)
-    {:ok, output} = MyApp.Converter.convert("/shared/input.docx", "/shared/output.pdf")
-    ```
+```elixir
+config :urp, :default,
+  host: "soffice",
+  port: 2002,
+  pool_size: 1
+```
 
 ### Sink (streaming output)
 
@@ -106,32 +85,32 @@ By default, converted bytes accumulate in memory. Use `:sink` to stream
 output as it arrives:
 
 ```elixir
-:ok = MyApp.Converter.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
-:ok = MyApp.Converter.convert_stream(docx_bytes, sink: fn chunk -> send_chunk(chunk) end)
+:ok = URP.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
+:ok = URP.convert_stream(docx_bytes, sink: fn chunk -> send_chunk(chunk) end)
 ```
 
-### Direct usage (scripts, IEx)
+### Named pools
 
-For one-off use without a supervision tree:
+For multiple soffice instances, configure named pools:
 
 ```elixir
-{:ok, pdf_bytes} = URP.convert_stream(docx_bytes, host: "localhost", port: 2002)
-{:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
-{:ok, output_path} = URP.convert("/shared/input.docx", "/shared/output.pdf")
+config :urp, :pools,
+  spreadsheets: [host: "soffice-2", port: 2002, pool_size: 3]
+```
+
+Named pools are started on first use:
+
+```elixir
+{:ok, pdf} = URP.convert_stream(xlsx_bytes, pool: :spreadsheets, filter: "calc_pdf_Export")
 ```
 
 ## Testing
 
-Stub your converter in tests — no running soffice needed:
+Stub conversions in tests — no running soffice needed:
 
 ```elixir
-# test/test_helper.exs
-URP.Test.start()
-ExUnit.start()
-
-# test/my_app/invoice_test.exs
 test "generates invoice PDF" do
-  URP.Test.stub(MyApp.Converter, fn _input, _opts ->
+  URP.Test.stub(fn _input, _opts ->
     {:ok, "%PDF-fake"}
   end)
 
@@ -170,8 +149,8 @@ Other UNO APIs (editing, formatting, macros, etc.) are not implemented.
 
 | Module | Role |
 |---|---|
-| `URP` | Public API + `use URP` macro for wrapper modules |
-| `URP.Pool` | NimblePool — connection pooling (used internally by `use URP`) |
+| `URP` | Public API — converts via pool with test stub support |
+| `URP.Pool` | NimblePool — connection pooling with DisposedException retry |
 | `URP.Test` | Test helpers — per-process stubs via NimbleOwnership |
 | `URP.Bridge` | Mid-level — UNO operations (handshake, load, store, close, streaming) |
 | `URP.Stream` | Bidirectional URP dispatch for XInputStream/XOutputStream |
