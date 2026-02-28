@@ -3,35 +3,25 @@ defmodule URP.Test do
   Test helpers for stubbing URP conversions without a running soffice.
 
   Uses `NimbleOwnership` for per-process stub isolation, so async tests work
-  without global state and without modifying production code.
+  without global state.
 
   ## Setup
 
-      # test/test_helper.exs
-      URP.Test.start()
-      ExUnit.start()
+  No setup needed — the ownership server starts with the `:urp` application.
 
   ## Usage
 
-  Define a wrapper module with `use URP`:
-
-      defmodule MyApp.Converter do
-        use URP, otp_app: :my_app
-      end
-
-  In tests, stub it:
-
       test "generates invoice PDF" do
-        URP.Test.stub(MyApp.Converter, fn _input, _opts ->
+        URP.Test.stub(fn _input, _opts ->
           {:ok, "%PDF-fake"}
         end)
 
-        # MyApp.Converter.convert_stream/2 returns the stub
         assert {:ok, _pdf} = MyApp.generate_invoice(order)
       end
 
-  The stub intercepts calls on wrapper modules defined with `use URP`.
-  Core modules (`URP`, `URP.Pool`) are never modified.
+  The stub intercepts all `URP.convert_stream/2`, `URP.convert_file_stream/2`,
+  and `URP.convert/3` calls made by the current process (or its children via
+  `$callers` propagation).
 
   ## Stub function
 
@@ -43,45 +33,38 @@ defmodule URP.Test do
 
   ## Process allowances
 
-  Stubs are scoped to the process that called `stub/2`. For processes
+  Stubs are scoped to the process that called `stub/1`. For processes
   started with `Task` or `GenServer`, `$callers` propagation handles
-  this automatically. For other processes, use `allow/3`:
+  this automatically. For other processes, use `allow/2`:
 
       test "async worker" do
-        URP.Test.stub(MyApp.Converter, fn _, _ -> {:ok, "pdf"} end)
+        URP.Test.stub(fn _, _ -> {:ok, "pdf"} end)
         worker = start_my_worker()
-        URP.Test.allow(MyApp.Converter, self(), worker)
+        URP.Test.allow(self(), worker)
       end
   """
 
   @ownership __MODULE__.Ownership
 
-  @doc """
-  Start the test ownership server.
-
-  Call this in `test/test_helper.exs` before `ExUnit.start()`.
-  """
-  @spec start() :: {:ok, pid()} | {:error, term()}
-  def start do
-    NimbleOwnership.start_link(name: @ownership)
-  end
+  # The key used in NimbleOwnership for global stubs
+  @stub_key :urp_stub
 
   @doc """
-  Register a stub for the given module in the current test process.
+  Register a stub for URP conversions in the current test process.
 
   ## Examples
 
-      URP.Test.stub(MyApp.Converter, fn _input, _opts -> {:ok, "fake PDF"} end)
+      URP.Test.stub(fn _input, _opts -> {:ok, "fake PDF"} end)
 
-      URP.Test.stub(MyApp.Converter, fn input, opts ->
+      URP.Test.stub(fn input, opts ->
         assert byte_size(input) > 0
         if opts[:sink], do: :ok, else: {:ok, "converted"}
       end)
   """
-  @spec stub(module(), (binary() | Path.t(), keyword() -> term())) :: :ok
-  def stub(module, fun) when is_atom(module) and is_function(fun, 2) do
+  @spec stub((binary() | Path.t(), keyword() -> term())) :: :ok
+  def stub(fun) when is_function(fun, 2) do
     {:ok, _} =
-      NimbleOwnership.get_and_update(@ownership, self(), module, fn _ ->
+      NimbleOwnership.get_and_update(@ownership, self(), @stub_key, fn _ ->
         {:ok, fun}
       end)
 
@@ -89,23 +72,23 @@ defmodule URP.Test do
   end
 
   @doc """
-  Allow `allowed_pid` to use the stub registered by `owner_pid` for `module`.
+  Allow `allowed_pid` to use the stub registered by `owner_pid`.
 
   Usually not needed — `$callers` propagation handles `Task` and `GenServer`
   automatically. Use this for processes that don't propagate `$callers`.
   """
-  @spec allow(module(), pid(), pid() | (-> pid() | [pid()])) :: :ok
-  def allow(module, owner_pid \\ self(), allowed_pid) when is_atom(module) do
-    :ok = NimbleOwnership.allow(@ownership, owner_pid, allowed_pid, module)
+  @spec allow(pid(), pid() | (-> pid() | [pid()])) :: :ok
+  def allow(owner_pid \\ self(), allowed_pid) do
+    :ok = NimbleOwnership.allow(@ownership, owner_pid, allowed_pid, @stub_key)
   end
 
   @doc false
-  @spec __fetch_stub__(module()) :: {:ok, function()} | :error
-  def __fetch_stub__(module) do
+  @spec __fetch_stub__() :: {:ok, function()} | :error
+  def __fetch_stub__ do
     with pid when is_pid(pid) <- GenServer.whereis(@ownership),
          callers = [self() | Process.get(:"$callers", [])],
-         {:ok, owner} <- NimbleOwnership.fetch_owner(pid, callers, module),
-         %{^module => fun} when is_function(fun, 2) <- NimbleOwnership.get_owned(pid, owner) do
+         {:ok, owner} <- NimbleOwnership.fetch_owner(pid, callers, @stub_key),
+         %{@stub_key => fun} when is_function(fun, 2) <- NimbleOwnership.get_owned(pid, owner) do
       {:ok, fun}
     else
       _ -> :error
