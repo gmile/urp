@@ -51,7 +51,7 @@ defmodule URP.Pool do
       running multiple soffice replicas behind a load balancer.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts \\ []) do
+  def start_link(opts) do
     {name, opts} = Keyword.pop!(opts, :name)
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 1)
 
@@ -81,7 +81,7 @@ defmodule URP.Pool do
   """
   @spec convert_stream(NimblePool.pool(), binary(), keyword()) ::
           {:ok, binary()} | :ok | {:error, String.t()}
-  def convert_stream(pool \\ __MODULE__, input_bytes, opts \\ [])
+  def convert_stream(pool, input_bytes, opts \\ [])
       when is_binary(input_bytes) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     store_opts = Keyword.take(opts, [:filter, :sink])
@@ -104,7 +104,7 @@ defmodule URP.Pool do
   """
   @spec convert_file_stream(NimblePool.pool(), Path.t(), keyword()) ::
           {:ok, binary()} | :ok | {:error, String.t()}
-  def convert_file_stream(pool \\ __MODULE__, input_path, opts \\ [])
+  def convert_file_stream(pool, input_path, opts \\ [])
       when is_binary(input_path) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     store_opts = Keyword.take(opts, [:filter, :sink])
@@ -128,7 +128,7 @@ defmodule URP.Pool do
   """
   @spec convert(NimblePool.pool(), Path.t(), Path.t() | nil, keyword()) ::
           {:ok, Path.t()} | {:error, String.t()}
-  def convert(pool \\ __MODULE__, input_path, output_path \\ nil, opts \\ []) do
+  def convert(pool, input_path, output_path \\ nil, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     output_path = output_path || Path.rootname(input_path) <> ".pdf"
     filter = Keyword.get(opts, :filter, "writer_pdf_Export")
