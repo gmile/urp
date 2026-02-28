@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- **Breaking:** remove `use URP, otp_app: :my_app` macro — call `URP.convert_stream/2`, `URP.convert_file_stream/2`, `URP.convert/3` directly
+- **Breaking:** `URP.Test.stub/1` replaces `URP.Test.stub/2` — stubs are global, no module name needed
+- **Breaking:** remove `URP.Test.start/0` — ownership server starts automatically
+- Add `URP.Application` — default pool, DynamicSupervisor, and ownership server start automatically
+- Add named pools via `config :urp, :pools` — started on first use via DynamicSupervisor
+- Handle soffice `DisposedException` with reactive retry on reconnect (matches C++ callers' approach)
+- Make `nimble_ownership` a required dependency (no longer optional/test-only)
+
 ## [v0.3.1] - 2026-02-26
 
 - Exclude `Mix.Tasks.Bump` from hex package to avoid module conflicts
