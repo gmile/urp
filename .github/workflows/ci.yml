@@ -20,9 +20,8 @@ jobs:
             -p 2002:2002 \
             -v /tmp:/tmp \
             libreofficedocker/alpine:3.23 \
-            soffice --headless --invisible --nologo \
-              --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;" \
-              --norestore
+            soffice --headless --norestore \
+              --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
           timeout 30 bash -c 'until nc -z localhost 2002; do sleep 1; done'
 
       - uses: erlef/setup-beam@v1

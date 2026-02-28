@@ -36,9 +36,8 @@ end
 A running `soffice` process with a URP socket listener:
 
 ```sh
-soffice --headless --invisible --nologo \
-  --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;" \
-  --norestore
+soffice --headless --norestore \
+  --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
 ```
 
 Or via Docker:
@@ -49,9 +48,8 @@ docker run \
   --name soffice \
   --publish 2002:2002 \
   libreofficedocker/alpine:3.23 \
-  soffice --headless --invisible --nologo \
-    --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;" \
-    --norestore
+  soffice --headless --norestore \
+    --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
 ```
 
 ## Usage
