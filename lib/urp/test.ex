@@ -19,16 +19,20 @@ defmodule URP.Test do
         assert {:ok, _pdf} = MyApp.generate_invoice(order)
       end
 
-  The stub intercepts all `URP.convert_stream/2`, `URP.convert_file_stream/2`,
-  and `URP.convert/3` calls made by the current process (or its children via
-  `$callers` propagation).
+  The stub intercepts all `URP.convert/2` calls made by the current process
+  (or its children via `$callers` propagation).
 
   ## Stub function
 
-  The stub receives `(input, opts)` and must return the expected shape:
+  The stub receives `(input, opts)` where `input` is whatever was passed to
+  `URP.convert/2` (a path, `{:binary, bytes}`, or an enumerable) and `opts`
+  is the keyword list including `:output`, `:filter`, etc.
 
-    * `{:ok, binary}` — for in-memory results
-    * `:ok` — when a `:sink` is provided
+  Return the expected shape for the given `:output` mode:
+
+    * `{:ok, path}` — default (temp file) or `output: path`
+    * `{:ok, binary}` — when `output: :binary`
+    * `:ok` — when `output: fun/1`
     * `{:error, message}` — for errors
 
   ## Process allowances
@@ -57,11 +61,11 @@ defmodule URP.Test do
       URP.Test.stub(fn _input, _opts -> {:ok, "fake PDF"} end)
 
       URP.Test.stub(fn input, opts ->
-        assert byte_size(input) > 0
-        if opts[:sink], do: :ok, else: {:ok, "converted"}
+        assert is_binary(input)
+        if opts[:output] == :binary, do: {:ok, "converted"}, else: {:ok, "/tmp/out.pdf"}
       end)
   """
-  @spec stub((binary() | Path.t(), keyword() -> term())) :: :ok
+  @spec stub((term(), keyword() -> term())) :: :ok
   def stub(fun) when is_function(fun, 2) do
     {:ok, _} =
       NimbleOwnership.get_and_update(@ownership, self(), @stub_key, fn _ ->
