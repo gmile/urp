@@ -69,6 +69,21 @@ defmodule URP.Pool do
   end
 
   @doc """
+  Query the soffice version string.
+
+  Checks out a connection, calls `Bridge.version!/1`, and returns it
+  to the pool (the connection is not consumed).
+  """
+  @spec version(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  def version(pool, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    do_checkout(pool, timeout, fn conn ->
+      {{:ok, Bridge.version!(conn)}, {:ok, conn}}
+    end)
+  end
+
+  @doc """
   Convert a document. Dispatches loading based on input type.
 
   Input types:

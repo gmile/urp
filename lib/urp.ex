@@ -45,6 +45,23 @@ defmodule URP do
           | {:timeout, non_neg_integer()}
 
   @doc """
+  Query the soffice version string over URP.
+
+  Returns the raw version string (e.g. `"25.8.1.1"`). Callers can use
+  `Version.parse/1` if needed.
+
+  ## Options
+
+    * `:pool`    — named pool to use (default: `URP.Pool.Default`)
+    * `:timeout` — checkout timeout in ms (default `120_000`)
+  """
+  @spec version(keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  def version(opts \\ []) do
+    {pool, opts} = resolve_pool(opts)
+    URP.Pool.version(pool, opts)
+  end
+
+  @doc """
   Convert a document via LibreOffice.
 
   ## Input types

@@ -105,7 +105,8 @@ defmodule URPTest do
       assert <<"%PDF-" <> _rest>> = pdf
     end
 
-    # Markdown export requires LibreOffice 26.2+, Alpine edge still ships 25.8
+    # Markdown export requires LibreOffice 26.2+ (confirmed working on macOS 26.2.1.2).
+    # Alpine edge still ships 25.8 — unskip once Docker image catches up.
     @tag :skip
     test "docx to markdown" do
       assert {:ok, md} =
@@ -135,6 +136,19 @@ defmodule URPTest do
                  output: :binary
                )
 
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert <<"%PDF-" <> _rest>> = pdf
+    end
+  end
+
+  describe "version/0" do
+    test "returns a version string" do
+      assert {:ok, version} = URP.version()
+      assert version =~ ~r/^\d+\.\d+\.\d+/
+    end
+
+    test "pool stays usable after version query" do
+      assert {:ok, _version} = URP.version()
       assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
       assert <<"%PDF-" <> _rest>> = pdf
     end
