@@ -127,12 +127,6 @@ defmodule URPTest do
                )
     end
 
-    test "missing :filter raises ArgumentError" do
-      assert_raise ArgumentError, ~r/requires the :filter option/, fn ->
-        URP.convert({:binary, "bytes"}, output: :binary)
-      end
-    end
-
     test "pool stays alive after error" do
       assert {:error, _} =
                URP.convert(
@@ -158,25 +152,6 @@ defmodule URPTest do
 
   describe "URP.Test stubs" do
     @describetag integration: false
-
-    test "stub bypasses real conversion" do
-      URP.Test.stub(fn input, _opts ->
-        assert input == "/tmp/test.docx"
-        {:ok, "/tmp/test.pdf"}
-      end)
-
-      assert {:ok, "/tmp/test.pdf"} =
-               URP.convert("/tmp/test.docx", filter: @pdf, output: "/tmp/test.pdf")
-    end
-
-    test "stub with {:binary, bytes} input" do
-      URP.Test.stub(fn {:binary, bytes}, _opts ->
-        assert bytes == "hello"
-        {:ok, "fake PDF"}
-      end)
-
-      assert {:ok, "fake PDF"} = URP.convert({:binary, "hello"}, filter: @pdf, output: :binary)
-    end
 
     test "stub receives opts" do
       URP.Test.stub(fn _input, opts ->
@@ -334,4 +309,10 @@ defmodule URPTest do
 
     zip_binary
   end
+end
+
+defmodule URP.DocTest do
+  use ExUnit.Case, async: true
+  doctest URP
+  doctest URP.Test
 end

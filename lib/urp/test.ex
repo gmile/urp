@@ -58,12 +58,15 @@ defmodule URP.Test do
 
   ## Examples
 
-      URP.Test.stub(fn _input, _opts -> {:ok, "fake PDF"} end)
+      iex> URP.Test.stub(fn _input, _opts -> {:ok, "fake PDF"} end)
+      :ok
+      iex> URP.convert({:binary, "hello"}, filter: "writer_pdf_Export", output: :binary)
+      {:ok, "fake PDF"}
 
-      URP.Test.stub(fn input, opts ->
-        assert is_binary(input)
-        if opts[:output] == :binary, do: {:ok, "converted"}, else: {:ok, "/tmp/out.pdf"}
-      end)
+      iex> URP.Test.stub(fn {:binary, bytes}, _opts -> {:ok, byte_size(bytes)} end)
+      :ok
+      iex> URP.convert({:binary, "hello"}, filter: "writer_pdf_Export", output: :binary)
+      {:ok, 5}
   """
   @spec stub((term(), keyword() -> term())) :: :ok
   def stub(fun) when is_function(fun, 2) do

@@ -16,35 +16,7 @@ defmodule URP do
         port: 2002,
         pool_size: 1
 
-  ## Usage
-
-      # File path — convert to PDF
-      {:ok, pdf_path} = URP.convert("/tmp/in.docx", filter: "writer_pdf_Export")
-      {:ok, "/tmp/out.pdf"} = URP.convert("/tmp/in.docx", filter: "writer_pdf_Export", output: "/tmp/out.pdf")
-      {:ok, pdf_bytes} = URP.convert("/tmp/in.docx", filter: "writer_pdf_Export", output: :binary)
-
-      # Raw bytes
-      {:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, filter: "calc_pdf_Export", output: :binary)
-
-      # Enumerable (e.g. File.stream!, S3 download stream)
-      {:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
-
-      # Convert to Markdown
-      {:ok, md_path} = URP.convert("/tmp/in.docx", filter: "Markdown")
-
-  ## Options
-
-    * `:filter`  — export filter name (**required**). Common filters:
-      * `"writer_pdf_Export"` — Writer documents to PDF
-      * `"calc_pdf_Export"` — Calc spreadsheets to PDF
-      * `"impress_pdf_Export"` — Impress presentations to PDF
-      * `"Markdown"` — Writer documents to Markdown
-      * `"HTML (StarWriter)"` — Writer documents to HTML
-      * `"Office Open XML Text"` — to DOCX
-      * See [full list](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
-    * `:output`  — where to write: path string, `:binary`, or `fun/1` (default: temp file)
-    * `:pool`    — named pool to use (default: `URP.Pool.Default`)
-    * `:timeout` — checkout timeout in ms (default `120_000`)
+  See `convert/2` for usage examples and options.
 
   ## Named pools
 
@@ -91,6 +63,34 @@ defmodule URP do
       * not set — write to temp file, returns `{:ok, tmp_path}`
     * `:pool`    — named pool to use (default: `URP.Pool.Default`)
     * `:timeout` — checkout timeout in ms (default `120_000`)
+
+  ## Examples
+
+  File path input with various output modes:
+
+      {:ok, pdf_path} = URP.convert("/tmp/report.docx", filter: "writer_pdf_Export")
+      {:ok, "/tmp/out.pdf"} = URP.convert("/tmp/report.docx", filter: "writer_pdf_Export", output: "/tmp/out.pdf")
+      {:ok, pdf_bytes} = URP.convert("/tmp/report.docx", filter: "writer_pdf_Export", output: :binary)
+
+  Raw bytes:
+
+      {:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export", output: :binary)
+
+  Enumerable (e.g. streaming a large file):
+
+      {:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
+
+  The `:filter` option is required:
+
+      iex> URP.convert({:binary, "bytes"}, output: :binary)
+      ** (ArgumentError) URP.convert/2 requires the :filter option. Common filters: "writer_pdf_Export", "calc_pdf_Export", "impress_pdf_Export", "Markdown"
+
+  With a test stub (see `URP.Test`):
+
+      iex> URP.Test.stub(fn _input, _opts -> {:ok, "/tmp/fake.pdf"} end)
+      :ok
+      iex> URP.convert("/tmp/test.docx", filter: "writer_pdf_Export")
+      {:ok, "/tmp/fake.pdf"}
   """
   @spec convert(binary() | {:binary, binary()} | Enumerable.t(), [opt()]) ::
           {:ok, Path.t()} | {:ok, binary()} | :ok | {:error, String.t()}
