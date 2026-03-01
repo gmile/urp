@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.5.0] - 2026-03-01
 
 - **Breaking:** unified API — single `URP.convert/2` replaces `convert_stream/2`, `convert_file_stream/2`, and `convert/3`
 - **Breaking:** remove `URP.convert_stream/2`, `URP.convert_file_stream/2`, `URP.convert/3`, `URP.Pool.convert_stream/3`, `URP.Pool.convert_file_stream/3`, `URP.Pool.convert_url/4`
