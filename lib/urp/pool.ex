@@ -57,7 +57,8 @@ defmodule URP.Pool do
     do_checkout(pool, timeout, fn conn ->
       doc = load_input!(conn, input)
       result = Bridge.store_to_stream!(conn, doc, store_opts)
-      {wrap_result(result), :closed}
+      Bridge.close_document!(conn, doc)
+      {wrap_result(result), {:ok, conn}}
     end)
   end
 
