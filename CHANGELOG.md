@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+- **Breaking:** unified API — single `URP.convert/2` replaces `convert_stream/2`, `convert_file_stream/2`, and `convert/3`
+- **Breaking:** remove `URP.convert_stream/2`, `URP.convert_file_stream/2`, `URP.convert/3`, `URP.Pool.convert_stream/3`, `URP.Pool.convert_file_stream/3`, `URP.Pool.convert_url/4`
+- **Breaking:** output destination is now `:output` option (path, `:binary`, or `fun/1`) instead of `:sink`
+- **Breaking:** default output writes to temp file (returns `{:ok, path}`) instead of accumulating bytes in memory
+- Add enumerable input support — pass any `Enumerable` (e.g. `File.stream!/2`, S3 download streams) to `URP.convert/2`
+- Add `URP.Stream.start_enum_reader/1` and `URP.Bridge.load_document_enum_stream!/2` for lazy enumerable streaming
+
 ## [v0.4.0] - 2026-02-28
 
 - **Breaking:** remove `use URP, otp_app: :my_app` macro — call `URP.convert_stream/2`, `URP.convert_file_stream/2`, `URP.convert/3` directly

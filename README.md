@@ -26,7 +26,7 @@ Add `urp` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:urp, "~> 0.1"}
+    {:urp, "~> 0.5"}
   ]
 end
 ```
@@ -58,14 +58,20 @@ A default connection pool starts automatically, connecting to `localhost:2002`.
 No supervision tree setup needed.
 
 ```elixir
-# Stream bytes over the URP socket (no shared filesystem needed)
-{:ok, pdf_bytes} = URP.convert_stream(docx_bytes)
+# File path — writes PDF to temp file by default
+{:ok, pdf_path} = URP.convert("/path/to/input.docx")
 
-# Same, but reads from a local file without loading it all into memory
-{:ok, pdf_bytes} = URP.convert_file_stream("/path/to/input.docx")
+# Explicit output path
+{:ok, "/tmp/out.pdf"} = URP.convert("/path/to/input.docx", output: "/tmp/out.pdf")
 
-# Via file:// URLs — requires soffice to see the same paths (e.g. shared volume)
-{:ok, output} = URP.convert("/shared/input.docx", "/shared/output.pdf")
+# Return bytes in memory
+{:ok, pdf_bytes} = URP.convert("/path/to/input.docx", output: :binary)
+
+# Raw bytes input
+{:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, output: :binary)
+
+# Enumerable input (e.g. File.stream!, S3 download stream)
+{:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536))
 ```
 
 Configure the default pool in `config/runtime.exs`:
@@ -77,14 +83,22 @@ config :urp, :default,
   pool_size: 1
 ```
 
-### Sink (streaming output)
+### Output modes
 
-By default, converted bytes accumulate in memory. Use `:sink` to stream
-output as it arrives:
+The `:output` option controls where converted bytes go:
 
 ```elixir
-:ok = URP.convert_stream(docx_bytes, sink: {:path, "/tmp/output.pdf"})
-:ok = URP.convert_stream(docx_bytes, sink: fn chunk -> send_chunk(chunk) end)
+# Default — write to temp file, return path
+{:ok, tmp_path} = URP.convert(input)
+
+# Write to specific path
+{:ok, path} = URP.convert(input, output: "/tmp/output.pdf")
+
+# Return bytes in memory
+{:ok, pdf_bytes} = URP.convert(input, output: :binary)
+
+# Stream chunks to a callback
+:ok = URP.convert(input, output: fn chunk -> send_chunk(chunk) end)
 ```
 
 ### Named pools
@@ -99,7 +113,7 @@ config :urp, :pools,
 Named pools are started on first use:
 
 ```elixir
-{:ok, pdf} = URP.convert_stream(xlsx_bytes, pool: :spreadsheets, filter: "calc_pdf_Export")
+{:ok, pdf} = URP.convert({:binary, xlsx_bytes}, pool: :spreadsheets, filter: "calc_pdf_Export")
 ```
 
 ## Testing
@@ -109,7 +123,7 @@ Stub conversions in tests — no running soffice needed:
 ```elixir
 test "generates invoice PDF" do
   URP.Test.stub(fn _input, _opts ->
-    {:ok, "%PDF-fake"}
+    {:ok, "/tmp/fake.pdf"}
   end)
 
   assert {:ok, _pdf} = MyApp.generate_invoice(order)

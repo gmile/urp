@@ -13,15 +13,13 @@ defmodule URP.Pool do
 
   ## Usage
 
-      {:ok, pdf} = URP.Pool.convert_stream(URP.Pool.Default, bytes)
-      {:ok, pdf} = URP.Pool.convert_stream(URP.Pool.Default, bytes, filter: "calc_pdf_Export")
+      {:ok, pdf} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes})
+      {:ok, pdf} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes}, filter: "calc_pdf_Export")
 
   ## Connection lifecycle
 
-  URL-based conversions (`convert/4`) reuse connections across calls.
-  Streaming conversions (`convert_stream/3`, `convert_file_stream/3`) consume
-  the connection — soffice closes the TCP socket after streaming store — so the
-  pool transparently replaces it with a fresh one.
+  Streaming conversions consume the connection — soffice closes the TCP socket
+  after streaming store — so the pool transparently replaces it with a fresh one.
   """
 
   @behaviour NimblePool
@@ -71,7 +69,13 @@ defmodule URP.Pool do
   end
 
   @doc """
-  Convert document bytes to PDF via streaming.
+  Convert a document to PDF. Dispatches loading based on input type.
+
+  Input types:
+
+    * `binary()` path — loads via `Bridge.load_document_file_stream!/2`
+    * `{:binary, bytes}` — loads via `Bridge.load_document_stream!/2`
+    * enumerable — loads via `Bridge.load_document_enum_stream!/2`
 
   ## Options
 
@@ -79,69 +83,27 @@ defmodule URP.Pool do
     * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
     * `:timeout` — checkout timeout in ms (default `#{@default_timeout}`)
   """
-  @spec convert_stream(NimblePool.pool(), binary(), keyword()) ::
+  @spec convert(NimblePool.pool(), binary() | {:binary, binary()} | Enumerable.t(), keyword()) ::
           {:ok, binary()} | :ok | {:error, String.t()}
-  def convert_stream(pool, input_bytes, opts \\ [])
-      when is_binary(input_bytes) do
+  def convert(pool, input, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     store_opts = Keyword.take(opts, [:filter, :sink])
 
     do_checkout(pool, timeout, fn conn ->
-      doc = Bridge.load_document_stream!(conn, input_bytes)
+      doc = load_input!(conn, input)
       result = Bridge.store_to_stream!(conn, doc, store_opts)
       {wrap_result(result), :closed}
     end)
   end
 
-  @doc """
-  Convert a local file to PDF via file-backed streaming.
+  defp load_input!(conn, path) when is_binary(path),
+    do: Bridge.load_document_file_stream!(conn, path)
 
-  ## Options
+  defp load_input!(conn, {:binary, bytes}) when is_binary(bytes),
+    do: Bridge.load_document_stream!(conn, bytes)
 
-    * `:filter`  — export filter name (default `"writer_pdf_Export"`)
-    * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
-    * `:timeout` — checkout timeout in ms (default `#{@default_timeout}`)
-  """
-  @spec convert_file_stream(NimblePool.pool(), Path.t(), keyword()) ::
-          {:ok, binary()} | :ok | {:error, String.t()}
-  def convert_file_stream(pool, input_path, opts \\ [])
-      when is_binary(input_path) do
-    {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
-    store_opts = Keyword.take(opts, [:filter, :sink])
-
-    do_checkout(pool, timeout, fn conn ->
-      doc = Bridge.load_document_file_stream!(conn, input_path)
-      result = Bridge.store_to_stream!(conn, doc, store_opts)
-      {wrap_result(result), :closed}
-    end)
-  end
-
-  @doc """
-  Convert a file to PDF via file:// URLs (requires shared filesystem).
-
-  The connection is reused after this call.
-
-  ## Options
-
-    * `:filter`  — export filter name (default `"writer_pdf_Export"`)
-    * `:timeout` — checkout timeout in ms (default `#{@default_timeout}`)
-  """
-  @spec convert(NimblePool.pool(), Path.t(), Path.t() | nil, keyword()) ::
-          {:ok, Path.t()} | {:error, String.t()}
-  def convert(pool, input_path, output_path \\ nil, opts \\ []) do
-    {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
-    output_path = output_path || Path.rootname(input_path) <> ".pdf"
-    filter = Keyword.get(opts, :filter, "writer_pdf_Export")
-    in_url = "file://" <> Path.expand(input_path)
-    out_url = "file://" <> Path.expand(output_path)
-
-    do_checkout(pool, timeout, fn conn ->
-      doc = Bridge.load_document!(conn, in_url)
-      Bridge.store_to_url!(conn, doc, out_url, filter)
-      Bridge.close_document!(conn, doc)
-      {{:ok, output_path}, {:ok, conn}}
-    end)
-  end
+  defp load_input!(conn, enumerable),
+    do: Bridge.load_document_enum_stream!(conn, enumerable)
 
   defp do_checkout(pool, timeout, fun, attempt \\ 1) do
     result =

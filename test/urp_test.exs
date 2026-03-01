@@ -7,189 +7,147 @@ defmodule URPTest do
   # Use /tmp (not System.tmp_dir!) so paths match inside the soffice Docker container
   @test_dir "/tmp"
 
-  test "converts docx to pdf" do
-    id = System.unique_integer([:positive])
-    input = Path.join(@test_dir, "urp_test_#{id}.docx")
-    output = Path.join(@test_dir, "urp_test_#{id}.pdf")
-    create_test_docx!(input)
-
-    try do
-      assert {:ok, ^output} = URP.convert(input, output)
-      assert File.exists?(output)
-      assert <<"%PDF-" <> _rest>> = File.read!(output)
-    after
-      File.rm(input)
-      File.rm(output)
-    end
-  end
-
-  test "converts txt to pdf" do
-    id = System.unique_integer([:positive])
-    input = Path.join(@test_dir, "urp_test_#{id}.txt")
-    output = Path.join(@test_dir, "urp_test_#{id}.pdf")
-
-    File.write!(input, "Hello from URP test")
-
-    try do
-      assert {:ok, ^output} = URP.convert(input, output)
-      assert File.exists?(output)
-      assert <<"%PDF-" <> _rest>> = File.read!(output)
-    after
-      File.rm(input)
-      File.rm(output)
-    end
-  end
-
-  test "infers output path from input" do
-    id = System.unique_integer([:positive])
-    input = Path.join(@test_dir, "urp_test_#{id}.txt")
-    expected_output = Path.join(@test_dir, "urp_test_#{id}.pdf")
-
-    File.write!(input, "Hello from URP test")
-
-    try do
-      assert {:ok, ^expected_output} = URP.convert(input)
-      assert File.exists?(expected_output)
-    after
-      File.rm(input)
-      File.rm(expected_output)
-    end
-  end
-
-  test "converts docx to pdf via streaming" do
-    docx_bytes = build_test_docx()
-    assert {:ok, pdf} = URP.convert_stream(docx_bytes)
-    assert <<"%PDF-" <> _rest>> = pdf
-  end
-
-  test "converts txt to pdf via streaming" do
-    assert {:ok, pdf} = URP.convert_stream("Hello from streaming test")
-    assert <<"%PDF-" <> _rest>> = pdf
-  end
-
-  describe "sink" do
-    test "sink: {:path, ...} writes to file" do
-      id = System.unique_integer([:positive])
-      output = Path.join(@test_dir, "urp_sink_#{id}.pdf")
+  describe "file path input" do
+    test "default output (temp file)" do
+      input = write_test_file!("txt", "Hello from URP test")
 
       try do
-        assert :ok = URP.convert_stream(build_test_docx(), sink: {:path, output})
+        assert {:ok, tmp_path} = URP.convert(input)
+        assert String.ends_with?(tmp_path, ".pdf")
+        assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
+      after
+        File.rm(input)
+      end
+    end
+
+    test "output: explicit path" do
+      input = write_test_file!("txt", "Hello from URP test")
+      output = tmp_path("pdf")
+
+      try do
+        assert {:ok, ^output} = URP.convert(input, output: output)
+        assert File.exists?(output)
         assert <<"%PDF-" <> _rest>> = File.read!(output)
       after
+        File.rm(input)
         File.rm(output)
       end
     end
 
-    test "sink: fun/1 receives chunks" do
-      test_pid = self()
-
-      :ok =
-        URP.convert_stream(build_test_docx(),
-          sink: fn chunk -> send(test_pid, {:chunk, chunk}) end
-        )
-
-      chunks = collect_chunks()
-      pdf = IO.iodata_to_binary(chunks)
-      assert <<"%PDF-" <> _rest>> = pdf
-    end
-  end
-
-  describe "pool" do
-    test "converts via default pool" do
-      docx_bytes = build_test_docx()
-      assert {:ok, pdf} = URP.convert_stream(docx_bytes)
-      assert <<"%PDF-" <> _rest>> = pdf
-    end
-
-    test "converts file-backed via default pool" do
-      id = System.unique_integer([:positive])
-      input = Path.join(@test_dir, "urp_test_#{id}.docx")
-      create_test_docx!(input)
+    test "output: :binary" do
+      input = write_test_file!("docx", build_test_docx())
 
       try do
-        assert {:ok, pdf} = URP.convert_file_stream(input)
+        assert {:ok, pdf} = URP.convert(input, output: :binary)
         assert <<"%PDF-" <> _rest>> = pdf
       after
         File.rm(input)
       end
     end
 
-    test "handles consecutive streaming conversions" do
-      docx_bytes = build_test_docx()
-      assert {:ok, pdf1} = URP.convert_stream(docx_bytes)
-      assert {:ok, pdf2} = URP.convert_stream(docx_bytes)
+    test "output: fun/1 callback" do
+      input = write_test_file!("docx", build_test_docx())
+      test_pid = self()
+
+      try do
+        assert :ok = URP.convert(input, output: fn chunk -> send(test_pid, {:chunk, chunk}) end)
+        chunks = collect_chunks()
+        pdf = IO.iodata_to_binary(chunks)
+        assert <<"%PDF-" <> _rest>> = pdf
+      after
+        File.rm(input)
+      end
+    end
+  end
+
+  describe "{:binary, bytes} input" do
+    test "output: :binary" do
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, output: :binary)
+      assert <<"%PDF-" <> _rest>> = pdf
+    end
+
+    test "default output (temp file)" do
+      assert {:ok, tmp_path} = URP.convert({:binary, build_test_docx()})
+      assert String.ends_with?(tmp_path, ".pdf")
+      assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
+    end
+  end
+
+  describe "enumerable input" do
+    test "default output (temp file)" do
+      chunks = to_chunks(build_test_docx(), 512)
+      assert {:ok, tmp_path} = URP.convert(chunks)
+      assert String.ends_with?(tmp_path, ".pdf")
+      assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
+    end
+
+    test "output: :binary" do
+      chunks = to_chunks(build_test_docx(), 512)
+      assert {:ok, pdf} = URP.convert(chunks, output: :binary)
+      assert <<"%PDF-" <> _rest>> = pdf
+    end
+  end
+
+  describe "error handling" do
+    test "nonexistent file returns error" do
+      assert {:error, _message} =
+               URP.convert("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx",
+                 output: :binary
+               )
+    end
+
+    test "pool stays alive after error" do
+      assert {:error, _} =
+               URP.convert(
+                 "/tmp/nonexistent_#{System.unique_integer([:positive])}.docx",
+                 output: :binary
+               )
+
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, output: :binary)
+      assert <<"%PDF-" <> _rest>> = pdf
+    end
+  end
+
+  describe "consecutive conversions" do
+    test "multiple conversions reuse pool" do
+      docx = build_test_docx()
+      assert {:ok, pdf1} = URP.convert({:binary, docx}, output: :binary)
+      assert {:ok, pdf2} = URP.convert({:binary, docx}, output: :binary)
       assert <<"%PDF-" <> _rest>> = pdf1
       assert <<"%PDF-" <> _rest>> = pdf2
     end
   end
 
-  test "converts docx file to pdf via file-backed streaming" do
-    id = System.unique_integer([:positive])
-    input = Path.join(@test_dir, "urp_test_#{id}.docx")
-    create_test_docx!(input)
+  describe "URP.Test stubs" do
+    @describetag integration: false
 
-    try do
-      assert {:ok, pdf} = URP.convert_file_stream(input)
-      assert <<"%PDF-" <> _rest>> = pdf
-    after
-      File.rm(input)
-    end
-  end
-
-  describe "error handling" do
-    test "convert_file_stream with nonexistent file returns error" do
-      assert {:error, _message} =
-               URP.convert_file_stream(
-                 "/tmp/nonexistent_#{System.unique_integer([:positive])}.docx"
-               )
-    end
-
-    test "convert with nonexistent file returns error" do
-      id = System.unique_integer([:positive])
-
-      assert {:error, _message} =
-               URP.convert("/tmp/nonexistent_#{id}.docx", "/tmp/nonexistent_#{id}.pdf")
-    end
-
-    test "pool stays alive after error" do
-      id = System.unique_integer([:positive])
-
-      assert {:error, _} =
-               URP.convert_file_stream("/tmp/nonexistent_#{id}.docx")
-
-      # Default pool should still be alive
-      assert {:ok, pdf} = URP.convert_stream(build_test_docx())
-      assert <<"%PDF-" <> _rest>> = pdf
-    end
-  end
-
-  describe "URP.Test" do
     test "stub bypasses real conversion" do
       URP.Test.stub(fn input, _opts ->
-        assert input == "hello"
-        {:ok, "fake PDF"}
+        assert input == "/tmp/test.docx"
+        {:ok, "/tmp/test.pdf"}
       end)
 
-      assert {:ok, "fake PDF"} = URP.convert_stream("hello")
+      assert {:ok, "/tmp/test.pdf"} = URP.convert("/tmp/test.docx", output: "/tmp/test.pdf")
     end
 
-    test "stub works with convert_file_stream" do
-      URP.Test.stub(fn input, _opts ->
-        assert input == "/tmp/test.docx"
+    test "stub with {:binary, bytes} input" do
+      URP.Test.stub(fn {:binary, bytes}, _opts ->
+        assert bytes == "hello"
         {:ok, "fake PDF"}
       end)
 
-      assert {:ok, "fake PDF"} = URP.convert_file_stream("/tmp/test.docx")
+      assert {:ok, "fake PDF"} = URP.convert({:binary, "hello"}, output: :binary)
     end
 
     test "stub receives opts" do
       URP.Test.stub(fn _input, opts ->
         assert opts[:filter] == "calc_pdf_Export"
+        assert opts[:output] == :binary
         {:ok, "filtered"}
       end)
 
       assert {:ok, "filtered"} =
-               URP.convert_stream("bytes", filter: "calc_pdf_Export")
+               URP.convert({:binary, "bytes"}, output: :binary, filter: "calc_pdf_Export")
     end
 
     test "stub is per-process via $callers" do
@@ -197,7 +155,7 @@ defmodule URPTest do
 
       task =
         Task.async(fn ->
-          URP.convert_stream("bytes")
+          URP.convert({:binary, "bytes"}, output: :binary)
         end)
 
       assert {:ok, "parent stub"} = Task.await(task)
@@ -212,8 +170,23 @@ defmodule URPTest do
     end
   end
 
-  defp create_test_docx!(path) do
-    File.write!(path, build_test_docx())
+  defp to_chunks(binary, chunk_size) do
+    binary
+    |> Stream.unfold(fn
+      <<>> -> nil
+      bin -> String.split_at(bin, chunk_size)
+    end)
+  end
+
+  defp tmp_path(ext) do
+    id = System.unique_integer([:positive])
+    Path.join(@test_dir, "urp_test_#{id}.#{ext}")
+  end
+
+  defp write_test_file!(ext, content) do
+    path = tmp_path(ext)
+    File.write!(path, content)
+    path
   end
 
   # Build a minimal .docx (Office Open XML) in memory using :zip
