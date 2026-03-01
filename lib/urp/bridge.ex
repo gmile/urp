@@ -209,6 +209,27 @@ defmodule URP.Bridge do
     end
   end
 
+  @doc """
+  Load a document from an enumerable via XInputStream.
+
+  Like `load_document_stream!/2` but pulls chunks lazily from any `Enumerable`
+  (e.g. `File.stream!/2`, an S3 download stream). The enumerable is iterated
+  in a linked process; chunks are buffered and fed to soffice on demand.
+
+  Returns the document OID.
+  """
+  @spec load_document_enum_stream!(t(), Enumerable.t()) :: doc_oid()
+  def load_document_enum_stream!(%__MODULE__{} = conn, enumerable) do
+    reader = URP.Stream.start_enum_reader(enumerable)
+
+    try do
+      load_from_input_source!(conn, {:enum, <<>>, reader})
+    after
+      Process.unlink(reader)
+      Process.exit(reader, :kill)
+    end
+  end
+
   defp load_from_input_source!(conn, source) do
     stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
 

@@ -20,8 +20,11 @@ defmodule URP.Stream do
 
   alias URP.Protocol, as: P
 
-  @type input_source :: binary() | {:file, pid(), non_neg_integer()}
-  @typep source :: {:mem, binary(), non_neg_integer()} | {:file, pid(), non_neg_integer()}
+  @type input_source :: binary() | {:file, pid(), non_neg_integer()} | {:enum, binary(), pid()}
+  @typep source ::
+           {:mem, binary(), non_neg_integer()}
+           | {:file, pid(), non_neg_integer()}
+           | {:enum, binary(), pid() | :eof}
   @type sink :: nil | {:path, Path.t()} | (binary() -> any())
 
   @tc_void 0
@@ -41,6 +44,19 @@ defmodule URP.Stream do
 
   def recv_handling_input(sock, data, pos) when is_binary(data) do
     recv_handling_input(sock, {:mem, data, byte_size(data)}, pos)
+  end
+
+  def recv_handling_input(sock, {:enum, _buf, _reader} = source, _pos) do
+    payload = P.recv_frame(sock)
+
+    if P.is_reply?(payload) do
+      payload
+    else
+      %{func_id: func_id, body: body} = P.parse_request(payload)
+      {reply, source} = handle_input(func_id, body, source)
+      unless P.one_way?(func_id), do: P.send_frame(sock, reply)
+      recv_handling_input(sock, source, 0)
+    end
   end
 
   def recv_handling_input(sock, source, _pos) do
@@ -196,6 +212,14 @@ defmodule URP.Stream do
     {chunk, {:file, fd, remaining - byte_size(chunk)}}
   end
 
+  # Enumerable-backed
+  defp read_chunk({:enum, buffer, reader}, n) do
+    {buffer, reader} = fill_buffer(buffer, reader, n)
+    to_read = min(n, byte_size(buffer))
+    <<chunk::binary-size(to_read), rest::binary>> = buffer
+    {chunk, {:enum, rest, reader}}
+  end
+
   defp skip_chunk({:mem, data, size}, n), do: {:mem, data, size - min(n, size)}
 
   defp skip_chunk({:file, fd, remaining}, n) do
@@ -204,8 +228,58 @@ defmodule URP.Stream do
     {:file, fd, remaining - skip}
   end
 
+  defp skip_chunk({:enum, buffer, reader}, n) do
+    {buffer, reader} = fill_buffer(buffer, reader, n)
+    skip = min(n, byte_size(buffer))
+    <<_::binary-size(skip), rest::binary>> = buffer
+    {:enum, rest, reader}
+  end
+
   defp available({:mem, _data, size}), do: size
   defp available({:file, _fd, remaining}), do: remaining
+
+  defp available({:enum, buffer, :eof}), do: byte_size(buffer)
+
+  defp available({:enum, _buffer, _reader}) do
+    # We can't know the total remaining size for an enumerable.
+    # Return a large value so soffice doesn't think the stream is empty.
+    1_000_000
+  end
+
+  @doc """
+  Spawn a linked process that iterates `enumerable`, sending chunks to the caller.
+
+  The reader sends `{pid, {:chunk, data}}` for each element and `{pid, :eof}`
+  when the enumerable is exhausted. The caller receives these in `fill_buffer/3`.
+  """
+  @spec start_enum_reader(Enumerable.t()) :: pid()
+  def start_enum_reader(enumerable) do
+    parent = self()
+
+    spawn_link(fn ->
+      Enum.each(enumerable, fn chunk ->
+        data = IO.iodata_to_binary(chunk)
+        send(parent, {self(), {:chunk, data}})
+      end)
+
+      send(parent, {self(), :eof})
+    end)
+  end
+
+  defp fill_buffer(buffer, :eof, _needed), do: {buffer, :eof}
+
+  defp fill_buffer(buffer, reader, needed) when byte_size(buffer) >= needed,
+    do: {buffer, reader}
+
+  defp fill_buffer(buffer, reader, needed) do
+    receive do
+      {^reader, {:chunk, data}} ->
+        fill_buffer(buffer <> data, reader, needed)
+
+      {^reader, :eof} ->
+        {buffer, :eof}
+    end
+  end
 
   defp parse_long_param(body) do
     <<_null_ctx::3-bytes, n::32-signed, _::binary>> = body
