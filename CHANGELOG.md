@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.6.0] - 2026-03-01
 
 - **Breaking:** `:filter` option is now required — no default export filter
 - Remove PDF-centric language from docs — URP is a generic document conversion tool
