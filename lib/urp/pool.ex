@@ -1,26 +1,5 @@
 defmodule URP.Pool do
-  @moduledoc """
-  Connection pool for concurrent document conversion.
-
-  Manages a pool of `URP.Bridge` connections via `NimblePool`.
-  Pools are started and managed by `URP.Application` — you don't need to
-  add `URP.Pool` to your own supervision tree.
-
-  The default pool size is **1** — appropriate when talking to a single soffice
-  instance (soffice is single-threaded, so concurrent connections don't improve
-  throughput). Increase `pool_size` when you have multiple soffice replicas
-  behind a load balancer or round-robin DNS.
-
-  ## Usage
-
-      {:ok, result} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes}, filter: "writer_pdf_Export")
-      {:ok, result} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes}, filter: "calc_pdf_Export")
-
-  ## Connection lifecycle
-
-  Streaming conversions consume the connection — soffice closes the TCP socket
-  after streaming store — so the pool transparently replaces it with a fresh one.
-  """
+  @moduledoc false
 
   @behaviour NimblePool
 
@@ -37,17 +16,7 @@ defmodule URP.Pool do
   @retry_interval_ms 50
   @bridge_disposed "bridge already disposed"
 
-  @doc """
-  Start a connection pool.
-
-  ## Options
-
-    * `:name`      — process name (required)
-    * `:host`      — soffice hostname (default `"localhost"`)
-    * `:port`      — soffice URP listener port (default `2002`)
-    * `:pool_size` — number of connections (default `1`). Increase when
-      running multiple soffice replicas behind a load balancer.
-  """
+  @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     {name, opts} = Keyword.pop!(opts, :name)
@@ -68,12 +37,7 @@ defmodule URP.Pool do
     }
   end
 
-  @doc """
-  Query the soffice version string.
-
-  Checks out a connection, calls `Bridge.version!/1`, and returns it
-  to the pool (the connection is not consumed).
-  """
+  @doc false
   @spec version(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def version(pool, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
@@ -83,21 +47,7 @@ defmodule URP.Pool do
     end)
   end
 
-  @doc """
-  Convert a document. Dispatches loading based on input type.
-
-  Input types:
-
-    * `binary()` path — loads via `Bridge.load_document_file_stream!/2`
-    * `{:binary, bytes}` — loads via `Bridge.load_document_stream!/2`
-    * enumerable — loads via `Bridge.load_document_enum_stream!/2`
-
-  ## Options
-
-    * `:filter`  — export filter name (**required**)
-    * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
-    * `:timeout` — checkout timeout in ms (default `#{@default_timeout}`)
-  """
+  @doc false
   @spec convert(NimblePool.pool(), binary() | {:binary, binary()} | Enumerable.t(), keyword()) ::
           {:ok, binary()} | :ok | {:error, String.t()}
   def convert(pool, input, opts \\ []) do
