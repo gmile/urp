@@ -94,6 +94,30 @@ defmodule URPTest do
     end
   end
 
+  describe "filters" do
+    test "xlsx to pdf via calc_pdf_Export" do
+      assert {:ok, pdf} =
+               URP.convert({:binary, build_test_xlsx()},
+                 filter: "calc_pdf_Export",
+                 output: :binary
+               )
+
+      assert <<"%PDF-" <> _rest>> = pdf
+    end
+
+    # Markdown export requires LibreOffice 26.2+, Alpine edge still ships 25.8
+    @tag :skip
+    test "docx to markdown" do
+      assert {:ok, md} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: "Markdown",
+                 output: :binary
+               )
+
+      assert md =~ "Hello from URP smoke test"
+    end
+  end
+
   describe "error handling" do
     test "nonexistent file returns error" do
       assert {:error, _message} =
@@ -240,6 +264,70 @@ defmodule URPTest do
           {~c"[Content_Types].xml", String.trim(content_types)},
           {~c"_rels/.rels", String.trim(rels)},
           {~c"word/document.xml", String.trim(document)}
+        ],
+        [:memory]
+      )
+
+    zip_binary
+  end
+
+  defp build_test_xlsx do
+    content_types = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+      <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+      <Default Extension="xml" ContentType="application/xml"/>
+      <Override PartName="/xl/workbook.xml"
+        ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+      <Override PartName="/xl/worksheets/sheet1.xml"
+        ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+    </Types>
+    """
+
+    rels = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rId1"
+        Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+        Target="xl/workbook.xml"/>
+    </Relationships>
+    """
+
+    workbook_rels = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rId1"
+        Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+        Target="worksheets/sheet1.xml"/>
+    </Relationships>
+    """
+
+    workbook = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+              xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+      <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+    </workbook>
+    """
+
+    sheet = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+      <sheetData>
+        <row r="1"><c r="A1" t="inlineStr"><is><t>Hello</t></is></c></row>
+      </sheetData>
+    </worksheet>
+    """
+
+    {:ok, {_, zip_binary}} =
+      :zip.create(
+        ~c"test.xlsx",
+        [
+          {~c"[Content_Types].xml", String.trim(content_types)},
+          {~c"_rels/.rels", String.trim(rels)},
+          {~c"xl/_rels/workbook.xml.rels", String.trim(workbook_rels)},
+          {~c"xl/workbook.xml", String.trim(workbook)},
+          {~c"xl/worksheets/sheet1.xml", String.trim(sheet)}
         ],
         [:memory]
       )
