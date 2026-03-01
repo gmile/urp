@@ -52,7 +52,7 @@ defmodule URP do
 
   ## Options
 
-    * `:pool`    — named pool to use (default: `URP.Pool.Default`)
+    * `:pool`    — named pool to use (default: the auto-started pool)
     * `:timeout` — checkout timeout in ms (default `120_000`)
   """
   @spec version(keyword()) :: {:ok, String.t()} | {:error, String.t()}
@@ -78,7 +78,7 @@ defmodule URP do
       * `:binary` — return bytes, returns `{:ok, bytes}`
       * `fun/1` — call with each chunk, returns `:ok`
       * not set — write to temp file, returns `{:ok, tmp_path}`
-    * `:pool`    — named pool to use (default: `URP.Pool.Default`)
+    * `:pool`    — named pool to use (default: the auto-started pool)
     * `:timeout` — checkout timeout in ms (default `120_000`)
 
   ## Examples
