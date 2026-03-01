@@ -32,10 +32,15 @@ defmodule URP.Bridge do
 
   alias URP.Protocol, as: P
 
-  @type t :: %__MODULE__{sock: :gen_tcp.socket(), desktop_oid: String.t(), ctx_oid: String.t()}
+  @type t :: %__MODULE__{
+          sock: :gen_tcp.socket(),
+          desktop_oid: String.t(),
+          ctx_oid: String.t(),
+          tid_cache: map()
+        }
   @type doc_oid :: String.t()
 
-  defstruct [:sock, :desktop_oid, :ctx_oid]
+  defstruct [:sock, :desktop_oid, :ctx_oid, tid_cache: %{}]
 
   # UNO interface names
   @xi_protocol_props "com.sun.star.bridge.XProtocolProperties"
@@ -73,7 +78,8 @@ defmodule URP.Bridge do
     conn = %__MODULE__{sock: sock}
     handshake!(conn)
     {ctx_oid, desktop_oid} = bootstrap_desktop!(conn)
-    %{conn | desktop_oid: desktop_oid, ctx_oid: ctx_oid}
+    tid_cache = Process.get(:urp_tid_cache, %{})
+    %{conn | desktop_oid: desktop_oid, ctx_oid: ctx_oid, tid_cache: tid_cache}
   end
 
   @doc "Close the TCP connection."
@@ -320,6 +326,12 @@ defmodule URP.Bridge do
   end
 
   defp load_from_input_source!(conn, source) do
+    # Seed the TID read cache with entries from bootstrap (which ran in the pool worker process)
+    if conn.tid_cache != %{} do
+      existing = Process.get(:urp_tid_cache, %{})
+      Process.put(:urp_tid_cache, Map.merge(conn.tid_cache, existing))
+    end
+
     stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
 
     qi!(

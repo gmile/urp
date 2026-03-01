@@ -70,7 +70,14 @@ defmodule URP.Stream do
   end
 
   def recv_handling_input(sock, source, stream_oid) do
-    do_recv_input(sock, source, stream_oid, _seekable_cache = nil, _last_type = nil, _input_cache = nil)
+    do_recv_input(
+      sock,
+      source,
+      stream_oid,
+      _seekable_cache = nil,
+      _last_type = nil,
+      _input_cache = nil
+    )
   end
 
   defp do_recv_input(sock, source, stream_oid, seekable_cache, last_type, input_cache) do
@@ -88,8 +95,11 @@ defmodule URP.Stream do
 
       payload
     else
-      %{func_id: func_id, body: body, type_cache: type_cache} = P.parse_request(payload)
+      %{func_id: func_id, body: body, type_cache: type_cache, tid: new_tid} =
+        P.parse_request(payload)
 
+      # Track TID for cross-thread replies (Calc uses multiple threads during load)
+      tid = track_tid(new_tid)
       # Short headers (type_cache=nil) reuse the last type
       active_type = type_cache || last_type
       # Track globally so the store/close phase knows the current reader type
@@ -100,7 +110,7 @@ defmodule URP.Stream do
       {reply, source, seekable_cache} =
         dispatch_input(func_id, active_type, body, source, stream_oid, seekable_cache)
 
-      unless P.one_way?(func_id), do: P.send_frame(sock, reply)
+      unless P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
       do_recv_input(sock, source, stream_oid, seekable_cache, active_type, input_cache)
     end
   end
@@ -156,6 +166,7 @@ defmodule URP.Stream do
     Process.delete(:urp_input_ctx)
     Process.delete(:urp_reply_tid)
     Process.delete(:urp_reader_type)
+    Process.delete(:urp_tid_cache)
     :ok
   end
 
@@ -253,6 +264,7 @@ defmodule URP.Stream do
   defp qi_for_seekable?(body) do
     # body: <<null_ctx::3, tc, cache::16, [name]>>
     <<_ctx::3-bytes, rest::binary>> = body
+
     case rest do
       <<tc, _cache::16, rest::binary>> when tc >= 128 ->
         {name, _} = P.dec_str(rest)
@@ -468,6 +480,7 @@ defmodule URP.Stream do
   end
 
   defp available({:mem, data, pos}), do: byte_size(data) - pos
+
   defp available({:file, fd, size}) do
     {:ok, pos} = :file.position(fd, :cur)
     size - pos
@@ -493,6 +506,7 @@ defmodule URP.Stream do
   end
 
   defp get_position({:mem, _data, pos}), do: pos
+
   defp get_position({:file, fd, _size}) do
     {:ok, pos} = :file.position(fd, :cur)
     pos
@@ -548,5 +562,4 @@ defmodule URP.Stream do
 
   defp skip_null_ctx(<<_::3-bytes, rest::binary>>), do: rest
   defp skip_null_ctx(rest), do: rest
-
 end

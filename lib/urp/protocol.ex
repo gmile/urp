@@ -223,8 +223,24 @@ defmodule URP.Protocol do
 
     {tid, rest} =
       if (flags &&& @newtid) != 0 do
-        {tid, rest} = dec_str(rest)
-        <<_cache::16, rest::binary>> = rest
+        {tid_bytes, rest} = dec_str(rest)
+        <<cache::16, rest::binary>> = rest
+
+        tid =
+          if tid_bytes == "" do
+            # Cached TID — look up from our read cache
+            tid_cache = Process.get(:urp_tid_cache, %{})
+            Map.get(tid_cache, cache, tid_bytes)
+          else
+            # New TID — store in our read cache if cache index is valid
+            if cache != 0xFFFF do
+              tid_cache = Process.get(:urp_tid_cache, %{})
+              Process.put(:urp_tid_cache, Map.put(tid_cache, cache, tid_bytes))
+            end
+
+            tid_bytes
+          end
+
         {tid, rest}
       else
         {nil, rest}
@@ -346,8 +362,15 @@ defmodule URP.Protocol do
   defp skip_reply_header(<<flags, rest::binary>>) do
     rest =
       if (flags &&& @newtid) != 0 do
-        {_tid, rest} = dec_str(rest)
-        <<_cache::16, rest::binary>> = rest
+        {tid_bytes, rest} = dec_str(rest)
+        <<cache::16, rest::binary>> = rest
+
+        # Maintain TID read cache (shared with parse_request)
+        if tid_bytes != "" and cache != 0xFFFF do
+          tid_cache = Process.get(:urp_tid_cache, %{})
+          Process.put(:urp_tid_cache, Map.put(tid_cache, cache, tid_bytes))
+        end
+
         rest
       else
         rest
