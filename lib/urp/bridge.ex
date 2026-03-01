@@ -32,10 +32,10 @@ defmodule URP.Bridge do
 
   alias URP.Protocol, as: P
 
-  @type t :: %__MODULE__{sock: :gen_tcp.socket(), desktop_oid: String.t()}
+  @type t :: %__MODULE__{sock: :gen_tcp.socket(), desktop_oid: String.t(), ctx_oid: String.t()}
   @type doc_oid :: String.t()
 
-  defstruct [:sock, :desktop_oid]
+  defstruct [:sock, :desktop_oid, :ctx_oid]
 
   # UNO interface names
   @xi_protocol_props "com.sun.star.bridge.XProtocolProperties"
@@ -47,6 +47,8 @@ defmodule URP.Bridge do
   @xi_closeable "com.sun.star.util.XCloseable"
   @xi_input_stream "com.sun.star.io.XInputStream"
   @xi_output_stream "com.sun.star.io.XOutputStream"
+  @xi_multi_service_factory "com.sun.star.lang.XMultiServiceFactory"
+  @xi_name_access "com.sun.star.container.XNameAccess"
 
   # Special function IDs — binaryurp/source/specialfunctionids.hxx
   @func_query_interface 0
@@ -57,6 +59,7 @@ defmodule URP.Bridge do
   # UNO TypeClass values for property encoding — include/typelib/typeclass.h
   @tc_boolean 2
   @tc_string 12
+  @tc_struct 17
   @tc_interface 22
   @tc_new 0x80
 
@@ -69,8 +72,8 @@ defmodule URP.Bridge do
     {:ok, sock} = :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false])
     conn = %__MODULE__{sock: sock}
     handshake!(conn)
-    desktop_oid = bootstrap_desktop!(conn)
-    %{conn | desktop_oid: desktop_oid}
+    {ctx_oid, desktop_oid} = bootstrap_desktop!(conn)
+    %{conn | desktop_oid: desktop_oid, ctx_oid: ctx_oid}
   end
 
   @doc "Close the TCP connection."
@@ -173,6 +176,92 @@ defmodule URP.Bridge do
     )
 
     recv_reply!(conn.sock)
+  end
+
+  @doc """
+  Query the soffice version string over URP.
+
+  Reads `ooSetupVersionAboutBox` from the configuration API via 5 UNO
+  round trips. Returns a string like `"25.8.1.1"`. Does not consume
+  the connection (no streaming).
+  """
+  @spec version!(t()) :: String.t()
+  def version!(%__MODULE__{} = conn) do
+    sock = conn.sock
+
+    # Step 1: getValueByName("/singletons/com.sun.star.configuration.theDefaultProvider")
+    # funcID 3 on XComponentContext (XInterface 0-2, getValueByName 3, getServiceManager 4)
+    P.send_frame(
+      sock,
+      P.request(3,
+        type: {:cached, 3},
+        oid: {conn.ctx_oid, 2}
+      ) <>
+        P.null_ctx() <>
+        P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
+    )
+
+    reply = recv_reply!(sock)
+
+    config_provider_oid =
+      P.parse_qi_reply(reply) ||
+        raise "getValueByName(theDefaultProvider) failed: #{P.parse_exception(reply)}"
+
+    # Step 2: QI ConfigProvider for XMultiServiceFactory
+    qi!(
+      conn,
+      P.request(@func_query_interface,
+        type: {:cached, 1},
+        oid: {config_provider_oid, 7}
+      ),
+      P.type_new(@xi_multi_service_factory, 12)
+    )
+
+    # Step 3: createInstanceWithArguments("...ConfigurationAccess", [NamedValue("nodepath", ...)])
+    # funcID 4 on XMultiServiceFactory (XInterface 0-2, createInstance 3, createInstanceWithArguments 4)
+    P.send_frame(
+      sock,
+      # sequence<any> with 1 element: any(NamedValue)
+      P.request(4, type: {:new, @xi_multi_service_factory, 13}) <>
+        P.null_ctx() <>
+        P.enc_str("com.sun.star.configuration.ConfigurationAccess") <>
+        <<1>> <>
+        <<@tc_struct ||| @tc_new, 14::16>> <>
+        P.enc_str("com.sun.star.beans.NamedValue") <>
+        P.enc_str("nodepath") <>
+        <<@tc_string>> <>
+        P.enc_str("/org.openoffice.Setup/Product")
+    )
+
+    reply = recv_reply!(sock)
+
+    config_access_oid =
+      P.parse_interface_reply(reply) ||
+        raise "createInstanceWithArguments(ConfigurationAccess) failed: #{P.parse_exception(reply)}"
+
+    # Step 4: QI ConfigAccess for XNameAccess
+    qi!(
+      conn,
+      P.request(@func_query_interface,
+        type: {:cached, 1},
+        oid: {config_access_oid, 8}
+      ),
+      P.type_new(@xi_name_access, 15)
+    )
+
+    # Step 5: getByName("ooSetupVersionAboutBox")
+    # funcID 5 on XNameAccess (XInterface 0-2, XElementAccess 3-4, getByName 5)
+    P.send_frame(
+      sock,
+      P.request(5, type: {:new, @xi_name_access, 16}) <>
+        P.null_ctx() <>
+        P.enc_str("ooSetupVersionAboutBox")
+    )
+
+    reply = recv_reply!(sock)
+
+    P.parse_any_string_reply(reply) ||
+      raise "getByName(ooSetupVersionAboutBox) failed: #{P.parse_exception(reply)}"
   end
 
   @doc """
@@ -386,7 +475,8 @@ defmodule URP.Bridge do
         <<0x00, 2::16>>
     )
 
-    P.parse_interface_reply(P.recv_frame(sock))
+    desktop_oid = P.parse_interface_reply(P.recv_frame(sock))
+    {ctx_oid, desktop_oid}
   end
 
   ## queryInterface helper
