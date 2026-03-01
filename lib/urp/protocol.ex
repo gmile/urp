@@ -25,6 +25,7 @@ defmodule URP.Protocol do
   @exception 0x20
 
   # UNO TypeClass — include/typelib/typeclass.h
+  @tc_string 12
   @tc_interface 22
   # ORed into type class byte for uncached types
   @tc_new 0x80
@@ -271,6 +272,20 @@ defmodule URP.Protocol do
     else
       {oid, _} = dec_str(rest)
       if oid == "", do: nil, else: oid
+    end
+  end
+
+  @doc "Parse a reply returning `any(string)` — extracts the string value."
+  @spec parse_any_string_reply(binary()) :: String.t() | nil
+  def parse_any_string_reply(payload) do
+    {flags, rest} = skip_reply_header(payload)
+
+    if (flags &&& @exception) != 0 do
+      nil
+    else
+      <<@tc_string, rest::binary>> = rest
+      {value, _} = dec_str(rest)
+      value
     end
   end
 

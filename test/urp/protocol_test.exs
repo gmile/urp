@@ -164,6 +164,19 @@ defmodule URP.ProtocolTest do
     end
   end
 
+  describe "parse_any_string_reply/1" do
+    test "extracts string from any(string) reply" do
+      # Reply: LONGHEADER, any body: TC_STRING (12) + encoded string
+      payload = <<0x80, 12>> <> P.enc_str("25.8.1.1")
+      assert P.parse_any_string_reply(payload) == "25.8.1.1"
+    end
+
+    test "returns nil for exception reply" do
+      payload = <<0x80 ||| 0x20, 19, 0::16>> <> P.enc_str("some error")
+      assert P.parse_any_string_reply(payload) == nil
+    end
+  end
+
   describe "enc_str/1 and dec_str/1" do
     test "short string roundtrip" do
       assert {s, ""} = P.dec_str(P.enc_str("hello"))
