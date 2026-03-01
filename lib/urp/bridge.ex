@@ -351,8 +351,8 @@ defmodule URP.Bridge do
         )
     )
 
-    # soffice will call readBytes/available/closeInput on our stream
-    reply = URP.Stream.recv_handling_input(conn.sock, source)
+    # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
+    reply = URP.Stream.recv_handling_input(conn.sock, source, stream_oid)
 
     case P.parse_interface_reply(reply) do
       nil -> raise "loadComponentFromURL(stream) failed: #{P.parse_exception(reply)}"
@@ -500,8 +500,18 @@ defmodule URP.Bridge do
     if P.is_reply?(payload) do
       payload
     else
-      %{func_id: func_id} = P.parse_request(payload)
-      unless P.one_way?(func_id), do: P.send_frame(sock, P.reply())
+      case URP.Stream.try_handle_input(sock, payload) do
+        :handled ->
+          :ok
+
+        :not_input ->
+          %{func_id: func_id, tid: new_tid} = P.parse_request(payload)
+          tid = URP.Stream.track_tid(new_tid)
+
+          unless P.one_way?(func_id),
+            do: P.send_frame(sock, URP.Stream.inject_tid(P.reply(), tid))
+      end
+
       recv_reply!(sock)
     end
   end

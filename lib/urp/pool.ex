@@ -57,8 +57,13 @@ defmodule URP.Pool do
     do_checkout(pool, timeout, fn conn ->
       doc = load_input!(conn, input)
       result = Bridge.store_to_stream!(conn, doc, store_opts)
-      Bridge.close_document!(conn, doc)
-      {wrap_result(result), {:ok, conn}}
+      close_status = safe_close(conn, doc)
+      URP.Stream.clear_input_ctx()
+
+      case close_status do
+        :ok -> {wrap_result(result), {:ok, conn}}
+        :closed -> {wrap_result(result), :closed}
+      end
     end)
   end
 
@@ -148,6 +153,13 @@ defmodule URP.Pool do
     end
 
     {:ok, pool_state}
+  end
+
+  defp safe_close(conn, doc) do
+    Bridge.close_document!(conn, doc)
+    :ok
+  rescue
+    _ -> :closed
   end
 
   defp wrap_result(:ok), do: :ok
