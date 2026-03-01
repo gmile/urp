@@ -1,13 +1,14 @@
 # URP
 
 Pure Elixir client for the [UNO Remote Protocol](https://wiki.openoffice.org/wiki/Uno/Binary/Spec/Protocol).
-Converts documents to PDF by talking directly to an off-the-shelf `soffice`
+Converts documents by talking directly to an off-the-shelf `soffice`
 container over a TCP socket — no custom images, wrappers, or sidecars needed.
 
 ## Why?
 
-LibreOffice is the best open-source tool for converting office documents to
-PDF, but integrating it into a web app typically requires intermediate layers:
+LibreOffice is the most popular open-source tool for converting between office
+document formats, but integrating it into a web app typically requires
+intermediate layers:
 
 - **[unoserver](https://github.com/unoconv/unoserver)** — Python daemon that wraps soffice and exposes an HTTP API
 - **[Gotenberg](https://gotenberg.dev/)** — Go service that wraps unoserver (which wraps soffice)
@@ -58,7 +59,7 @@ A default connection pool starts automatically, connecting to `localhost:2002`.
 No supervision tree setup needed.
 
 ```elixir
-# File path — writes PDF to temp file by default
+# File path — writes to temp file by default (PDF via writer_pdf_Export filter)
 {:ok, pdf_path} = URP.convert("/path/to/input.docx")
 
 # Explicit output path

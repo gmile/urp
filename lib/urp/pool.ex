@@ -69,7 +69,7 @@ defmodule URP.Pool do
   end
 
   @doc """
-  Convert a document to PDF. Dispatches loading based on input type.
+  Convert a document. Dispatches loading based on input type.
 
   Input types:
 

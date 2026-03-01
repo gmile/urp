@@ -274,7 +274,7 @@ defmodule URP.Bridge do
   @doc """
   Store a document via XOutputStream.
 
-  No shared filesystem needed — PDF bytes are streamed back over the URP socket.
+  No shared filesystem needed — output bytes are streamed back over the URP socket.
   soffice calls `writeBytes()` on our exported stream object.
 
   `sink` controls where output goes:

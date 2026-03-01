@@ -65,7 +65,9 @@ defmodule URP do
           | {:timeout, non_neg_integer()}
 
   @doc """
-  Convert a document to PDF.
+  Convert a document via LibreOffice.
+
+  The output format is determined by the `:filter` option (default: `"writer_pdf_Export"`).
 
   ## Input types
 
