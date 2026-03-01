@@ -111,6 +111,16 @@ defmodule URP.Protocol do
   @spec reply(binary()) :: binary()
   def reply(body), do: <<@longheader>> <> body
 
+  @doc "Build a void reply with explicit TID (for cross-thread replies)."
+  @spec reply_with_tid(binary()) :: binary()
+  def reply_with_tid(tid) when is_binary(tid),
+    do: <<@longheader ||| @newtid>> <> enc_str(tid) <> <<0xFFFF::16>>
+
+  @doc "Build a reply with body and explicit TID (for cross-thread replies)."
+  @spec reply_with_tid(binary(), binary()) :: binary()
+  def reply_with_tid(body, tid) when is_binary(tid),
+    do: <<@longheader ||| @newtid>> <> enc_str(tid) <> <<0xFFFF::16>> <> body
+
   ## Compressed string encoding — binaryurp/source/marshal.cxx
 
   @doc "Encode a string with URP compressed-length prefix."
@@ -167,7 +177,12 @@ defmodule URP.Protocol do
   `one_way` is true when the sender does not expect a reply (MOREFLAGS absent
   or MUSTREPLY not set). One-way calls like `release` must not receive replies.
   """
-  @spec parse_request(binary()) :: %{func_id: non_neg_integer(), body: binary()}
+  @spec parse_request(binary()) :: %{
+          func_id: non_neg_integer(),
+          body: binary(),
+          type_cache: non_neg_integer() | nil,
+          tid: binary() | nil
+        }
   def parse_request(<<flags, rest::binary>>) when (flags &&& @longheader) != 0 do
     # Long header — skip optional flags2, then extract func_id and skip header fields
     rest =
@@ -188,12 +203,13 @@ defmodule URP.Protocol do
         {fid, r}
       end
 
-    rest =
+    {type_cache, rest} =
       if (flags &&& @newtype) != 0 do
-        <<tc, _cache::16, rest::binary>> = rest
-        if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
+        <<tc, cache::16, rest::binary>> = rest
+        rest = if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
+        {cache, rest}
       else
-        rest
+        {nil, rest}
       end
 
     rest =
@@ -205,28 +221,28 @@ defmodule URP.Protocol do
         rest
       end
 
-    rest =
+    {tid, rest} =
       if (flags &&& @newtid) != 0 do
-        {_tid, rest} = dec_str(rest)
+        {tid, rest} = dec_str(rest)
         <<_cache::16, rest::binary>> = rest
-        rest
+        {tid, rest}
       else
-        rest
+        {nil, rest}
       end
 
-    %{func_id: func_id, body: rest}
+    %{func_id: func_id, body: rest, type_cache: type_cache, tid: tid}
   end
 
   def parse_request(<<header, rest::binary>>) do
-    # Short header — reuses all cached values.
+    # Short header — reuses all cached values (including type).
     #
     # Bit 6 (0x40) = FUNCTIONID14: if set, func_id is 14-bit (bits[5:0] << 8 | next byte).
     # If clear, func_id is 6-bit (bits[5:0]).
     if (header &&& 0x40) != 0 do
       <<lo, body::binary>> = rest
-      %{func_id: (header &&& 0x3F) <<< 8 ||| lo, body: body}
+      %{func_id: (header &&& 0x3F) <<< 8 ||| lo, body: body, type_cache: nil, tid: nil}
     else
-      %{func_id: header &&& 0x3F, body: rest}
+      %{func_id: header &&& 0x3F, body: rest, type_cache: nil, tid: nil}
     end
   end
 
