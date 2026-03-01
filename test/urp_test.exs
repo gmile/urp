@@ -6,13 +6,14 @@ defmodule URPTest do
 
   # Use /tmp (not System.tmp_dir!) so paths match inside the soffice Docker container
   @test_dir "/tmp"
+  @pdf "writer_pdf_Export"
 
   describe "file path input" do
     test "default output (temp file)" do
       input = write_test_file!("txt", "Hello from URP test")
 
       try do
-        assert {:ok, tmp_path} = URP.convert(input)
+        assert {:ok, tmp_path} = URP.convert(input, filter: @pdf)
         assert String.ends_with?(tmp_path, ".pdf")
         assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
       after
@@ -25,7 +26,7 @@ defmodule URPTest do
       output = tmp_path("pdf")
 
       try do
-        assert {:ok, ^output} = URP.convert(input, output: output)
+        assert {:ok, ^output} = URP.convert(input, filter: @pdf, output: output)
         assert File.exists?(output)
         assert <<"%PDF-" <> _rest>> = File.read!(output)
       after
@@ -38,7 +39,7 @@ defmodule URPTest do
       input = write_test_file!("docx", build_test_docx())
 
       try do
-        assert {:ok, pdf} = URP.convert(input, output: :binary)
+        assert {:ok, pdf} = URP.convert(input, filter: @pdf, output: :binary)
         assert <<"%PDF-" <> _rest>> = pdf
       after
         File.rm(input)
@@ -50,7 +51,12 @@ defmodule URPTest do
       test_pid = self()
 
       try do
-        assert :ok = URP.convert(input, output: fn chunk -> send(test_pid, {:chunk, chunk}) end)
+        assert :ok =
+                 URP.convert(input,
+                   filter: @pdf,
+                   output: fn chunk -> send(test_pid, {:chunk, chunk}) end
+                 )
+
         chunks = collect_chunks()
         pdf = IO.iodata_to_binary(chunks)
         assert <<"%PDF-" <> _rest>> = pdf
@@ -62,12 +68,12 @@ defmodule URPTest do
 
   describe "{:binary, bytes} input" do
     test "output: :binary" do
-      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, output: :binary)
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
       assert <<"%PDF-" <> _rest>> = pdf
     end
 
     test "default output (temp file)" do
-      assert {:ok, tmp_path} = URP.convert({:binary, build_test_docx()})
+      assert {:ok, tmp_path} = URP.convert({:binary, build_test_docx()}, filter: @pdf)
       assert String.ends_with?(tmp_path, ".pdf")
       assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
     end
@@ -76,14 +82,14 @@ defmodule URPTest do
   describe "enumerable input" do
     test "default output (temp file)" do
       chunks = to_chunks(build_test_docx(), 512)
-      assert {:ok, tmp_path} = URP.convert(chunks)
+      assert {:ok, tmp_path} = URP.convert(chunks, filter: @pdf)
       assert String.ends_with?(tmp_path, ".pdf")
       assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
     end
 
     test "output: :binary" do
       chunks = to_chunks(build_test_docx(), 512)
-      assert {:ok, pdf} = URP.convert(chunks, output: :binary)
+      assert {:ok, pdf} = URP.convert(chunks, filter: @pdf, output: :binary)
       assert <<"%PDF-" <> _rest>> = pdf
     end
   end
@@ -92,18 +98,26 @@ defmodule URPTest do
     test "nonexistent file returns error" do
       assert {:error, _message} =
                URP.convert("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx",
+                 filter: @pdf,
                  output: :binary
                )
+    end
+
+    test "missing :filter raises ArgumentError" do
+      assert_raise ArgumentError, ~r/requires the :filter option/, fn ->
+        URP.convert({:binary, "bytes"}, output: :binary)
+      end
     end
 
     test "pool stays alive after error" do
       assert {:error, _} =
                URP.convert(
                  "/tmp/nonexistent_#{System.unique_integer([:positive])}.docx",
+                 filter: @pdf,
                  output: :binary
                )
 
-      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, output: :binary)
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
       assert <<"%PDF-" <> _rest>> = pdf
     end
   end
@@ -111,8 +125,8 @@ defmodule URPTest do
   describe "consecutive conversions" do
     test "multiple conversions reuse pool" do
       docx = build_test_docx()
-      assert {:ok, pdf1} = URP.convert({:binary, docx}, output: :binary)
-      assert {:ok, pdf2} = URP.convert({:binary, docx}, output: :binary)
+      assert {:ok, pdf1} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
+      assert {:ok, pdf2} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
       assert <<"%PDF-" <> _rest>> = pdf1
       assert <<"%PDF-" <> _rest>> = pdf2
     end
@@ -127,7 +141,8 @@ defmodule URPTest do
         {:ok, "/tmp/test.pdf"}
       end)
 
-      assert {:ok, "/tmp/test.pdf"} = URP.convert("/tmp/test.docx", output: "/tmp/test.pdf")
+      assert {:ok, "/tmp/test.pdf"} =
+               URP.convert("/tmp/test.docx", filter: @pdf, output: "/tmp/test.pdf")
     end
 
     test "stub with {:binary, bytes} input" do
@@ -136,7 +151,7 @@ defmodule URPTest do
         {:ok, "fake PDF"}
       end)
 
-      assert {:ok, "fake PDF"} = URP.convert({:binary, "hello"}, output: :binary)
+      assert {:ok, "fake PDF"} = URP.convert({:binary, "hello"}, filter: @pdf, output: :binary)
     end
 
     test "stub receives opts" do
@@ -147,7 +162,7 @@ defmodule URPTest do
       end)
 
       assert {:ok, "filtered"} =
-               URP.convert({:binary, "bytes"}, output: :binary, filter: "calc_pdf_Export")
+               URP.convert({:binary, "bytes"}, filter: "calc_pdf_Export", output: :binary)
     end
 
     test "stub is per-process via $callers" do
@@ -155,7 +170,7 @@ defmodule URPTest do
 
       task =
         Task.async(fn ->
-          URP.convert({:binary, "bytes"}, output: :binary)
+          URP.convert({:binary, "bytes"}, filter: @pdf, output: :binary)
         end)
 
       assert {:ok, "parent stub"} = Task.await(task)
@@ -189,7 +204,6 @@ defmodule URPTest do
     path
   end
 
-  # Build a minimal .docx (Office Open XML) in memory using :zip
   defp build_test_docx do
     content_types = """
     <?xml version="1.0" encoding="UTF-8"?>

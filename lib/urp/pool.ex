@@ -13,8 +13,8 @@ defmodule URP.Pool do
 
   ## Usage
 
-      {:ok, pdf} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes})
-      {:ok, pdf} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes}, filter: "calc_pdf_Export")
+      {:ok, result} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes}, filter: "writer_pdf_Export")
+      {:ok, result} = URP.Pool.convert(URP.Pool.Default, {:binary, bytes}, filter: "calc_pdf_Export")
 
   ## Connection lifecycle
 
@@ -79,7 +79,7 @@ defmodule URP.Pool do
 
   ## Options
 
-    * `:filter`  — export filter name (default `"writer_pdf_Export"`)
+    * `:filter`  — export filter name (**required**)
     * `:sink`    — output destination: `{:path, path}` or `fun/1` (default: in-memory)
     * `:timeout` — checkout timeout in ms (default `#{@default_timeout}`)
   """

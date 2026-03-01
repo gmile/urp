@@ -125,7 +125,7 @@ defmodule URP.Bridge do
   Common filters: `"writer_pdf_Export"`, `"calc_pdf_Export"`, `"impress_pdf_Export"`.
   """
   @spec store_to_url!(t(), doc_oid(), String.t(), String.t()) :: nil
-  def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter \\ "writer_pdf_Export") do
+  def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter) do
     qi!(
       conn,
       P.request(@func_query_interface,
@@ -285,7 +285,7 @@ defmodule URP.Bridge do
   """
   @spec store_to_stream!(t(), doc_oid(), keyword()) :: binary() | :ok
   def store_to_stream!(%__MODULE__{} = conn, doc_oid, opts \\ []) do
-    filter = Keyword.get(opts, :filter, "writer_pdf_Export")
+    filter = Keyword.fetch!(opts, :filter)
     sink = Keyword.get(opts, :sink)
     stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
 

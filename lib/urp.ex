@@ -18,24 +18,32 @@ defmodule URP do
 
   ## Usage
 
-      # File path (most common)
-      {:ok, pdf_path} = URP.convert("/tmp/in.docx")
-      {:ok, "/tmp/out.pdf"} = URP.convert("/tmp/in.docx", output: "/tmp/out.pdf")
-      {:ok, pdf_bytes} = URP.convert("/tmp/in.docx", output: :binary)
-      :ok = URP.convert("/tmp/in.docx", output: fn chunk -> send(self(), chunk) end)
+      # File path — convert to PDF
+      {:ok, pdf_path} = URP.convert("/tmp/in.docx", filter: "writer_pdf_Export")
+      {:ok, "/tmp/out.pdf"} = URP.convert("/tmp/in.docx", filter: "writer_pdf_Export", output: "/tmp/out.pdf")
+      {:ok, pdf_bytes} = URP.convert("/tmp/in.docx", filter: "writer_pdf_Export", output: :binary)
 
       # Raw bytes
-      {:ok, pdf_path} = URP.convert({:binary, docx_bytes})
-      {:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, output: :binary)
+      {:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, filter: "calc_pdf_Export", output: :binary)
 
       # Enumerable (e.g. File.stream!, S3 download stream)
-      {:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536))
+      {:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
+
+      # Convert to Markdown
+      {:ok, md_path} = URP.convert("/tmp/in.docx", filter: "Markdown")
 
   ## Options
 
+    * `:filter`  — export filter name (**required**). Common filters:
+      * `"writer_pdf_Export"` — Writer documents to PDF
+      * `"calc_pdf_Export"` — Calc spreadsheets to PDF
+      * `"impress_pdf_Export"` — Impress presentations to PDF
+      * `"Markdown"` — Writer documents to Markdown
+      * `"HTML (StarWriter)"` — Writer documents to HTML
+      * `"Office Open XML Text"` — to DOCX
+      * See [full list](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
     * `:output`  — where to write: path string, `:binary`, or `fun/1` (default: temp file)
     * `:pool`    — named pool to use (default: `URP.Pool.Default`)
-    * `:filter`  — export filter name (default `"writer_pdf_Export"`)
     * `:timeout` — checkout timeout in ms (default `120_000`)
 
   ## Named pools
@@ -45,14 +53,14 @@ defmodule URP do
       config :urp, :pools,
         spreadsheets: [host: "soffice-2", port: 2002, pool_size: 3]
 
-      {:ok, pdf} = URP.convert({:binary, bytes}, pool: :spreadsheets)
+      {:ok, pdf} = URP.convert({:binary, bytes}, filter: "calc_pdf_Export", pool: :spreadsheets)
 
   Named pools are started on first use.
 
   ## Testing
 
-      URP.Test.stub(fn _input, _opts -> {:ok, "fake pdf"} end)
-      {:ok, "fake pdf"} = URP.convert({:binary, docx_bytes}, output: :binary)
+      URP.Test.stub(fn _input, _opts -> {:ok, "/tmp/fake.pdf"} end)
+      {:ok, _} = URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export")
 
   See `URP.Test` for details.
   """
@@ -67,8 +75,6 @@ defmodule URP do
   @doc """
   Convert a document via LibreOffice.
 
-  The output format is determined by the `:filter` option (default: `"writer_pdf_Export"`).
-
   ## Input types
 
     * `path` (binary) — local file path, loaded via file-backed streaming
@@ -77,13 +83,13 @@ defmodule URP do
 
   ## Options
 
+    * `:filter`  — export filter name (**required**). See moduledoc for common filters.
     * `:output`  — where to write converted output:
       * path string — write to file, returns `{:ok, path}`
       * `:binary` — return bytes, returns `{:ok, bytes}`
       * `fun/1` — call with each chunk, returns `:ok`
       * not set — write to temp file, returns `{:ok, tmp_path}`
     * `:pool`    — named pool to use (default: `URP.Pool.Default`)
-    * `:filter`  — export filter name (default `"writer_pdf_Export"`)
     * `:timeout` — checkout timeout in ms (default `120_000`)
   """
   @spec convert(binary() | {:binary, binary()} | Enumerable.t(), [opt()]) ::
@@ -114,13 +120,19 @@ defmodule URP do
         fun.(input, opts)
 
       :error ->
+        unless Keyword.has_key?(opts, :filter) do
+          raise ArgumentError,
+                "URP.convert/2 requires the :filter option. " <>
+                  "Common filters: \"writer_pdf_Export\", \"calc_pdf_Export\", \"impress_pdf_Export\", \"Markdown\""
+        end
+
         {pool, opts} = resolve_pool(opts)
         {output, opts} = Keyword.pop(opts, :output)
 
         pool_opts =
           case output do
             nil ->
-              tmp = generate_tmp_path(input)
+              tmp = generate_tmp_path(input, opts[:filter])
               Keyword.put(opts, :sink, {:path, tmp})
 
             :binary ->
@@ -151,15 +163,31 @@ defmodule URP do
     end
   end
 
-  defp generate_tmp_path(input) do
+  @filter_extensions %{
+    "writer_pdf_Export" => ".pdf",
+    "calc_pdf_Export" => ".pdf",
+    "impress_pdf_Export" => ".pdf",
+    "draw_pdf_Export" => ".pdf",
+    "Markdown" => ".md",
+    "HTML (StarWriter)" => ".html",
+    "HTML (StarCalc)" => ".html",
+    "Rich Text Format" => ".rtf",
+    "Text" => ".txt",
+    "Text (encoded)" => ".txt",
+    "Office Open XML Text" => ".docx",
+    "writer8" => ".odt"
+  }
+
+  defp generate_tmp_path(input, filter) do
     basename =
       case input do
         path when is_binary(path) -> Path.basename(path, Path.extname(path))
         _ -> "urp"
       end
 
+    ext = Map.get(@filter_extensions, filter, ".bin")
     id = :erlang.unique_integer([:positive])
-    Path.join(System.tmp_dir!(), "#{basename}_#{id}.pdf")
+    Path.join(System.tmp_dir!(), "#{basename}_#{id}#{ext}")
   end
 
   defp resolve_pool(opts) do

@@ -6,7 +6,7 @@ container over a TCP socket — no custom images, wrappers, or sidecars needed.
 
 ## Why?
 
-LibreOffice is the most popular open-source tool for converting between office
+LibreOffice is a versatile open-source tool for converting between office
 document formats, but integrating it into a web app typically requires
 intermediate layers:
 
@@ -59,20 +59,23 @@ A default connection pool starts automatically, connecting to `localhost:2002`.
 No supervision tree setup needed.
 
 ```elixir
-# File path — writes to temp file by default (PDF via writer_pdf_Export filter)
-{:ok, pdf_path} = URP.convert("/path/to/input.docx")
+# File path — convert to PDF
+{:ok, pdf_path} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export")
 
 # Explicit output path
-{:ok, "/tmp/out.pdf"} = URP.convert("/path/to/input.docx", output: "/tmp/out.pdf")
+{:ok, "/tmp/out.pdf"} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export", output: "/tmp/out.pdf")
 
 # Return bytes in memory
-{:ok, pdf_bytes} = URP.convert("/path/to/input.docx", output: :binary)
+{:ok, pdf_bytes} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export", output: :binary)
 
 # Raw bytes input
-{:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, output: :binary)
+{:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, filter: "calc_pdf_Export", output: :binary)
 
 # Enumerable input (e.g. File.stream!, S3 download stream)
-{:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536))
+{:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
+
+# Convert to Markdown
+{:ok, md_path} = URP.convert("/path/to/input.docx", filter: "Markdown")
 ```
 
 Configure the default pool in `config/runtime.exs`:
@@ -90,16 +93,16 @@ The `:output` option controls where converted bytes go:
 
 ```elixir
 # Default — write to temp file, return path
-{:ok, tmp_path} = URP.convert(input)
+{:ok, tmp_path} = URP.convert(input, filter: "writer_pdf_Export")
 
 # Write to specific path
-{:ok, path} = URP.convert(input, output: "/tmp/output.pdf")
+{:ok, path} = URP.convert(input, filter: "writer_pdf_Export", output: "/tmp/output.pdf")
 
 # Return bytes in memory
-{:ok, pdf_bytes} = URP.convert(input, output: :binary)
+{:ok, bytes} = URP.convert(input, filter: "writer_pdf_Export", output: :binary)
 
 # Stream chunks to a callback
-:ok = URP.convert(input, output: fn chunk -> send_chunk(chunk) end)
+:ok = URP.convert(input, filter: "writer_pdf_Export", output: fn chunk -> send_chunk(chunk) end)
 ```
 
 ### Named pools
