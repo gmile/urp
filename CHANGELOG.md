@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.6.1] - 2026-03-01
+
+- Add `URP.version/1` — query soffice version string over URP (no CLI access needed)
+- Hide `URP.Pool` from hex docs (internal module)
+- Simplify README
+
 ## [v0.6.0] - 2026-03-01
 
 - **Breaking:** `:filter` option is now required — no default export filter
