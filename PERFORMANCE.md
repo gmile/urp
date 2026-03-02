@@ -9,9 +9,8 @@ docker compose --file benchmarks/docker-compose.yml up --detach --wait
 mix run benchmarks/bench.exs
 ```
 
-The benchmark fixture (`benchmarks/fixtures/benchmark.docx`) uses only
-Liberation fonts — no proprietary font packages needed. Regenerate it
-with:
+The benchmark fixture (`benchmarks/fixtures/benchmark.docx`) uses
+Liberation fonts. Regenerate it with:
 
 ```sh
 uv run --with python-docx --with Pillow --with numpy benchmarks/generate_fixture.py

@@ -1,8 +1,8 @@
 # URP
 
 Pure Elixir client for the [UNO Remote Protocol](https://wiki.openoffice.org/wiki/Uno/Binary/Spec/Protocol).
-Converts documents by talking directly to an off-the-shelf `soffice`
-container over a TCP socket — no custom images, wrappers, or sidecars needed.
+Converts documents by talking directly to `soffice` over a TCP socket —
+no wrappers or sidecars needed.
 
 ## Why?
 
@@ -12,8 +12,8 @@ Existing approaches to LibreOffice integration —
 Python UNO bindings — each add an intermediate layer with its own
 deployment complexity and failure modes.
 
-URP speaks the binary protocol directly over TCP to a stock `soffice`
-process. No Python runtime, no wrapper services, no custom Docker images.
+URP speaks the binary protocol directly over TCP to a `soffice`
+process. No Python runtime, no wrapper services.
 
 ## Installation
 
@@ -32,20 +32,15 @@ end
 A running `soffice` process with a URP socket listener. A minimal
 custom-built Debian image is recommended — it's faster and smaller
 than alternatives (see [PERFORMANCE.md](PERFORMANCE.md)), but a
-pre-built Alpine image like `libreofficedocker/alpine` works too:
+pre-built Alpine image like `libreofficedocker/alpine` works too.
+
+Build the image from `benchmarks/Dockerfile.soffice-debian` (or use
+your own Debian/Ubuntu image with LibreOffice installed):
 
 ```sh
-docker run \
-  --detach \
-  --name soffice \
-  --publish 2002:2002 \
-  soffice-debian \
-  soffice --headless --norestore \
-    --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
+docker build --tag soffice --file benchmarks/Dockerfile.soffice-debian benchmarks/
+docker run --detach --name soffice --publish 2002:2002 soffice
 ```
-
-See `benchmarks/Dockerfile.soffice-debian` for the image definition,
-or use your own Debian/Ubuntu image with LibreOffice installed.
 
 ## Usage
 
@@ -63,7 +58,7 @@ No supervision tree setup needed.
 {:ok, pdf_bytes} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export", output: :binary)
 
 # Raw bytes input
-{:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, filter: "calc_pdf_Export", output: :binary)
+{:ok, pdf_bytes} = URP.convert({:binary, xlsx_bytes}, filter: "calc_pdf_Export", output: :binary)
 
 # Enumerable input (e.g. File.stream!, S3 download stream)
 {:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
@@ -72,7 +67,7 @@ No supervision tree setup needed.
 :ok = URP.convert(input, filter: "writer_pdf_Export", output: fn chunk -> send_chunk(chunk) end)
 
 # Query soffice version
-{:ok, "25.8.1.1"} = URP.version()
+{:ok, "26.2.0.3"} = URP.version()
 ```
 
 Configure the default pool in `config/runtime.exs`:
