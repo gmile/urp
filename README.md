@@ -4,8 +4,8 @@
 [![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/urp/readme.html)
 
 Pure Elixir client for the [UNO Remote Protocol](https://wiki.openoffice.org/wiki/Uno/Binary/Spec/Protocol).
-Converts documents by talking directly to `soffice` over a TCP socket —
-no wrappers or sidecars needed.
+Talks directly to a `soffice` process over a TCP socket —
+no Python, no wrappers, no sidecars.
 
 ## Why?
 
@@ -15,8 +15,10 @@ Existing approaches to LibreOffice integration —
 Python UNO bindings — each add an intermediate layer with its own
 deployment complexity and failure modes.
 
-URP speaks the binary protocol directly over TCP to a `soffice`
-process. No Python runtime, no wrapper services.
+URP speaks the binary protocol directly over TCP. Document conversion
+is the primary use case, but the same connection gives you access to
+soffice diagnostics — registered services, available export filters,
+document types, locale settings, and version info.
 
 ## Installation
 
@@ -49,7 +51,9 @@ docker run --detach --name soffice --publish 2002:2002 soffice
 
 ## Usage
 
-A default pool connects to `localhost:2002` automatically:
+A default pool connects to `localhost:2002` automatically.
+
+### Document conversion
 
 ```elixir
 {:ok, pdf_path} =
@@ -75,9 +79,20 @@ for all formats (`calc_pdf_Export`, `impress_pdf_Export`, etc.) and
 [FilterData properties](https://wiki.documentfoundation.org/Macros/Python_Guide/PDF_export_filter_data)
 for PDF export options.
 
-Configure in `config/runtime.exs`:
+### Diagnostics
 
 ```elixir
+{:ok, "25.8.1.1"} = URP.version()
+{:ok, services}   = URP.services()   # all registered UNO service names
+{:ok, filters}    = URP.filters()    # available export filters
+{:ok, types}      = URP.types()      # known document type names
+{:ok, locale}     = URP.locale()     # soffice locale setting
+```
+
+### Configuration
+
+```elixir
+# config/runtime.exs
 config :urp, :default,
   host: "soffice",
   port: 2002,
@@ -108,17 +123,17 @@ and container image recommendations.
 
 ## Scope
 
-Implements document conversion and version detection via UNO. The output
-format is controlled by [export filter names](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
+Implements document conversion and read-only soffice introspection via UNO.
+Export format is controlled by [filter names](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
 (`writer_pdf_Export`, `calc_pdf_Export`, `impress_pdf_Export`, `Markdown`, etc.).
-Other UNO APIs (editing, formatting, macros) are not implemented.
+Mutating UNO APIs (editing, formatting, macros) are not implemented.
 
 ## Architecture
 
 | Module | Role |
 |---|---|
-| `URP` | Public API — convert, version, test stubs |
-| `URP.Bridge` | Mid-level — UNO operations (handshake, load, store, close, streaming) |
+| `URP` | Public API — convert, diagnostics, test stubs |
+| `URP.Bridge` | Mid-level — UNO operations (handshake, convert, diagnostics, streaming) |
 | `URP.Stream` | Bidirectional URP dispatch for XInputStream/XOutputStream |
 | `URP.Protocol` | Low-level — binary wire format (framing, encoding, reply parsing) |
 
