@@ -97,12 +97,6 @@ end
 Stubs are per-process and propagate through `$callers` (Tasks, GenServers).
 See `URP.Test` for details.
 
-Integration tests require soffice on `localhost:2002`:
-
-```sh
-mix test
-```
-
 ## Performance
 
 See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks against Gotenberg
