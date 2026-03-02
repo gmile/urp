@@ -56,10 +56,20 @@ defmodule URP.Bridge do
   @xi_output_stream "com.sun.star.io.XOutputStream"
   @xi_multi_service_factory "com.sun.star.lang.XMultiServiceFactory"
   @xi_name_access "com.sun.star.container.XNameAccess"
+  @xi_simple_file_access "com.sun.star.ucb.XSimpleFileAccess"
 
   # Special function IDs — binaryurp/source/specialfunctionids.hxx
   @func_query_interface 0
   @func_request_change 4
+
+  # XSimpleFileAccess funcIDs (XInterface 0-2, then IDL order):
+  # copy=3, move=4, kill=5, isFolder=6, ..., openFileWrite=16
+  @func_sfa_kill 5
+  @func_sfa_open_file_write 16
+
+  # XOutputStream funcIDs (writeBytes=3, flush=4, closeOutput=5)
+  @func_os_write_bytes 3
+  @func_os_close_output 5
 
   import Bitwise
 
@@ -336,6 +346,82 @@ defmodule URP.Bridge do
     end
   end
 
+  @doc """
+  Load a document by writing bytes to soffice's filesystem via XSimpleFileAccess.
+
+  Instead of streaming bytes through XInputStream (which causes thousands of
+  tiny read/seek round-trips), this writes the entire document to a temp file
+  on soffice's filesystem and loads from a `file://` URL.
+
+  Returns `{doc_oid, updated_conn, temp_url}`. The caller must delete the temp
+  file after conversion via `delete_file!/2`.
+  """
+  @spec load_document_write!(t(), binary()) :: {doc_oid(), t(), String.t()}
+  def load_document_write!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
+    # Seed the TID read cache (bootstrap ran in pool worker, we're in checkout process)
+    if conn.tid_cache != %{} do
+      existing = Process.get(:urp_tid_cache, %{})
+      Process.put(:urp_tid_cache, Map.merge(conn.tid_cache, existing))
+    end
+
+    {sfa_oid, conn} = ensure_sfa!(conn)
+    id = :erlang.unique_integer([:positive])
+    url = "file:///tmp/urp_in_#{id}"
+
+    # openFileWrite(url) → XOutputStream
+    P.send_frame(
+      conn.sock,
+      P.request(@func_sfa_open_file_write, type: {:cached, 19}, oid: {sfa_oid, 9}) <>
+        P.null_ctx() <> P.enc_str(url)
+    )
+
+    os_oid =
+      P.parse_interface_reply(recv_reply!(conn.sock)) ||
+        raise "openFileWrite failed"
+
+    # QI for XOutputStream
+    qi!(
+      conn,
+      P.request(@func_query_interface, type: {:cached, 1}, oid: {os_oid, 12}),
+      P.type_new(@xi_output_stream, 20)
+    )
+
+    # writeBytes(bytes) — single URP frame with all data
+    P.send_frame(
+      conn.sock,
+      P.request(@func_os_write_bytes, type: {:cached, 20}) <>
+        P.null_ctx() <> P.enc_str(bytes)
+    )
+
+    recv_reply!(conn.sock)
+
+    # closeOutput()
+    P.send_frame(
+      conn.sock,
+      P.request(@func_os_close_output) <> P.null_ctx()
+    )
+
+    recv_reply!(conn.sock)
+
+    # loadComponentFromURL(url, ...)
+    doc_oid = load_document!(conn, url)
+
+    {doc_oid, conn, url}
+  end
+
+  @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
+  @spec delete_file!(t(), String.t()) :: :ok
+  def delete_file!(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
+    P.send_frame(
+      conn.sock,
+      P.request(@func_sfa_kill, type: {:cached, 19}, oid: {sfa_oid, 9}) <>
+        P.null_ctx() <> P.enc_str(url)
+    )
+
+    recv_reply!(conn.sock)
+    :ok
+  end
+
   defp load_from_input_source!(conn, source) do
     # Seed the TID read cache with entries from bootstrap (which ran in the pool worker process)
     if conn.tid_cache != %{} do
@@ -436,6 +522,35 @@ defmodule URP.Bridge do
     # soffice will call writeBytes/flush/closeOutput on our stream
     {_reply, result} = URP.Stream.recv_handling_output(conn.sock, sink)
     result
+  end
+
+  ## SimpleFileAccess — lazily created for write-based document loading
+
+  defp ensure_sfa!(%__MODULE__{sfa_oid: oid} = conn) when is_binary(oid), do: {oid, conn}
+
+  defp ensure_sfa!(%__MODULE__{} = conn) do
+    # createInstanceWithContext on smgr (XMultiComponentFactory cached at type 4)
+    P.send_frame(
+      conn.sock,
+      P.request(3, type: {:cached, 4}, oid: {conn.smgr_oid, 3}) <>
+        P.null_ctx() <>
+        P.enc_str("com.sun.star.ucb.SimpleFileAccess") <>
+        <<0x00, 2::16>>
+    )
+
+    sfa_oid =
+      P.parse_interface_reply(recv_reply!(conn.sock)) ||
+        raise "createInstanceWithContext(SimpleFileAccess) failed"
+
+    # QI for XSimpleFileAccess
+    qi!(
+      conn,
+      P.request(@func_query_interface, type: {:cached, 1}, oid: {sfa_oid, 9}),
+      P.type_new(@xi_simple_file_access, 19)
+    )
+
+    conn = %{conn | sfa_oid: sfa_oid}
+    {sfa_oid, conn}
   end
 
   ## Handshake
