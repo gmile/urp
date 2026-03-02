@@ -10,7 +10,10 @@ RUN echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sou
       fonts-liberation fonts-crosextra-carlito && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 2002
+ENV HOST=0.0.0.0
+ENV PORT=2002
 
-CMD ["soffice", "--headless", "--norestore", \
-     "--accept=socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"]
+EXPOSE ${PORT}
+
+CMD soffice --headless --norestore \
+    --accept="socket,host=${HOST},port=${PORT},tcpNoDelay=1;urp;"

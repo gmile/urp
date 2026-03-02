@@ -131,9 +131,11 @@ RUN echo 'deb http://deb.debian.org/debian trixie-backports main' \
     apt-get install -y --no-install-recommends \
       fonts-liberation fonts-crosextra-carlito && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
-EXPOSE 2002
-CMD ["soffice", "--headless", "--norestore", \
-     "--accept=socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"]
+ENV HOST=0.0.0.0
+ENV PORT=2002
+EXPOSE ${PORT}
+CMD soffice --headless --norestore \
+    --accept="socket,host=${HOST},port=${PORT},tcpNoDelay=1;urp;"
 ```
 
 This uses glibc, gets LibreOffice from trixie-backports (latest Fresh
