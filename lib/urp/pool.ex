@@ -52,7 +52,7 @@ defmodule URP.Pool do
           {:ok, binary()} | :ok | {:error, String.t()}
   def convert(pool, input, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
-    store_opts = Keyword.take(opts, [:filter, :sink])
+    store_opts = Keyword.take(opts, [:filter, :filter_data, :sink])
 
     do_checkout(pool, timeout, fn conn ->
       doc = load_input!(conn, input)

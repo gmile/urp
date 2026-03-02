@@ -63,8 +63,10 @@ defmodule URP.Bridge do
 
   # UNO TypeClass values for property encoding — include/typelib/typeclass.h
   @tc_boolean 2
+  @tc_long 6
   @tc_string 12
   @tc_struct 17
+  @tc_sequence 20
   @tc_interface 22
   @tc_new 0x80
 
@@ -132,9 +134,12 @@ defmodule URP.Bridge do
   Store a document to a `file://` URL with the given [export filter](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html).
 
   Common filters: `"writer_pdf_Export"`, `"calc_pdf_Export"`, `"impress_pdf_Export"`.
+
+  `filter_data` is an optional keyword list of export-specific options passed
+  as a nested `FilterData` property (e.g. `[UseLosslessCompression: true]`).
   """
-  @spec store_to_url!(t(), doc_oid(), String.t(), String.t()) :: nil
-  def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter) do
+  @spec store_to_url!(t(), doc_oid(), String.t(), String.t(), keyword()) :: nil
+  def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter, filter_data \\ []) do
     qi!(
       conn,
       P.request(@func_query_interface,
@@ -144,14 +149,18 @@ defmodule URP.Bridge do
       P.type_new(@xi_storable2, 7)
     )
 
+    filter_data_bin = encode_filter_data(filter_data)
+    prop_count = if filter_data == [], do: 1, else: 2
+
     # storeToURL — funcID 8: XInterface(0-2) + XStorable(3-8)
     P.send_frame(
       conn.sock,
       P.request(8, type: {:new, @xi_storable2, 8}) <>
         P.null_ctx() <>
         P.enc_str(url) <>
-        <<1>> <>
-        P.property("FilterName", @tc_string, P.enc_str(filter))
+        <<prop_count>> <>
+        P.property("FilterName", @tc_string, P.enc_str(filter)) <>
+        filter_data_bin
     )
 
     reply = recv_reply!(conn.sock)
@@ -387,6 +396,7 @@ defmodule URP.Bridge do
   @spec store_to_stream!(t(), doc_oid(), keyword()) :: binary() | :ok
   def store_to_stream!(%__MODULE__{} = conn, doc_oid, opts \\ []) do
     filter = Keyword.fetch!(opts, :filter)
+    filter_data = Keyword.get(opts, :filter_data, [])
     sink = Keyword.get(opts, :sink)
     stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
 
@@ -399,15 +409,19 @@ defmodule URP.Bridge do
       P.type_new(@xi_storable2, 7)
     )
 
-    # storeToURL("private:stream", [FilterName, OutputStream])
+    filter_data_bin = encode_filter_data(filter_data)
+    prop_count = if filter_data == [], do: 2, else: 3
+
+    # storeToURL("private:stream", [FilterName, FilterData?, OutputStream])
     # funcID 8: XInterface(0-2) + XStorable(3-8)
     P.send_frame(
       conn.sock,
       P.request(8, type: {:new, @xi_storable2, 8}) <>
         P.null_ctx() <>
         P.enc_str("private:stream") <>
-        <<2>> <>
+        <<prop_count>> <>
         P.property("FilterName", @tc_string, P.enc_str(filter)) <>
+        filter_data_bin <>
         P.property(
           "OutputStream",
           @tc_interface ||| @tc_new,
@@ -501,6 +515,32 @@ defmodule URP.Bridge do
     P.send_frame(sock, header <> P.null_ctx() <> body_type_param)
     P.parse_qi_reply(recv_reply!(sock))
   end
+
+  ## FilterData encoding — nested sequence<PropertyValue> for export options
+
+  defp encode_filter_data([]), do: <<>>
+
+  defp encode_filter_data(filter_data) do
+    inner =
+      for {name, value} <- filter_data, into: <<>> do
+        {tc, bytes} = encode_any_value(value)
+        P.property(to_string(name), tc, bytes)
+      end
+
+    P.property(
+      "FilterData",
+      @tc_sequence ||| @tc_new,
+      <<18::16>> <>
+        P.enc_str("[]com.sun.star.beans.PropertyValue") <>
+        <<length(filter_data)>> <>
+        inner
+    )
+  end
+
+  defp encode_any_value(true), do: {@tc_boolean, <<1>>}
+  defp encode_any_value(false), do: {@tc_boolean, <<0>>}
+  defp encode_any_value(n) when is_integer(n), do: {@tc_long, <<n::32-signed>>}
+  defp encode_any_value(s) when is_binary(s), do: {@tc_string, P.enc_str(s)}
 
   ## Dispatching recv — handles stray incoming requests (e.g. release() on
   ## exported stream objects) with a void reply, until we get the actual reply.
