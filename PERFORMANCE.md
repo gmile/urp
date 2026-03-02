@@ -149,7 +149,7 @@ New. `fonts-crosextra-carlito` provides a Calibri replacement.
 
 ### Why not Alpine?
 
-The pre-built `libreofficedocker/alpine` image has three problems:
+The pre-built `libreofficedocker/alpine` image suffers from these issues:
 
 1. **Outdated LibreOffice.** Alpine community repos track the Still
    line (25.8.x). Debian trixie-backports ships 26.2.x (Fresh).
