@@ -25,7 +25,7 @@ defmodule URP.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md", "CHANGELOG.md", "LICENSE"]
+      extras: ["README.md", "PERFORMANCE.md", "CHANGELOG.md", "LICENSE"]
     ]
   end
 
@@ -33,7 +33,7 @@ defmodule URP.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/gmile/urp"},
-      files: ~w(lib .formatter.exs mix.exs VERSION README.md LICENSE CHANGELOG.md),
+      files: ~w(lib .formatter.exs mix.exs VERSION README.md PERFORMANCE.md LICENSE CHANGELOG.md),
       exclude_patterns: [~r/lib\/mix/]
     ]
   end

@@ -29,24 +29,23 @@ end
 
 ## Prerequisites
 
-A running `soffice` process with a URP socket listener:
-
-```sh
-soffice --headless --norestore \
-  --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
-```
-
-Or via Docker:
+A running `soffice` process with a URP socket listener. A minimal
+custom-built Debian image is recommended — it's faster and smaller
+than alternatives (see [PERFORMANCE.md](PERFORMANCE.md)), but a
+pre-built Alpine image like `libreofficedocker/alpine` works too:
 
 ```sh
 docker run \
   --detach \
   --name soffice \
   --publish 2002:2002 \
-  libreofficedocker/alpine:3.23 \
+  soffice-debian \
   soffice --headless --norestore \
     --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
 ```
+
+See `benchmarks/Dockerfile.soffice-debian` for the image definition,
+or use your own Debian/Ubuntu image with LibreOffice installed.
 
 ## Usage
 
@@ -123,17 +122,11 @@ Integration tests require soffice on `localhost:2002`:
 mix test
 ```
 
-## Benchmarks
+## Performance
 
-Compare URP against [Gotenberg](https://gotenberg.dev/) end-to-end:
-
-```sh
-docker compose --file benchmarks/docker-compose.yml up --detach --wait
-mix run benchmarks/bench.exs
-
-# Override fixture
-FIXTURE=sample3.docx mix run benchmarks/bench.exs
-```
+See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks, container image
+recommendations (Debian vs Alpine), and `strace` analysis of allocator
+overhead.
 
 ## Scope
 
