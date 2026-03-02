@@ -59,12 +59,12 @@ defmodule URP.Pool do
       {doc, conn, cleanup_url} = load_input!(conn, input)
       {bytes, conn} = Bridge.store_document_write!(conn, doc, store_opts)
       result = apply_sink(bytes, sink)
-      close_status = safe_close(conn, doc)
-      safe_cleanup(conn, cleanup_url)
-      URP.Stream.clear_input_ctx()
+      {close_status, conn} = safe_close(conn, doc)
+      conn = safe_cleanup(conn, cleanup_url)
+      Process.delete(:urp_tid_cache)
 
       case close_status do
-        :ok -> {wrap_result(result), {:ok, conn}}
+        :ok -> {wrap_result(result), {:ok, reset_conversion_state(conn)}}
         :closed -> {wrap_result(result), :closed}
       end
     end)
@@ -79,7 +79,8 @@ defmodule URP.Pool do
   end
 
   defp load_input!(conn, enumerable) do
-    {Bridge.load_document_enum_stream!(conn, enumerable), conn, nil}
+    {doc, conn} = Bridge.load_document_enum_stream!(conn, enumerable)
+    {doc, conn, nil}
   end
 
   defp do_checkout(pool, timeout, fun, attempt \\ 1) do
@@ -175,19 +176,23 @@ defmodule URP.Pool do
     :ok
   end
 
-  defp safe_cleanup(_conn, nil), do: :ok
+  defp safe_cleanup(conn, nil), do: conn
 
   defp safe_cleanup(conn, url) do
     Bridge.delete_file!(conn, url)
   rescue
-    RuntimeError -> :ok
+    RuntimeError -> conn
   end
 
   defp safe_close(conn, doc) do
-    Bridge.close_document!(conn, doc)
-    :ok
+    {_reply, conn} = Bridge.close_document!(conn, doc)
+    {:ok, conn}
   rescue
-    RuntimeError -> :closed
+    RuntimeError -> {:closed, conn}
+  end
+
+  defp reset_conversion_state(conn) do
+    %{conn | input_ctx: nil, reply_tid: nil, reader_type: nil}
   end
 
   defp wrap_result(:ok), do: :ok

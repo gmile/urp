@@ -27,6 +27,7 @@ defmodule URP.Stream do
       XOutputStream: writeBytes=3, flush=4, closeOutput=5
   """
 
+  alias URP.Bridge
   alias URP.Protocol, as: P
 
   import Bitwise
@@ -64,22 +65,19 @@ defmodule URP.Stream do
   like docx and xlsx.
 
   Dispatches calls until we receive the reply to our pending request.
-  Returns the reply payload.
+  Returns `{reply_payload, updated_conn}`.
   """
-  @spec recv_handling_input(
-          :gen_tcp.socket(),
-          input_source() | source(),
-          String.t() | nil
-        ) :: binary()
-  def recv_handling_input(sock, data, stream_oid \\ nil)
+  @spec recv_handling_input(Bridge.t(), input_source() | source(), String.t() | nil) ::
+          {binary(), Bridge.t()}
+  def recv_handling_input(conn, data, stream_oid \\ nil)
 
-  def recv_handling_input(sock, data, stream_oid) when is_binary(data) do
-    recv_handling_input(sock, {:mem, data, 0}, stream_oid)
+  def recv_handling_input(conn, data, stream_oid) when is_binary(data) do
+    recv_handling_input(conn, {:mem, data, 0}, stream_oid)
   end
 
-  def recv_handling_input(sock, source, stream_oid) do
+  def recv_handling_input(conn, source, stream_oid) do
     do_recv_input(
-      sock,
+      conn,
       source,
       stream_oid,
       _seekable_cache = nil,
@@ -88,108 +86,81 @@ defmodule URP.Stream do
     )
   end
 
-  defp do_recv_input(sock, source, stream_oid, seekable_cache, last_type, input_cache) do
-    payload = P.recv_frame(sock)
+  defp do_recv_input(conn, source, stream_oid, seekable_cache, last_type, input_cache) do
+    payload = P.recv_frame(conn.sock)
 
     if P.is_reply?(payload) do
-      # Save input context so the stream can be served during store/close phases
-      if seekable_cache do
-        Process.put(:urp_input_ctx, %{
-          source: source,
-          seekable_cache: seekable_cache,
-          input_cache: input_cache
-        })
-      end
+      # Save input context on conn so the stream can be served during store/close phases
+      conn =
+        if seekable_cache do
+          %{
+            conn
+            | input_ctx: %{
+                source: source,
+                seekable_cache: seekable_cache,
+                input_cache: input_cache
+              }
+          }
+        else
+          conn
+        end
 
-      payload
+      {payload, conn}
     else
       %{func_id: func_id, body: body, type_cache: type_cache, tid: new_tid} =
         P.parse_request(payload)
 
-      tid = track_tid(new_tid)
+      conn = if new_tid, do: %{conn | reply_tid: new_tid}, else: conn
       active_type = type_cache || last_type
-      track_type(type_cache)
+      conn = if type_cache, do: %{conn | reader_type: type_cache}, else: conn
       input_cache = input_cache || type_cache
 
       {reply, source, seekable_cache} =
         dispatch_input(func_id, active_type, body, source, stream_oid, seekable_cache)
 
-      if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
-      do_recv_input(sock, source, stream_oid, seekable_cache, active_type, input_cache)
+      if not P.one_way?(func_id), do: P.send_frame(conn.sock, inject_tid(reply, conn.reply_tid))
+      do_recv_input(conn, source, stream_oid, seekable_cache, active_type, input_cache)
     end
   end
 
   @doc """
   Try to handle a stray request as an input stream call.
 
-  Called by `Bridge.recv_reply!/1` when it encounters a non-reply message
+  Called by `Bridge.recv_reply/1` when it encounters a non-reply message
   outside the main stream recv loop. Returns `:not_input` if the request
   doesn't match the active input stream context.
   """
-  @spec try_handle_input(:gen_tcp.socket(), binary()) :: :handled | :not_input
-  def try_handle_input(sock, payload) do
-    case Process.get(:urp_input_ctx) do
-      nil ->
+  @spec try_handle_input(Bridge.t(), binary()) :: {:handled, Bridge.t()} | :not_input
+  def try_handle_input(%Bridge{input_ctx: nil}, _payload), do: :not_input
+
+  def try_handle_input(%Bridge{input_ctx: ctx} = conn, payload) do
+    %{func_id: func_id, body: body, type_cache: type_cache, tid: new_tid} =
+      P.parse_request(payload)
+
+    conn = if new_tid, do: %{conn | reply_tid: new_tid}, else: conn
+    # Use the conn's reader_type (updated by all recv loops), not the
+    # stale load-phase ctx.last_type which doesn't see store-phase types.
+    active_type = type_cache || conn.reader_type
+    conn = if type_cache, do: %{conn | reader_type: type_cache}, else: conn
+
+    cond do
+      func_id <= 2 ->
+        # QI, acquire, release — handled generically by the caller
         :not_input
 
-      ctx ->
-        %{func_id: func_id, body: body, type_cache: type_cache, tid: new_tid} =
-          P.parse_request(payload)
+      ctx.seekable_cache != nil and active_type == ctx.seekable_cache ->
+        {reply, source} = handle_seekable(func_id, body, ctx.source)
+        if not P.one_way?(func_id), do: P.send_frame(conn.sock, inject_tid(reply, conn.reply_tid))
+        {:handled, %{conn | input_ctx: %{ctx | source: source}}}
 
-        tid = track_tid(new_tid)
-        # Use the global reader type (updated by all recv loops), not the
-        # stale load-phase ctx.last_type which doesn't see store-phase types.
-        active_type = track_type(type_cache)
+      active_type == ctx.input_cache ->
+        {reply, source} = handle_input(func_id, body, ctx.source)
+        if not P.one_way?(func_id), do: P.send_frame(conn.sock, inject_tid(reply, conn.reply_tid))
+        {:handled, %{conn | input_ctx: %{ctx | source: source}}}
 
-        cond do
-          func_id <= 2 ->
-            # QI, acquire, release — handled generically by the caller
-            :not_input
-
-          ctx.seekable_cache != nil and active_type == ctx.seekable_cache ->
-            {reply, source} = handle_seekable(func_id, body, ctx.source)
-            if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
-            Process.put(:urp_input_ctx, %{ctx | source: source})
-            :handled
-
-          active_type == ctx.input_cache ->
-            {reply, source} = handle_input(func_id, body, ctx.source)
-            if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
-            Process.put(:urp_input_ctx, %{ctx | source: source})
-            :handled
-
-          true ->
-            :not_input
-        end
+      true ->
+        :not_input
     end
-  end
-
-  @doc "Clear the saved input context. Call after the conversion is complete."
-  @spec clear_input_ctx() :: :ok
-  def clear_input_ctx do
-    Process.delete(:urp_input_ctx)
-    Process.delete(:urp_reply_tid)
-    Process.delete(:urp_reader_type)
-    Process.delete(:urp_tid_cache)
-    :ok
-  end
-
-  @doc false
-  @spec track_tid(binary() | nil) :: binary() | nil
-  def track_tid(nil), do: Process.get(:urp_reply_tid)
-
-  def track_tid(tid) when is_binary(tid) do
-    Process.put(:urp_reply_tid, tid)
-    tid
-  end
-
-  @doc false
-  @spec track_type(non_neg_integer() | nil) :: non_neg_integer() | nil
-  def track_type(nil), do: Process.get(:urp_reader_type)
-
-  def track_type(tc) when is_integer(tc) do
-    Process.put(:urp_reader_type, tc)
-    tc
   end
 
   @doc false
@@ -315,51 +286,54 @@ defmodule URP.Stream do
 
   `sink` controls where output bytes go:
 
-    * `nil` (default) — accumulate in memory, returns `{reply, binary}`
-    * `{:path, path}` — write chunks to file as they arrive, returns `{reply, :ok}`
-    * `fun/1` — call with each chunk, returns `{reply, :ok}`
+    * `nil` (default) — accumulate in memory, returns `{reply, binary, conn}`
+    * `{:path, path}` — write chunks to file as they arrive, returns `{reply, :ok, conn}`
+    * `fun/1` — call with each chunk, returns `{reply, :ok, conn}`
   """
-  @spec recv_handling_output(:gen_tcp.socket(), sink()) :: {binary(), binary() | :ok}
-  def recv_handling_output(sock, sink \\ nil)
+  @spec recv_handling_output(Bridge.t(), sink()) :: {binary(), binary() | :ok, Bridge.t()}
+  def recv_handling_output(conn, sink \\ nil)
 
-  def recv_handling_output(sock, nil) do
-    do_recv_output(sock, {:mem, []})
+  def recv_handling_output(conn, nil) do
+    do_recv_output(conn, {:mem, []})
   end
 
-  def recv_handling_output(sock, {:path, path}) do
+  def recv_handling_output(conn, {:path, path}) do
     fd = File.open!(path, [:write, :binary, :raw])
 
     try do
-      do_recv_output(sock, {:file, fd})
+      do_recv_output(conn, {:file, fd})
     after
       File.close(fd)
     end
   end
 
-  def recv_handling_output(sock, fun) when is_function(fun, 1) do
-    do_recv_output(sock, {:fun, fun})
+  def recv_handling_output(conn, fun) when is_function(fun, 1) do
+    do_recv_output(conn, {:fun, fun})
   end
 
-  defp do_recv_output(sock, sink) do
-    payload = P.recv_frame(sock)
+  defp do_recv_output(conn, sink) do
+    payload = P.recv_frame(conn.sock)
 
     if P.is_reply?(payload) do
-      {payload, finalize_sink(sink)}
+      {payload, finalize_sink(sink), conn}
     else
       # soffice may interleave input stream requests (lazy content loading) during store
-      case try_handle_input(sock, payload) do
-        :handled ->
-          do_recv_output(sock, sink)
+      case try_handle_input(conn, payload) do
+        {:handled, conn} ->
+          do_recv_output(conn, sink)
 
         :not_input ->
           %{func_id: func_id, body: body, tid: new_tid, type_cache: tc} =
             P.parse_request(payload)
 
-          tid = track_tid(new_tid)
-          track_type(tc)
+          conn = if new_tid, do: %{conn | reply_tid: new_tid}, else: conn
+          conn = if tc, do: %{conn | reader_type: tc}, else: conn
           {reply, sink} = handle_output(func_id, body, sink)
-          if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
-          do_recv_output(sock, sink)
+
+          if not P.one_way?(func_id),
+            do: P.send_frame(conn.sock, inject_tid(reply, conn.reply_tid))
+
+          do_recv_output(conn, sink)
       end
     end
   end
