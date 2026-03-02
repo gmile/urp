@@ -141,7 +141,10 @@ defmodule URP.Bridge do
   @tid_protocol_props ".UrpProtocolPropertiesTid"
   @oid_component_context "StarOffice.ComponentContext"
 
-  # OID cache indices — sequential allocation for object identity references
+  # OID/TID cache indices — sequential allocation for identity references.
+  # Index 0 is allocated during handshake, index 1 during bootstrap.
+  @cache_handshake 0
+  @cache_bootstrap 1
   @oid_ctx 2
   @oid_smgr 3
   @oid_desktop 4
@@ -169,6 +172,44 @@ defmodule URP.Bridge do
 
   # Minimum signed int32 — guarantees we lose the nonce negotiation
   @losing_nonce <<-2_147_483_648::32-signed>>
+
+  # Pre-built static frame bodies — no runtime values, computed at compile time.
+
+  @handshake_request_change P.request(@func_request_change,
+                              type: @type_new_protocol_props,
+                              oid: {@oid_protocol_props, @cache_handshake},
+                              tid: {@tid_protocol_props, @cache_handshake}
+                            ) <> @losing_nonce
+
+  @get_service_manager P.request(@func_ctx_get_service_manager,
+                         type: @type_new_component_ctx
+                       ) <> P.null_ctx()
+
+  @close_document P.request(@func_closeable_close,
+                    type: @type_closeable
+                  ) <> P.null_ctx() <> <<1>>
+
+  @close_output P.request(@func_os_close_output) <> P.null_ctx()
+
+  @close_input P.request(@func_is_close_input) <> P.null_ctx()
+
+  @read_all_bytes P.request(@func_is_read_bytes,
+                    type: @type_is_sfa
+                  ) <> P.null_ctx() <> <<@max_read_bytes::32-signed>>
+
+  @get_version P.request(@func_na_get_by_name,
+                 type: @type_new_name_access
+               ) <> P.null_ctx() <> P.enc_str("ooSetupVersionAboutBox")
+
+  @create_config_access P.request(@func_msf_create_with_args, type: @type_new_msf) <>
+                          P.null_ctx() <>
+                          P.enc_str("com.sun.star.configuration.ConfigurationAccess") <>
+                          <<1>> <>
+                          <<@tc_struct ||| @tc_new, 14::16>> <>
+                          P.enc_str("com.sun.star.beans.NamedValue") <>
+                          P.enc_str("nodepath") <>
+                          <<@tc_string>> <>
+                          P.enc_str("/org.openoffice.Setup/Product")
 
   @doc "Connect to soffice, perform URP handshake, and bootstrap a Desktop reference."
   @spec open!(String.t(), non_neg_integer()) :: t()
@@ -279,11 +320,7 @@ defmodule URP.Bridge do
     )
 
     # close(deliverOwnership=true)
-    P.send_frame(
-      conn.sock,
-      P.request(@func_closeable_close, type: @type_closeable) <>
-        P.null_ctx() <> <<1>>
-    )
+    P.send_frame(conn.sock, @close_document)
 
     recv_reply!(conn.sock)
   end
@@ -327,18 +364,7 @@ defmodule URP.Bridge do
     )
 
     # Step 3: createInstanceWithArguments("...ConfigurationAccess", [NamedValue("nodepath", ...)])
-    P.send_frame(
-      sock,
-      P.request(@func_msf_create_with_args, type: @type_new_msf) <>
-        P.null_ctx() <>
-        P.enc_str("com.sun.star.configuration.ConfigurationAccess") <>
-        <<1>> <>
-        <<@tc_struct ||| @tc_new, 14::16>> <>
-        P.enc_str("com.sun.star.beans.NamedValue") <>
-        P.enc_str("nodepath") <>
-        <<@tc_string>> <>
-        P.enc_str("/org.openoffice.Setup/Product")
-    )
+    P.send_frame(sock, @create_config_access)
 
     reply = recv_reply!(sock)
 
@@ -357,12 +383,7 @@ defmodule URP.Bridge do
     )
 
     # Step 5: getByName("ooSetupVersionAboutBox")
-    P.send_frame(
-      sock,
-      P.request(@func_na_get_by_name, type: @type_new_name_access) <>
-        P.null_ctx() <>
-        P.enc_str("ooSetupVersionAboutBox")
-    )
+    P.send_frame(sock, @get_version)
 
     reply = recv_reply!(sock)
 
@@ -475,10 +496,7 @@ defmodule URP.Bridge do
     recv_reply!(conn.sock)
 
     # closeOutput()
-    P.send_frame(
-      conn.sock,
-      P.request(@func_os_close_output) <> P.null_ctx()
-    )
+    P.send_frame(conn.sock, @close_output)
 
     recv_reply!(conn.sock)
 
@@ -549,20 +567,10 @@ defmodule URP.Bridge do
       P.type_new(@xi_input_stream, 21)
     )
 
-    # readBytes(max_int32) — pull entire file in one frame
-    P.send_frame(
-      conn.sock,
-      P.request(@func_is_read_bytes, type: @type_is_sfa) <>
-        P.null_ctx() <> <<@max_read_bytes::32-signed>>
-    )
-
+    P.send_frame(conn.sock, @read_all_bytes)
     bytes = P.parse_read_bytes_reply(recv_reply!(conn.sock))
 
-    # closeInput()
-    P.send_frame(
-      conn.sock,
-      P.request(@func_is_close_input) <> P.null_ctx()
-    )
+    P.send_frame(conn.sock, @close_input)
 
     recv_reply!(conn.sock)
 
@@ -677,7 +685,10 @@ defmodule URP.Bridge do
     # createInstanceWithContext on smgr
     P.send_frame(
       conn.sock,
-      P.request(@func_mcf_create_with_context, type: @type_multi_comp_fac, oid: {conn.smgr_oid, @oid_smgr}) <>
+      P.request(@func_mcf_create_with_context,
+        type: @type_multi_comp_fac,
+        oid: {conn.smgr_oid, @oid_smgr}
+      ) <>
         P.null_ctx() <>
         P.enc_str("com.sun.star.ucb.SimpleFileAccess") <>
         @ctx_ref
@@ -705,14 +716,7 @@ defmodule URP.Bridge do
   defp handshake!(%__MODULE__{sock: sock}) do
     P.recv_frame(sock)
 
-    P.send_frame(
-      sock,
-      P.request(@func_request_change,
-        type: @type_new_protocol_props,
-        oid: {@oid_protocol_props, 0},
-        tid: {@tid_protocol_props, 0}
-      ) <> @losing_nonce
-    )
+    P.send_frame(sock, @handshake_request_change)
 
     <<0x80, 0::32>> = P.recv_frame(sock)
     P.send_frame(sock, P.reply(<<1::32-signed>>))
@@ -730,10 +734,10 @@ defmodule URP.Bridge do
         sock,
         P.request(@func_query_interface,
           type: @type_new_interface,
-          oid: {@oid_component_context, 1},
-          tid: {tid, 1}
+          oid: {@oid_component_context, @cache_bootstrap},
+          tid: {tid, @cache_bootstrap}
         ),
-        P.type_cached(1)
+        P.type_cached(@cache_bootstrap)
       )
 
     qi!(
@@ -742,12 +746,7 @@ defmodule URP.Bridge do
       P.type_new(@xi_component_ctx, 2)
     )
 
-    # getServiceManager
-    P.send_frame(
-      sock,
-      P.request(@func_ctx_get_service_manager, type: @type_new_component_ctx) <> P.null_ctx()
-    )
-
+    P.send_frame(sock, @get_service_manager)
     smgr_oid = P.parse_interface_reply(P.recv_frame(sock))
 
     # createInstanceWithContext("com.sun.star.frame.Desktop")
