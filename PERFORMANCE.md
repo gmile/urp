@@ -150,8 +150,8 @@ compared to a custom Debian image.
 
 ### musl allocator overhead
 
-Alpine uses musl libc, whose `mallocng` allocator relies on
-`mmap`/`munmap` for most allocations. LibreOffice does thousands of
+Alpine uses musl libc, whose [`mallocng`](https://git.musl-libc.org/cgit/musl/tree/src/malloc/mallocng/malloc.c)
+allocator relies on `mmap`/`munmap` for most allocations. LibreOffice does thousands of
 small alloc/free cycles during PDF rendering, each becoming a kernel
 syscall on musl. `strace -f -c` during a single conversion:
 
@@ -160,8 +160,10 @@ syscall on musl. `strace -f -c` during a single conversion:
 | `mmap`/`munmap` syscalls | 21,432 | 276 | 25 |
 | `mmap`/`munmap` time | 140 ms | ~1 ms | ~0.05 ms |
 
-This is inherent to musl and can be mitigated with
-`LD_PRELOAD=/usr/lib/libjemalloc.so.2` (install jemalloc first).
+This is [inherent to musl](https://docs.bell-sw.com/alpaquita-linux/latest/how-to/malloc/)
+and can be mitigated with
+[`LD_PRELOAD=/usr/lib/libjemalloc.so.2`](https://gist.github.com/toshimaru/b8e528c4be807612185277cc9da52b5a)
+(install jemalloc first).
 
 ### Image bloat
 
@@ -215,11 +217,3 @@ docker exec -d $SOFFICE strace -f -e trace=mmap,munmap -p 44 -o /tmp/strace_mmap
 docker exec $SOFFICE wc -l /tmp/strace_mmap.txt
 ```
 
-## References
-
-- [Bug 160033 — soffice PDF export is unreproducible](https://bugs.documentfoundation.org/show_bug.cgi?id=160033)
-- [qpdf --deterministic-id](https://qpdf.readthedocs.io/en/stable/cli.html)
-- [musl mallocng source](https://git.musl-libc.org/cgit/musl/tree/src/malloc/mallocng/malloc.c)
-- [Alpaquita Linux — selecting a malloc variant](https://docs.bell-sw.com/alpaquita-linux/latest/how-to/malloc/)
-- [jemalloc on Alpine](https://gist.github.com/toshimaru/b8e528c4be807612185277cc9da52b5a)
-- [glibc malloc tunable parameters](https://www.gnu.org/software/libc/manual/html_node/Malloc-Tunable-Parameters.html)
