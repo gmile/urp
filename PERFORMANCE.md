@@ -44,7 +44,7 @@ URP talks to soffice directly over a TCP socket.
 See `benchmarks/Dockerfile.soffice-debian`. Minimal Debian trixie-slim
 with LibreOffice from trixie-backports, `fonts-liberation` (metric-
 compatible with Arial/Times/Courier), and `fonts-crosextra-carlito`
-(Calibri replacement). ~607 MB vs Gotenberg's ~1.86 GB.
+(Calibri replacement). ~564 MB vs Gotenberg's ~1.86 GB.
 
 ## PDF output
 
@@ -88,7 +88,7 @@ stock Alpine image (`apk add font-carlito` to fix).
 
 | Setup | 2.6 MB | 15.5 MB | LO version | Image size |
 |-------|--------|---------|------------|------------|
-| URP → Debian glibc | 0.94 s | 6.73 s | 26.2.0 | ~607 MB |
+| URP → Debian glibc | 0.94 s | 6.73 s | 26.2.0 | ~564 MB |
 | URP → Alpine musl | 1.20 s | 11.11 s | 25.8.1 | ~1.78 GB |
 | Gotenberg (Debian glibc) | 1.19 s | 11.45 s | 26.2.0 | ~1.86 GB |
 
