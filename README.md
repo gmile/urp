@@ -29,18 +29,19 @@ end
 
 ## Prerequisites
 
-A running `soffice` process with a URP socket listener. A minimal
-custom-built Debian image is recommended — it's faster and smaller
-than alternatives (see [PERFORMANCE.md](PERFORMANCE.md)), but a
-pre-built Alpine image like `libreofficedocker/alpine` works too.
-
-Build the image from `benchmarks/Dockerfile.soffice-debian` (or use
-your own Debian/Ubuntu image with LibreOffice installed):
+A running `soffice` process with a URP socket listener. Build from
+`benchmarks/Dockerfile.soffice-debian` or use your own Debian/Ubuntu
+image with LibreOffice installed:
 
 ```sh
 docker build --tag soffice --file benchmarks/Dockerfile.soffice-debian benchmarks/
 docker run --detach --name soffice --publish 2002:2002 soffice
 ```
+
+> [!NOTE]
+> Any image with `soffice` listening on a TCP socket works — including
+> `libreofficedocker/alpine`. See [PERFORMANCE.md](PERFORMANCE.md) for
+> trade-offs.
 
 ## Usage
 
@@ -119,9 +120,8 @@ mix test
 
 ## Performance
 
-See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks, container image
-recommendations (Debian vs Alpine), and `strace` analysis of allocator
-overhead.
+See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks against Gotenberg
+and container image recommendations.
 
 ## Scope
 
