@@ -91,8 +91,9 @@ defmodule URP.Bridge do
   @func_ctx_get_value_by_name 3
   @func_ctx_get_service_manager 4
 
-  # XMultiComponentFactory: createInstanceWithContext=3
+  # XMultiComponentFactory: createInstanceWithContext=3, getAvailableServiceNames=5
   @func_mcf_create_with_context 3
+  @func_mcf_get_avail_services 5
 
   # XStorable2: storeToURL=8 (XInterface 0-2, XStorable 3-7, storeToURL 8)
   @func_storable_store_to_url 8
@@ -103,8 +104,9 @@ defmodule URP.Bridge do
   # XMultiServiceFactory: createInstanceWithArguments=4
   @func_msf_create_with_args 4
 
-  # XNameAccess: getByName=5 (XInterface 0-2, XElementAccess 3-4, getByName 5)
+  # XNameAccess (XInterface 0-2, XElementAccess 3-4, getByName 5, getElementNames 6)
   @func_na_get_by_name 5
+  @func_na_get_element_names 6
 
   # XSimpleFileAccess (XInterface 0-2, then IDL order):
   # copy=3, move=4, kill=5, isFolder=6, ..., openFileRead=15, openFileWrite=16
@@ -148,6 +150,14 @@ defmodule URP.Bridge do
   #  19  | XSimpleFileAccess                  | SFA QI body + method headers
   #  20  | XOutputStream                      | SFA write QI body + method headers
   #  21  | XInputStream                       | SFA read QI body + method headers
+  #  22  | XNameAccess                        | FilterFactory QI body
+  #  23  | XNameAccess                        | FilterFactory getElementNames header
+  #  24  | XNameAccess                        | TypeDetection QI body
+  #  25  | XNameAccess                        | TypeDetection getElementNames header
+  #  26  | XMultiServiceFactory               | locale config QI body
+  #  27  | XMultiServiceFactory               | locale createInstanceWithArgs header
+  #  28  | XNameAccess                        | locale config QI body
+  #  29  | XNameAccess                        | locale getByName header
 
   # Request header type tuples — {:cached, idx} or {:new, name, idx}
   @type_interface {:cached, 1}
@@ -165,6 +175,10 @@ defmodule URP.Bridge do
   @type_new_storable {:new, @xi_storable2, 8}
   @type_new_msf {:new, @xi_multi_service_factory, 13}
   @type_new_name_access {:new, @xi_name_access, 16}
+  @type_new_ff_name_access {:new, @xi_name_access, 23}
+  @type_new_td_name_access {:new, @xi_name_access, 25}
+  @type_new_locale_msf {:new, @xi_multi_service_factory, 27}
+  @type_new_locale_na {:new, @xi_name_access, 29}
 
   # Type cache indices for queryInterface body registration (see cache table above).
   # QI bodies and request headers each get their own slot, even for the same interface.
@@ -177,6 +191,10 @@ defmodule URP.Bridge do
   @qi_cache_sfa 19
   @qi_cache_sfa_output 20
   @qi_cache_sfa_input 21
+  @qi_cache_ff_name_access 22
+  @qi_cache_td_name_access 24
+  @qi_cache_locale_msf 26
+  @qi_cache_locale_na 28
 
   # Inline type cache indices for property value encoding (not request headers)
   @cache_export_input 10
@@ -205,6 +223,9 @@ defmodule URP.Bridge do
   @oid_export_output 11
   @oid_sfa_os 12
   @oid_sfa_is 13
+  @oid_filter_factory 14
+  @oid_type_detection 15
+  @oid_locale_config 16
 
   # createInstanceWithContext body suffix: null OID + component context cache
   @ctx_ref <<0x00, @oid_ctx::16>>
@@ -266,6 +287,20 @@ defmodule URP.Bridge do
                           P.enc_str("nodepath") <>
                           <<@tc_string>> <>
                           P.enc_str("/org.openoffice.Setup/Product")
+
+  @create_locale_config_access P.request(@func_msf_create_with_args, type: @type_new_locale_msf) <>
+                                 P.null_ctx() <>
+                                 P.enc_str("com.sun.star.configuration.ConfigurationAccess") <>
+                                 <<1>> <>
+                                 <<@tc_struct ||| @tc_new, @cache_named_value::16>> <>
+                                 P.enc_str("com.sun.star.beans.NamedValue") <>
+                                 P.enc_str("nodepath") <>
+                                 <<@tc_string>> <>
+                                 P.enc_str("/org.openoffice.Setup/L10N")
+
+  @get_locale P.request(@func_na_get_by_name,
+                type: @type_new_locale_na
+              ) <> P.null_ctx() <> P.enc_str("ooLocale")
 
   # Pre-built request prefixes — static header + null context, dynamic args appended at runtime.
 
@@ -436,6 +471,179 @@ defmodule URP.Bridge do
 
     P.parse_any_string_reply(reply) ||
       raise "getByName(ooSetupVersionAboutBox) failed: #{P.parse_exception(reply)}"
+  end
+
+  @doc """
+  List all service names registered in the UNO service manager.
+
+  Calls `XMultiComponentFactory.getAvailableServiceNames()`.
+  Returns a list of service name strings.
+  """
+  @spec services!(t()) :: [String.t()]
+  def services!(%__MODULE__{sock: sock} = conn) do
+    reply =
+      call!(
+        sock,
+        P.request(@func_mcf_get_avail_services,
+          type: @type_multi_comp_fac,
+          oid: {conn.smgr_oid, @oid_smgr}
+        ) <> P.null_ctx()
+      )
+
+    P.parse_string_sequence_reply(reply) ||
+      raise "getAvailableServiceNames failed: #{P.parse_exception(reply)}"
+  end
+
+  @doc """
+  List all export filter names registered in soffice.
+
+  Creates a `FilterFactory` instance and calls `getElementNames()` via `XNameAccess`.
+  Returns a list like `["writer_pdf_Export", "calc_pdf_Export", ...]`.
+  """
+  @spec filters!(t()) :: [String.t()]
+  def filters!(%__MODULE__{sock: sock} = conn) do
+    # 1. Create FilterFactory
+    reply =
+      call!(
+        sock,
+        P.request(@func_mcf_create_with_context,
+          type: @type_multi_comp_fac,
+          oid: {conn.smgr_oid, @oid_smgr}
+        ) <>
+          P.null_ctx() <>
+          P.enc_str("com.sun.star.document.FilterFactory") <> @ctx_ref
+      )
+
+    ff_oid =
+      P.parse_interface_reply(reply) ||
+        raise "createInstanceWithContext(FilterFactory) failed: #{P.parse_exception(reply)}"
+
+    # 2. QI to XNameAccess
+    qi!(
+      conn,
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {ff_oid, @oid_filter_factory}
+      ),
+      P.type_new(@xi_name_access, @qi_cache_ff_name_access)
+    )
+
+    # 3. getElementNames()
+    reply =
+      call!(
+        sock,
+        P.request(@func_na_get_element_names,
+          type: @type_new_ff_name_access
+        ) <> P.null_ctx()
+      )
+
+    P.parse_string_sequence_reply(reply) ||
+      raise "getElementNames(FilterFactory) failed: #{P.parse_exception(reply)}"
+  end
+
+  @doc """
+  List all document type names registered in soffice.
+
+  Creates a `TypeDetection` instance and calls `getElementNames()` via `XNameAccess`.
+  Returns a list like `["writer8", "calc8", ...]`.
+  """
+  @spec types!(t()) :: [String.t()]
+  def types!(%__MODULE__{sock: sock} = conn) do
+    # 1. Create TypeDetection
+    reply =
+      call!(
+        sock,
+        P.request(@func_mcf_create_with_context,
+          type: @type_multi_comp_fac,
+          oid: {conn.smgr_oid, @oid_smgr}
+        ) <>
+          P.null_ctx() <>
+          P.enc_str("com.sun.star.document.TypeDetection") <> @ctx_ref
+      )
+
+    td_oid =
+      P.parse_interface_reply(reply) ||
+        raise "createInstanceWithContext(TypeDetection) failed: #{P.parse_exception(reply)}"
+
+    # 2. QI to XNameAccess
+    qi!(
+      conn,
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {td_oid, @oid_type_detection}
+      ),
+      P.type_new(@xi_name_access, @qi_cache_td_name_access)
+    )
+
+    # 3. getElementNames()
+    reply =
+      call!(
+        sock,
+        P.request(@func_na_get_element_names,
+          type: @type_new_td_name_access
+        ) <> P.null_ctx()
+      )
+
+    P.parse_string_sequence_reply(reply) ||
+      raise "getElementNames(TypeDetection) failed: #{P.parse_exception(reply)}"
+  end
+
+  @doc """
+  Query the soffice locale string over URP.
+
+  Reads `ooLocale` from `/org.openoffice.Setup/L10N` via the configuration API.
+  Returns a locale string like `"en-US"` or `""` if not set.
+  """
+  @spec locale!(t()) :: String.t()
+  def locale!(%__MODULE__{sock: sock} = conn) do
+    # 1. Resolve the configuration provider singleton
+    reply =
+      call!(
+        sock,
+        P.request(@func_ctx_get_value_by_name,
+          type: @type_component_ctx,
+          oid: {conn.ctx_oid, @oid_ctx}
+        ) <>
+          P.null_ctx() <>
+          P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
+      )
+
+    config_provider_oid =
+      P.parse_qi_reply(reply) ||
+        raise "getValueByName(theDefaultProvider) failed: #{P.parse_exception(reply)}"
+
+    # 2. QI to XMultiServiceFactory
+    qi!(
+      conn,
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {config_provider_oid, @oid_config_provider}
+      ),
+      P.type_new(@xi_multi_service_factory, @qi_cache_locale_msf)
+    )
+
+    # 3. Open /org.openoffice.Setup/L10N via ConfigurationAccess
+    reply = call!(sock, @create_locale_config_access)
+
+    config_access_oid =
+      P.parse_interface_reply(reply) ||
+        raise "createInstanceWithArguments(ConfigurationAccess/L10N) failed: #{P.parse_exception(reply)}"
+
+    # 4. QI to XNameAccess
+    qi!(
+      conn,
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {config_access_oid, @oid_locale_config}
+      ),
+      P.type_new(@xi_name_access, @qi_cache_locale_na)
+    )
+
+    # 5. getByName("ooLocale")
+    reply = call!(sock, @get_locale)
+
+    P.parse_any_string_reply(reply) ||
+      raise "getByName(ooLocale) failed: #{P.parse_exception(reply)}"
   end
 
   @doc """

@@ -48,6 +48,46 @@ defmodule URP.Pool do
   end
 
   @doc false
+  @spec services(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def services(pool, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    do_checkout(pool, timeout, fn conn ->
+      {{:ok, Bridge.services!(conn)}, {:ok, conn}}
+    end)
+  end
+
+  @doc false
+  @spec filters(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def filters(pool, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    do_checkout(pool, timeout, fn conn ->
+      {{:ok, Bridge.filters!(conn)}, {:ok, conn}}
+    end)
+  end
+
+  @doc false
+  @spec types(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def types(pool, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    do_checkout(pool, timeout, fn conn ->
+      {{:ok, Bridge.types!(conn)}, {:ok, conn}}
+    end)
+  end
+
+  @doc false
+  @spec locale(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  def locale(pool, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    do_checkout(pool, timeout, fn conn ->
+      {{:ok, Bridge.locale!(conn)}, {:ok, conn}}
+    end)
+  end
+
+  @doc false
   @spec convert(NimblePool.pool(), binary() | {:binary, binary()} | Enumerable.t(), keyword()) ::
           {:ok, binary()} | :ok | {:error, String.t()}
   def convert(pool, input, opts \\ []) do

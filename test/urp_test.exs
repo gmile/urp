@@ -232,6 +232,61 @@ defmodule URPTest do
     end
   end
 
+  describe "services/0" do
+    test "returns a list of service names" do
+      assert {:ok, services} = URP.services()
+      assert is_list(services)
+      assert "com.sun.star.frame.Desktop" in services
+    end
+
+    test "pool stays usable after services query" do
+      assert {:ok, _services} = URP.services()
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert "%PDF-" <> _ = pdf
+    end
+  end
+
+  describe "filters/0" do
+    test "returns a list of filter names" do
+      assert {:ok, filters} = URP.filters()
+      assert is_list(filters)
+      assert "writer_pdf_Export" in filters
+    end
+
+    test "pool stays usable after filters query" do
+      assert {:ok, _filters} = URP.filters()
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert "%PDF-" <> _ = pdf
+    end
+  end
+
+  describe "types/0" do
+    test "returns a list of type names" do
+      assert {:ok, types} = URP.types()
+      assert is_list(types)
+      assert "writer8" in types
+    end
+
+    test "pool stays usable after types query" do
+      assert {:ok, _types} = URP.types()
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert "%PDF-" <> _ = pdf
+    end
+  end
+
+  describe "locale/0" do
+    test "returns a locale string" do
+      assert {:ok, locale} = URP.locale()
+      assert is_binary(locale)
+    end
+
+    test "pool stays usable after locale query" do
+      assert {:ok, _locale} = URP.locale()
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert "%PDF-" <> _ = pdf
+    end
+  end
+
   describe "consecutive conversions" do
     test "multiple conversions reuse pool" do
       docx = build_test_docx()

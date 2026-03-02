@@ -18,6 +18,16 @@ defmodule URP do
 
   See `convert/2` for usage examples and options.
 
+  ## Diagnostics
+
+  Query soffice state without converting anything:
+
+      {:ok, "25.8.1.1"} = URP.version()
+      {:ok, services} = URP.services()
+      {:ok, filters} = URP.filters()
+      {:ok, types} = URP.types()
+      {:ok, locale} = URP.locale()
+
   ## Named pools
 
   For multiple soffice instances, configure named pools:
@@ -51,6 +61,11 @@ defmodule URP do
   Returns the raw version string (e.g. `"25.8.1.1"`). Callers can use
   `Version.parse/1` if needed.
 
+  ## Examples
+
+      {:ok, version} = URP.version()
+      # => "25.8.1.1"
+
   ## Options
 
     * `:pool`    — named pool to use (default: the auto-started pool)
@@ -60,6 +75,95 @@ defmodule URP do
   def version(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.version(pool, opts)
+  end
+
+  @doc """
+  List all service names registered in the UNO service manager.
+
+  Returns a list of service name strings like `"com.sun.star.frame.Desktop"`.
+
+  ## Examples
+
+      {:ok, services} = URP.services()
+      "com.sun.star.frame.Desktop" in services
+      # => true
+
+  ## Options
+
+    * `:pool`    — named pool to use (default: the auto-started pool)
+    * `:timeout` — checkout timeout in ms (default `120_000`)
+  """
+  @spec services(keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def services(opts \\ []) do
+    {pool, opts} = resolve_pool(opts)
+    URP.Pool.services(pool, opts)
+  end
+
+  @doc """
+  List all export filter names registered in soffice.
+
+  Returns a list of filter name strings like `"writer_pdf_Export"`.
+  Useful for discovering which filters are available on the connected soffice.
+
+  ## Examples
+
+      {:ok, filters} = URP.filters()
+      "writer_pdf_Export" in filters
+      # => true
+
+  ## Options
+
+    * `:pool`    — named pool to use (default: the auto-started pool)
+    * `:timeout` — checkout timeout in ms (default `120_000`)
+  """
+  @spec filters(keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def filters(opts \\ []) do
+    {pool, opts} = resolve_pool(opts)
+    URP.Pool.filters(pool, opts)
+  end
+
+  @doc """
+  List all document type names registered in soffice.
+
+  Returns a list of type name strings like `"writer8"`.
+  These are the internal names soffice uses for file format detection.
+
+  ## Examples
+
+      {:ok, types} = URP.types()
+      "writer8" in types
+      # => true
+
+  ## Options
+
+    * `:pool`    — named pool to use (default: the auto-started pool)
+    * `:timeout` — checkout timeout in ms (default `120_000`)
+  """
+  @spec types(keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def types(opts \\ []) do
+    {pool, opts} = resolve_pool(opts)
+    URP.Pool.types(pool, opts)
+  end
+
+  @doc """
+  Query the soffice locale string.
+
+  Returns the locale string (e.g. `"en-US"`) or `""` if not configured.
+
+  ## Examples
+
+      {:ok, locale} = URP.locale()
+      # => "en-US"
+
+  ## Options
+
+    * `:pool`    — named pool to use (default: the auto-started pool)
+    * `:timeout` — checkout timeout in ms (default `120_000`)
+  """
+  @spec locale(keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  def locale(opts \\ []) do
+    {pool, opts} = resolve_pool(opts)
+    URP.Pool.locale(pool, opts)
   end
 
   @doc """
