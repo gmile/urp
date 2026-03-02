@@ -143,6 +143,42 @@ defmodule URPTest do
     end
   end
 
+  describe "filter_data" do
+    test "PDF export with filter options" do
+      assert {:ok, pdf} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: @pdf,
+                 filter_data: [UseLosslessCompression: true, ExportFormFields: false],
+                 output: :binary
+               )
+
+      assert <<"%PDF-" <> _>> = pdf
+    end
+
+    test "integer filter option (FormsType)" do
+      assert {:ok, pdf} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: @pdf,
+                 filter_data: [FormsType: 0],
+                 output: :binary
+               )
+
+      assert <<"%PDF-" <> _>> = pdf
+    end
+
+    test "pool stays usable after filter_data conversion" do
+      assert {:ok, _} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: @pdf,
+                 filter_data: [UseLosslessCompression: true],
+                 output: :binary
+               )
+
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert <<"%PDF-" <> _>> = pdf
+    end
+  end
+
   describe "error handling" do
     test "nonexistent file returns error" do
       assert {:error, _message} =
