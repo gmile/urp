@@ -48,8 +48,8 @@ docker run --detach --name soffice --publish 2002:2002 soffice
 A default pool connects to `localhost:2002` automatically:
 
 ```elixir
-{:ok, pdf_bytes} =
-  URP.convert({:binary, docx_bytes},
+{:ok, pdf_path} =
+  URP.convert("/path/to/input.docx",
     filter: "writer_pdf_Export",
     filter_data: [
       UseLosslessCompression: false,
@@ -59,13 +59,13 @@ A default pool connects to `localhost:2002` automatically:
       ExportBookmarks: true,
       ExportFormFields: false
     ],
-    output: :binary
+    output: "/tmp/output.pdf"
   )
 ```
 
-Input can be `{:binary, bytes}`, a file path, or any `Enumerable`
+Input can be a file path, `{:binary, bytes}`, or any `Enumerable`
 (e.g. `File.stream!/2`). Output defaults to a temp file path; pass
-`output: :binary` to get bytes in memory. See
+an explicit path or `output: :binary` to get bytes in memory. See
 [filter names](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
 for all formats (`calc_pdf_Export`, `impress_pdf_Export`, etc.) and
 [FilterData properties](https://wiki.documentfoundation.org/Macros/Python_Guide/PDF_export_filter_data)
