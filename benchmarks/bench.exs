@@ -3,22 +3,22 @@
 # Uses the high-level URP.convert/2 API (through the Pool) and compares
 # against Gotenberg's HTTP API. Exercises the real production codepath.
 #
-# Prerequisites: soffice on 2002, gotenberg on 3002
+# Prerequisites:
+#   docker compose --file benchmarks/docker-compose.yml up --detach --wait
 #
 # Run:
 #   nix develop --command mix run benchmarks/bench.exs
 
-fixture = System.get_env("FIXTURE", "sample4.docx")
-gotenberg_port = System.get_env("GOTENBERG_PORT", "3002")
+fixture = System.get_env("FIXTURE", "benchmark.docx")
 
 docx_path = Path.expand("benchmarks/fixtures/#{fixture}")
 docx_bytes = File.read!(docx_path)
-gotenberg_url = "http://localhost:#{gotenberg_port}/forms/libreoffice/convert"
+gotenberg_url = "http://localhost:3002/forms/libreoffice/convert"
 
 IO.puts("Fixture: #{fixture} (#{div(byte_size(docx_bytes), 1024)} KB)\n")
 
 # Gotenberg-equivalent FilterData — matches DefaultOptions() from
-# https://github.com/gotenberg/gotenberg/blob/v8.23.1/pkg/modules/libreoffice/api/api.go#L156-L186
+# https://github.com/gotenberg/gotenberg/blob/v8.27.0/pkg/modules/libreoffice/api/api.go
 gotenberg_filter_data = [
   ExportFormFields: true,
   AllowDuplicateFieldNames: false,
@@ -52,21 +52,26 @@ Application.ensure_all_started(:telemetry)
 {:ok, _} = Finch.start_link(name: Req.Finch)
 form_data = [files: {docx_bytes, filename: fixture, content_type: "application/octet-stream"}]
 
-# ── Warmup both services ──
+# ── Debian pool (port 2003) ──
+
+{:ok, _} = URP.Pool.start_link(name: :debian, host: "localhost", port: 2003, pool_size: 1)
+
+# ── Warmup all services ──
 
 {:ok, _} = URP.convert({:binary, docx_bytes}, urp_opts)
+{:ok, _} = URP.Pool.convert(:debian, {:binary, docx_bytes}, urp_opts)
 Req.post!(gotenberg_url, form_multipart: form_data)
 
 # ── Benchmark ──
 
 Benchee.run(
   %{
-    "URP (binary input)" => fn ->
+    "URP → Alpine musl" => fn ->
       {:ok, pdf} = URP.convert({:binary, docx_bytes}, urp_opts)
       pdf
     end,
-    "URP (file input)" => fn ->
-      {:ok, pdf} = URP.convert(docx_path, urp_opts)
+    "URP → Debian glibc" => fn ->
+      {:ok, pdf} = URP.Pool.convert(:debian, {:binary, docx_bytes}, urp_opts)
       pdf
     end,
     "Gotenberg (HTTP)" => fn ->
