@@ -2,10 +2,24 @@
 
 ## [v0.7.0] - 2026-03-02
 
-- **Performance:** load documents via XSimpleFileAccess instead of XInputStream streaming — eliminates ~4000 TCP round-trips per conversion, ~8x faster for typical documents
-- Add `Bridge.load_document_write!/2` — write bytes to soffice filesystem, load from `file://` URL
-- Add `Bridge.delete_file!/2` — clean up temp files via XSimpleFileAccess
-- Preserve XInputStream streaming path for enumerable inputs (lazy iteration)
+- **File-based I/O:** load and store documents via XSimpleFileAccess instead of
+  XInputStream/XOutputStream streaming — eliminates thousands of TCP round-trips
+  per conversion, ~8x faster for typical documents
+- **Breaking:** `close_document!/2` now returns `t()` instead of `{binary(), t()}`
+- **Pipeline-friendly Bridge helpers** — all conn-threading helpers (`call`, `sfa_call`, `qi`)
+  return just `conn`; enables `conn |> qi(...) |> call(...)` style
+- Add `last_reply` and `last_error` fields to Bridge conn for introspection/debugging
+- Add `:filter_data` option for export-specific settings
+  (e.g. `[UseLosslessCompression: true, ExportFormFields: false]` for PDF)
+- Add XSeekable support — ZIP-based formats (docx, xlsx, pptx, odt) stream
+  without buffering the entire file first
+- Reuse connections across conversions (no reconnect per document)
+- Pre-compute static URP frame bodies at compile time
+- Fix TID cache for cross-thread XSeekable replies
+- Replace inline magic numbers with named constants throughout
+- Add PERFORMANCE.md with benchmarks and container recommendations
+- Add Benchee benchmark suite
+- Switch Docker images to libreoffice-*-nogui packages
 
 ## [v0.6.1] - 2026-03-01
 
