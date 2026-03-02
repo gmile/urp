@@ -145,57 +145,46 @@ can fix metadata but not font object reordering.
 ## Using `libreofficedocker/alpine`
 
 The pre-built [`libreofficedocker/alpine`](https://hub.docker.com/r/libreofficedocker/alpine)
-image works with URP out of the box, but has some drawbacks compared
-to the Debian image above.
-
-### LibreOffice version lag
-
-Alpine community repos typically lag behind — they track the Still
-line rather than Fresh. As of March 2025, Alpine ships 25.8.x while
-Debian trixie-backports has 26.2.x.
-
-### Larger image
-
-Despite Alpine's reputation for small images,
-`libreofficedocker/alpine` is 1.78 GB — nearly 3x the Debian image.
-It bundles OpenJDK 11 (~152 MB), 130+ Noto font packages for every
-script (CJK, Arabic, Devanagari, …), and 450 packages total vs 273
-in Debian.
+image works with URP out of the box, but has two structural drawbacks
+compared to a custom Debian image.
 
 ### musl allocator overhead
 
-musl's `mallocng` allocator uses `mmap`/`munmap` for most allocations.
-LibreOffice's PDF renderer does thousands of small alloc/free cycles
-during conversion, each becoming a kernel syscall on musl.
-
-`strace -f -c` during a single conversion:
+Alpine uses musl libc, whose `mallocng` allocator relies on
+`mmap`/`munmap` for most allocations. LibreOffice does thousands of
+small alloc/free cycles during PDF rendering, each becoming a kernel
+syscall on musl. `strace -f -c` during a single conversion:
 
 | Metric | Alpine (musl) | Alpine (musl + jemalloc) | Debian (glibc) |
 |--------|---------------|--------------------------|----------------|
 | `mmap`/`munmap` syscalls | 21,432 | 276 | 25 |
 | `mmap`/`munmap` time | 140 ms | ~1 ms | ~0.05 ms |
 
-This adds ~260 ms per conversion. Mitigated by
+This is inherent to musl and can be mitigated with
 `LD_PRELOAD=/usr/lib/libjemalloc.so.2` (install jemalloc first).
 
-Benchmark with Alpine included:
+### Image bloat
+
+Despite Alpine's reputation for small images,
+`libreofficedocker/alpine` is 1.78 GB — nearly 3x a minimal Debian
+image. It bundles OpenJDK 11, 130+ Noto font packages for every
+writing system, and 450 packages total. A Debian image with just
+LibreOffice and the fonts you need is smaller and easier to audit.
+
+### Benchmark
+
+As of March 2025, Alpine ships LO 25.8.x (Still line) while Debian
+trixie-backports has 26.2.x (Fresh). The benchmark fixture uses
+Liberation fonts — present in both images. Carlito (Calibri
+replacement) is missing from the stock Alpine image, so documents
+using Calibri will produce different layout unless `font-carlito` is
+installed.
 
 | Setup | 2.6 MB | 15.5 MB | LO version | Image size |
 |-------|--------|---------|------------|------------|
 | URP → Debian glibc | 0.94 s | 6.73 s | 26.2.0 | ~607 MB |
 | URP → Alpine musl | 1.20 s | 11.11 s | 25.8.1 | ~1.78 GB |
 | Gotenberg (Debian glibc) | 1.19 s | 11.45 s | 26.2.0 | ~1.86 GB |
-
-### Missing fonts
-
-The stock Alpine image is missing
-[Carlito](https://fonts.google.com/specimen/Carlito), the
-metric-compatible replacement for Calibri. Without it, LibreOffice
-falls back to Noto Serif, producing different layout. Install it with:
-
-```sh
-apk add --no-cache font-carlito
-```
 
 ### Reproducing the strace analysis
 
