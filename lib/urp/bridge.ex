@@ -67,6 +67,13 @@ defmodule URP.Bridge do
   @func_sfa_kill 5
   @func_sfa_open_file_write 16
 
+  # XSimpleFileAccess: openFileRead=15 (IDL order after XInterface 0-2)
+  @func_sfa_open_file_read 15
+
+  # XInputStream funcIDs (for read-back from soffice's filesystem)
+  @func_is_read_bytes 3
+  @func_is_close_input 7
+
   # XOutputStream funcIDs (writeBytes=3, flush=4, closeOutput=5)
   @func_os_write_bytes 3
   @func_os_close_output 5
@@ -420,6 +427,74 @@ defmodule URP.Bridge do
 
     recv_reply!(conn.sock)
     :ok
+  end
+
+  @doc """
+  Store a document to soffice's filesystem and read back the result.
+
+  Uses `store_to_url!` to write the converted output to a temp file on
+  soffice's filesystem, then reads it back in one shot via `read_file!/2`.
+  Replaces hundreds of round-trips with ~6.
+  """
+  @spec store_document_write!(t(), doc_oid(), keyword()) :: {binary(), t()}
+  def store_document_write!(%__MODULE__{} = conn, doc_oid, opts) do
+    filter = Keyword.fetch!(opts, :filter)
+    filter_data = Keyword.get(opts, :filter_data, [])
+    id = :erlang.unique_integer([:positive])
+    url = "file:///tmp/urp_out_#{id}"
+
+    store_to_url!(conn, doc_oid, url, filter, filter_data)
+    {bytes, conn} = read_file!(conn, url)
+    delete_file!(conn, url)
+
+    {bytes, conn}
+  end
+
+  @doc """
+  Read a file from soffice's filesystem via XSimpleFileAccess.
+
+  Opens the file, reads all bytes in one frame, closes the stream.
+  """
+  @spec read_file!(t(), String.t()) :: {binary(), t()}
+  def read_file!(%__MODULE__{} = conn, url) do
+    {sfa_oid, conn} = ensure_sfa!(conn)
+
+    # openFileRead(url) → XInputStream
+    P.send_frame(
+      conn.sock,
+      P.request(@func_sfa_open_file_read, type: {:cached, 19}, oid: {sfa_oid, 9}) <>
+        P.null_ctx() <> P.enc_str(url)
+    )
+
+    is_oid =
+      P.parse_interface_reply(recv_reply!(conn.sock)) ||
+        raise "openFileRead failed"
+
+    # QI for XInputStream
+    qi!(
+      conn,
+      P.request(@func_query_interface, type: {:cached, 1}, oid: {is_oid, 13}),
+      P.type_new(@xi_input_stream, 21)
+    )
+
+    # readBytes(max_int32) — pull entire file in one frame
+    P.send_frame(
+      conn.sock,
+      P.request(@func_is_read_bytes, type: {:cached, 21}) <>
+        P.null_ctx() <> <<0x7FFFFFFF::32-signed>>
+    )
+
+    bytes = P.parse_read_bytes_reply(recv_reply!(conn.sock))
+
+    # closeInput()
+    P.send_frame(
+      conn.sock,
+      P.request(@func_is_close_input) <> P.null_ctx()
+    )
+
+    recv_reply!(conn.sock)
+
+    {bytes, conn}
   end
 
   defp load_from_input_source!(conn, source) do
