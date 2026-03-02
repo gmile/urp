@@ -17,10 +17,12 @@ with:
 uv run --with python-docx --with Pillow --with numpy benchmarks/generate_fixture.py
 ```
 
-### Results (Apple M3 Max, benchmark.docx 2.6 MB → 221-page PDF)
+### Results (Apple M3 Max)
 
 Debian soffice and Gotenberg both run LibreOffice 26.2.0 (glibc,
-trixie-backports). Alpine uses LibreOffice 25.8.1 (musl):
+trixie-backports). Alpine uses LibreOffice 25.8.1 (musl).
+
+**Small document** (benchmark.docx, 2.6 MB → 221-page PDF):
 
 ```
 Name                         ips        average  deviation         median         99th %
@@ -29,16 +31,26 @@ URP → Alpine musl           0.82         1.21 s     ±4.80%         1.20 s    
 Gotenberg (HTTP)            0.81         1.23 s     ±7.47%         1.19 s         1.42 s
 ```
 
-URP→Debian is **27% faster** than Gotenberg. Both transfer the full
-document and PDF over localhost TCP, but Gotenberg adds Go/HTTP overhead
-(multipart parsing, queue management, response framing) while URP talks
-directly to soffice.
+**Large document** (benchmark-15mb.docx, 15.5 MB → 62 MB PDF):
 
-URP's default `soffice` container (`libreofficedocker/alpine:3.23`) uses
-[Alpine Linux](https://alpinelinux.org/), which ships
-[musl libc](https://musl.libc.org/). This adds ~260 ms of allocator
-overhead. See [Choosing a container image](#choosing-a-container-image)
-for alternatives.
+```
+Name                         ips        average  deviation         median         99th %
+URP → Debian glibc         0.145         6.87 s     ±7.44%         6.73 s         7.44 s
+URP → Alpine musl          0.090        11.11 s    ±26.20%        11.11 s        13.16 s
+Gotenberg (HTTP)           0.087        11.45 s     ±1.21%        11.45 s        11.54 s
+```
+
+The advantage grows with document size: **27% faster** for small
+documents, **67% faster** for large ones. Both URP and Gotenberg
+transfer the full document and PDF over localhost TCP, but Gotenberg
+adds Go/HTTP overhead (multipart parsing, queue management, response
+framing) that scales with document size.
+
+Generate the large fixture with:
+
+```sh
+uv run --with python-docx --with Pillow --with numpy benchmarks/generate_fixture.py --size 15
+```
 
 ## Where time goes
 
@@ -136,11 +148,11 @@ release), and produces a ~607 MB image. `fonts-liberation` provides
 metric-compatible replacements for Arial, Times New Roman, and Courier
 New. `fonts-crosextra-carlito` provides a Calibri replacement.
 
-| Setup | Median | LO version | Image size |
-|-------|--------|------------|------------|
-| URP → Debian glibc | 0.94 s | 26.2.0 | ~607 MB |
-| Gotenberg (Debian glibc) | 1.19 s | 26.2.0 | ~1.86 GB |
-| URP → Alpine musl | 1.20 s | 25.8.1 | ~1.78 GB |
+| Setup | 2.6 MB | 15.5 MB | LO version | Image size |
+|-------|--------|---------|------------|------------|
+| URP → Debian glibc | 0.94 s | 6.73 s | 26.2.0 | ~607 MB |
+| Gotenberg (Debian glibc) | 1.19 s | 11.45 s | 26.2.0 | ~1.86 GB |
+| URP → Alpine musl | 1.20 s | 11.11 s | 25.8.1 | ~1.78 GB |
 
 ### Why not Alpine?
 
