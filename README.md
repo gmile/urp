@@ -40,8 +40,8 @@ docker run --detach --name soffice --publish 2002:2002 soffice
 
 > [!NOTE]
 > Any image with `soffice` listening on a TCP socket works — including
-> `libreofficedocker/alpine`. See [PERFORMANCE.md](PERFORMANCE.md) for
-> trade-offs.
+> [`libreofficedocker/alpine`](https://hub.docker.com/r/libreofficedocker/alpine).
+> See [PERFORMANCE.md](PERFORMANCE.md) for trade-offs.
 
 ## Usage
 

@@ -144,7 +144,7 @@ can fix metadata but not font object reordering.
 
 ## Using `libreofficedocker/alpine`
 
-The pre-built [`libreofficedocker/alpine`](https://hub.docker.com/r/libreofficedocker/libreoffice)
+The pre-built [`libreofficedocker/alpine`](https://hub.docker.com/r/libreofficedocker/alpine)
 image works with URP out of the box, but has some drawbacks compared
 to the Debian image above.
 
