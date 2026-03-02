@@ -55,9 +55,10 @@ defmodule URP.Pool do
     store_opts = Keyword.take(opts, [:filter, :filter_data, :sink])
 
     do_checkout(pool, timeout, fn conn ->
-      doc = load_input!(conn, input)
+      {doc, conn, cleanup_url} = load_input!(conn, input)
       result = Bridge.store_to_stream!(conn, doc, store_opts)
       close_status = safe_close(conn, doc)
+      safe_cleanup(conn, cleanup_url)
       URP.Stream.clear_input_ctx()
 
       case close_status do
@@ -67,14 +68,17 @@ defmodule URP.Pool do
     end)
   end
 
-  defp load_input!(conn, path) when is_binary(path),
-    do: Bridge.load_document_file_stream!(conn, path)
+  defp load_input!(conn, {:binary, bytes}) when is_binary(bytes) do
+    Bridge.load_document_write!(conn, bytes)
+  end
 
-  defp load_input!(conn, {:binary, bytes}) when is_binary(bytes),
-    do: Bridge.load_document_stream!(conn, bytes)
+  defp load_input!(conn, path) when is_binary(path) do
+    Bridge.load_document_write!(conn, File.read!(path))
+  end
 
-  defp load_input!(conn, enumerable),
-    do: Bridge.load_document_enum_stream!(conn, enumerable)
+  defp load_input!(conn, enumerable) do
+    {Bridge.load_document_enum_stream!(conn, enumerable), conn, nil}
+  end
 
   defp do_checkout(pool, timeout, fun, attempt \\ 1) do
     result =
@@ -153,6 +157,14 @@ defmodule URP.Pool do
     end
 
     {:ok, pool_state}
+  end
+
+  defp safe_cleanup(_conn, nil), do: :ok
+
+  defp safe_cleanup(conn, url) do
+    Bridge.delete_file!(conn, url)
+  rescue
+    _ -> :ok
   end
 
   defp safe_close(conn, doc) do
