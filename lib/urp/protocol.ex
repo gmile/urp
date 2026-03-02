@@ -321,6 +321,20 @@ defmodule URP.Protocol do
     end
   end
 
+  @doc "Parse a readBytes reply — return value (long) + out param (sequence<byte>)."
+  @spec parse_read_bytes_reply(binary()) :: binary()
+  def parse_read_bytes_reply(payload) do
+    {flags, rest} = skip_reply_header(payload)
+
+    if (flags &&& @exception) != 0 do
+      raise "readBytes failed: #{parse_exception(payload)}"
+    end
+
+    <<_bytes_read::32-signed, rest::binary>> = rest
+    {data, _} = dec_str(rest)
+    data
+  end
+
   @doc """
   Extract a human-readable error message from an exception reply.
 
