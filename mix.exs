@@ -33,8 +33,7 @@ defmodule URP.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/gmile/urp"},
-      files: ~w(lib .formatter.exs mix.exs VERSION README.md PERFORMANCE.md LICENSE CHANGELOG.md),
-      exclude_patterns: [~r/lib\/mix/]
+      files: ~w(lib .formatter.exs mix.exs VERSION README.md PERFORMANCE.md LICENSE CHANGELOG.md)
     ]
   end
 
