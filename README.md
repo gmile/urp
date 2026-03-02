@@ -41,7 +41,8 @@ docker build --tag soffice --file benchmarks/Dockerfile.soffice-debian benchmark
 docker run --detach --name soffice --publish 2002:2002 soffice
 ```
 
-> [!NOTE]
+> #### Note {: .info}
+>
 > Any image with `soffice` listening on a TCP socket works — including
 > [`libreofficedocker/alpine`](https://hub.docker.com/r/libreofficedocker/alpine).
 > See [PERFORMANCE.md](PERFORMANCE.md) for trade-offs.
