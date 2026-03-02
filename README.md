@@ -125,18 +125,13 @@ mix test
 
 ## Benchmarks
 
-Compare URP against [Gotenberg](https://gotenberg.dev/) end-to-end.
-Prerequisites: soffice on port 2002, Gotenberg on port 3002.
+Compare URP against [Gotenberg](https://gotenberg.dev/) end-to-end:
 
 ```sh
-# Quick phase-level profiling (manual timer.tc, 5 iterations)
-mix run benchmarks/profile.exs
-
-# Statistical benchmark via Benchee (warmup + 15s per scenario)
+cd benchmarks && docker compose up -d && cd ..
 mix run benchmarks/bench.exs
 
-# Override fixture or iteration count
-FIXTURE=sample3.docx mix run benchmarks/profile.exs
+# Override fixture
 FIXTURE=sample3.docx mix run benchmarks/bench.exs
 ```
 
