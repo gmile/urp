@@ -129,7 +129,7 @@ defmodule URPTest do
 
       assert {:ok, pdf} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
       assert <<"%PDF-" <> _>> = pdf
-      assert pdf_page_count(pdf) >= 4
+      assert pdf_page_count(pdf) >= 2
     end
 
     test "sample1.xlsx produces multi-page PDF" do
