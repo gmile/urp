@@ -1,0 +1,16 @@
+# Minimal Debian soffice with LO from trixie-backports (same version as Gotenberg).
+# Only free fonts — Liberation (Arial/Times metric-compatible) and Carlito (Calibri).
+FROM debian:trixie-slim
+
+RUN echo 'deb http://deb.debian.org/debian trixie-backports main' > /etc/apt/sources.list.d/backports.list && \
+    apt-get update -qq && \
+    apt-get install -y --no-install-recommends -t trixie-backports \
+      libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress && \
+    apt-get install -y --no-install-recommends \
+      fonts-liberation fonts-crosextra-carlito && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 2002
+
+CMD ["soffice", "--headless", "--norestore", \
+     "--accept=socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"]
