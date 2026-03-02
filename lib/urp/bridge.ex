@@ -36,11 +36,13 @@ defmodule URP.Bridge do
           sock: :gen_tcp.socket(),
           desktop_oid: String.t(),
           ctx_oid: String.t(),
+          smgr_oid: String.t(),
+          sfa_oid: String.t() | nil,
           tid_cache: map()
         }
   @type doc_oid :: String.t()
 
-  defstruct [:sock, :desktop_oid, :ctx_oid, tid_cache: %{}]
+  defstruct [:sock, :desktop_oid, :ctx_oid, :smgr_oid, :sfa_oid, tid_cache: %{}]
 
   # UNO interface names
   @xi_protocol_props "com.sun.star.bridge.XProtocolProperties"
@@ -79,9 +81,9 @@ defmodule URP.Bridge do
     {:ok, sock} = :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false])
     conn = %__MODULE__{sock: sock}
     handshake!(conn)
-    {ctx_oid, desktop_oid} = bootstrap_desktop!(conn)
+    {ctx_oid, smgr_oid, desktop_oid} = bootstrap_desktop!(conn)
     tid_cache = Process.get(:urp_tid_cache, %{})
-    %{conn | desktop_oid: desktop_oid, ctx_oid: ctx_oid, tid_cache: tid_cache}
+    %{conn | desktop_oid: desktop_oid, ctx_oid: ctx_oid, smgr_oid: smgr_oid, tid_cache: tid_cache}
   end
 
   @doc "Close the TCP connection."
@@ -502,7 +504,7 @@ defmodule URP.Bridge do
     )
 
     desktop_oid = P.parse_interface_reply(P.recv_frame(sock))
-    {ctx_oid, desktop_oid}
+    {ctx_oid, smgr_oid, desktop_oid}
   end
 
   ## queryInterface helper
