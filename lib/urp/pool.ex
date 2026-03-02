@@ -185,10 +185,9 @@ defmodule URP.Pool do
   end
 
   defp safe_close(conn, doc) do
-    {_reply, conn} = Bridge.close_document!(conn, doc)
-    {:ok, conn}
+    {:ok, Bridge.close_document!(conn, doc)}
   rescue
-    RuntimeError -> {:closed, conn}
+    e in RuntimeError -> {:closed, %{conn | last_error: Exception.message(e)}}
   end
 
   defp reset_conversion_state(conn) do

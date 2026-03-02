@@ -32,6 +32,9 @@ defmodule URP.Bridge do
 
   alias URP.Protocol, as: P
 
+  # sock is a plain :gen_tcp socket — inspect at any time via:
+  #   :inet.getstat(conn.sock)   # send/recv counts, bytes, pending
+  #   :inet.peername(conn.sock)  # remote {ip, port}
   @type t :: %__MODULE__{
           sock: :gen_tcp.socket(),
           desktop_oid: String.t(),
@@ -41,6 +44,8 @@ defmodule URP.Bridge do
           input_ctx: map() | nil,
           reply_tid: binary() | nil,
           reader_type: non_neg_integer() | nil,
+          last_reply: binary() | nil,
+          last_error: String.t() | nil,
           tid_cache: map()
         }
   @type doc_oid :: String.t()
@@ -54,6 +59,8 @@ defmodule URP.Bridge do
     :input_ctx,
     :reply_tid,
     :reader_type,
+    :last_reply,
+    :last_error,
     tid_cache: %{}
   ]
 
@@ -330,7 +337,7 @@ defmodule URP.Bridge do
   """
   @spec store_to_url!(t(), doc_oid(), String.t(), String.t(), keyword()) :: t()
   def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter, filter_data \\ []) do
-    {_oid, conn} =
+    conn =
       qi(
         conn,
         P.request(@func_query_interface,
@@ -345,7 +352,7 @@ defmodule URP.Bridge do
     props = [filter_name_prop, filter_data_prop]
     prop_count = Enum.count(props, &(&1 != <<>>))
 
-    {reply, conn} =
+    conn =
       call(
         conn,
         @store_to_url_prefix <>
@@ -354,27 +361,25 @@ defmodule URP.Bridge do
           IO.iodata_to_binary(props)
       )
 
-    if reply != P.reply() do
-      raise "storeToURL failed: #{P.parse_exception(reply)}"
+    if conn.last_reply != P.reply() do
+      raise "storeToURL failed: #{P.parse_exception(conn.last_reply)}"
     end
 
     conn
   end
 
   @doc "Close a loaded document, releasing soffice resources."
-  @spec close_document!(t(), doc_oid()) :: {binary(), t()}
+  @spec close_document!(t(), doc_oid()) :: t()
   def close_document!(%__MODULE__{} = conn, doc_oid) do
-    {_oid, conn} =
-      qi(
-        conn,
-        P.request(@func_query_interface,
-          type: @type_interface,
-          oid: {doc_oid, @oid_doc_closeable}
-        ),
-        P.type_new(@xi_closeable, @qi_cache_closeable)
-      )
-
-    call(conn, @close_document)
+    conn
+    |> qi(
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {doc_oid, @oid_doc_closeable}
+      ),
+      P.type_new(@xi_closeable, @qi_cache_closeable)
+    )
+    |> call(@close_document)
   end
 
   @doc """
@@ -505,18 +510,17 @@ defmodule URP.Bridge do
     id = :erlang.unique_integer([:positive])
     url = "file:///tmp/urp_in_#{id}"
 
-    {reply, conn} = sfa_call(conn, sfa_oid, @func_sfa_open_file_write, P.enc_str(url))
-    os_oid = P.parse_interface_reply(reply) || raise "openFileWrite failed"
+    conn = sfa_call(conn, sfa_oid, @func_sfa_open_file_write, P.enc_str(url))
+    os_oid = P.parse_interface_reply(conn.last_reply) || raise "openFileWrite failed"
 
-    {_oid, conn} =
-      qi(
-        conn,
+    conn =
+      conn
+      |> qi(
         P.request(@func_query_interface, type: @type_interface, oid: {os_oid, @oid_sfa_os}),
         P.type_new(@xi_output_stream, @qi_cache_sfa_output)
       )
-
-    {_reply, conn} = call(conn, @write_bytes_prefix <> P.enc_str(bytes))
-    {_reply, conn} = call(conn, @close_output)
+      |> call(@write_bytes_prefix <> P.enc_str(bytes))
+      |> call(@close_output)
 
     doc_oid = load_document!(conn, url)
 
@@ -526,8 +530,7 @@ defmodule URP.Bridge do
   @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
   @spec delete_file!(t(), String.t()) :: t()
   def delete_file!(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
-    {_reply, conn} = sfa_call(conn, sfa_oid, @func_sfa_kill, P.enc_str(url))
-    conn
+    sfa_call(conn, sfa_oid, @func_sfa_kill, P.enc_str(url))
   end
 
   @doc """
@@ -560,19 +563,19 @@ defmodule URP.Bridge do
   def read_file!(%__MODULE__{} = conn, url) do
     {sfa_oid, conn} = ensure_sfa!(conn)
 
-    {reply, conn} = sfa_call(conn, sfa_oid, @func_sfa_open_file_read, P.enc_str(url))
-    is_oid = P.parse_interface_reply(reply) || raise "openFileRead failed"
+    conn = sfa_call(conn, sfa_oid, @func_sfa_open_file_read, P.enc_str(url))
+    is_oid = P.parse_interface_reply(conn.last_reply) || raise "openFileRead failed"
 
-    {_oid, conn} =
+    conn =
       qi(
         conn,
         P.request(@func_query_interface, type: @type_interface, oid: {is_oid, @oid_sfa_is}),
         P.type_new(@xi_input_stream, @qi_cache_sfa_input)
       )
 
-    {reply, conn} = call(conn, @read_all_bytes)
-    bytes = P.parse_read_bytes_reply(reply)
-    {_reply, conn} = call(conn, @close_input)
+    conn = call(conn, @read_all_bytes)
+    bytes = P.parse_read_bytes_reply(conn.last_reply)
+    conn = call(conn, @close_input)
 
     {bytes, conn}
   end
@@ -683,7 +686,7 @@ defmodule URP.Bridge do
   defp ensure_sfa!(%__MODULE__{sfa_oid: oid} = conn) when is_binary(oid), do: {oid, conn}
 
   defp ensure_sfa!(%__MODULE__{} = conn) do
-    {reply, conn} =
+    conn =
       call(
         conn,
         P.request(@func_mcf_create_with_context,
@@ -696,10 +699,10 @@ defmodule URP.Bridge do
       )
 
     sfa_oid =
-      P.parse_interface_reply(reply) ||
+      P.parse_interface_reply(conn.last_reply) ||
         raise "createInstanceWithContext(SimpleFileAccess) failed"
 
-    {_oid, conn} =
+    conn =
       qi(
         conn,
         P.request(@func_query_interface, type: @type_interface, oid: {sfa_oid, @oid_sfa}),
@@ -778,10 +781,9 @@ defmodule URP.Bridge do
     P.parse_qi_reply(call!(sock, header <> P.null_ctx() <> body_type_param))
   end
 
-  # Conn-threading variant — returns {oid, conn}.
+  # Conn-threading variant — returns conn (OID discarded).
   defp qi(%__MODULE__{} = conn, header, body_type_param) do
-    {reply, conn} = call(conn, header <> P.null_ctx() <> body_type_param)
-    {P.parse_qi_reply(reply), conn}
+    call(conn, header <> P.null_ctx() <> body_type_param)
   end
 
   ## FilterData encoding — nested sequence<PropertyValue> for export options
@@ -847,9 +849,17 @@ defmodule URP.Bridge do
   end
 
   # Conn-threading variants — used during conversion phases.
-  defp call(%__MODULE__{} = conn, frame) do
+  # All return conn. recv_reply stashes the reply on conn.last_reply.
+
+  defp send_frame(%__MODULE__{} = conn, frame) do
     P.send_frame(conn.sock, frame)
-    recv_reply(conn)
+    conn
+  end
+
+  defp call(%__MODULE__{} = conn, frame) do
+    conn
+    |> send_frame(frame)
+    |> recv_reply()
   end
 
   defp sfa_call(%__MODULE__{} = conn, sfa_oid, func, args) do
@@ -860,7 +870,7 @@ defmodule URP.Bridge do
     payload = P.recv_frame(conn.sock)
 
     if P.is_reply?(payload) do
-      {payload, conn}
+      %{conn | last_reply: payload}
     else
       case URP.Stream.try_handle_input(conn, payload) do
         {:handled, conn} ->
