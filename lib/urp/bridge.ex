@@ -136,6 +136,11 @@ defmodule URP.Bridge do
   @type_new_msf {:new, @xi_multi_service_factory, 13}
   @type_new_name_access {:new, @xi_name_access, 16}
 
+  # Well-known OIDs and TIDs used during handshake and bootstrap
+  @oid_protocol_props "UrpProtocolProperties"
+  @tid_protocol_props ".UrpProtocolPropertiesTid"
+  @oid_component_context "StarOffice.ComponentContext"
+
   # OID cache indices — sequential allocation for object identity references
   @oid_ctx 2
   @oid_smgr 3
@@ -147,6 +152,9 @@ defmodule URP.Bridge do
   @oid_sfa 9
   @oid_sfa_os 12
   @oid_sfa_is 13
+
+  # createInstanceWithContext body suffix: null OID + component context cache
+  @ctx_ref <<0x00, @oid_ctx::16>>
 
   import Bitwise
 
@@ -672,7 +680,7 @@ defmodule URP.Bridge do
       P.request(@func_mcf_create_with_context, type: @type_multi_comp_fac, oid: {conn.smgr_oid, @oid_smgr}) <>
         P.null_ctx() <>
         P.enc_str("com.sun.star.ucb.SimpleFileAccess") <>
-        <<0x00, 2::16>>
+        @ctx_ref
     )
 
     sfa_oid =
@@ -701,8 +709,8 @@ defmodule URP.Bridge do
       sock,
       P.request(@func_request_change,
         type: @type_new_protocol_props,
-        oid: {"UrpProtocolProperties", 0},
-        tid: {".UrpProtocolPropertiesTid", 0}
+        oid: {@oid_protocol_props, 0},
+        tid: {@tid_protocol_props, 0}
       ) <> @losing_nonce
     )
 
@@ -722,7 +730,7 @@ defmodule URP.Bridge do
         sock,
         P.request(@func_query_interface,
           type: @type_new_interface,
-          oid: {"StarOffice.ComponentContext", 1},
+          oid: {@oid_component_context, 1},
           tid: {tid, 1}
         ),
         P.type_cached(1)
@@ -751,7 +759,7 @@ defmodule URP.Bridge do
       ) <>
         P.null_ctx() <>
         P.enc_str("com.sun.star.frame.Desktop") <>
-        <<0x00, 2::16>>
+        @ctx_ref
     )
 
     desktop_oid = P.parse_interface_reply(P.recv_frame(sock))
