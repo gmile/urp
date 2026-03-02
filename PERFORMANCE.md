@@ -90,37 +90,31 @@ cache pollution.
 
 ### Reproducing
 
-Attach `strace` to the soffice process inside the container, trigger a
-conversion, and compare:
+Start the benchmark containers, then attach `strace` to the Alpine
+soffice process, trigger a conversion, and compare:
 
 ```sh
+docker compose --file benchmarks/docker-compose.yml up --detach --wait
+
+SOFFICE=benchmarks-soffice-1
+
 # Install strace
-docker exec soffice apk add --no-cache strace
+docker exec $SOFFICE apk add --no-cache strace
 
 # Find soffice PID
-docker exec soffice pgrep -f soffice.bin
+docker exec $SOFFICE pgrep -f soffice.bin
 # => 44
 
 # Syscall summary during one conversion
-docker exec -d soffice strace -f -c -p 44 -o /tmp/strace_summary.txt
-mix run -e '{:ok, _} = URP.convert({:binary, File.read!("benchmarks/fixtures/sample4.docx")}, filter: "writer_pdf_Export", output: :binary)'
-docker exec soffice sh -c 'kill -INT $(pgrep strace)'
-docker exec soffice cat /tmp/strace_summary.txt
+docker exec -d $SOFFICE strace -f -c -p 44 -o /tmp/strace_summary.txt
+mix run -e '{:ok, _} = URP.convert({:binary, File.read!("benchmarks/fixtures/benchmark.docx")}, filter: "writer_pdf_Export", output: :binary)'
+docker exec $SOFFICE sh -c 'kill -INT $(pgrep strace)'
+docker exec $SOFFICE cat /tmp/strace_summary.txt
 
 # mmap-only trace (count lines to see allocation volume)
-docker exec -d soffice strace -f -e trace=mmap,munmap -p 44 -o /tmp/strace_mmap.txt
+docker exec -d $SOFFICE strace -f -e trace=mmap,munmap -p 44 -o /tmp/strace_mmap.txt
 # ... trigger conversion ...
-docker exec soffice wc -l /tmp/strace_mmap.txt
-```
-
-For Gotenberg's soffice, you need `--cap-add SYS_PTRACE` on the
-container (it runs as a non-root user):
-
-```sh
-docker run --detach --name gotenberg-bench \
-  --publish 3002:3000 \
-  --cap-add SYS_PTRACE \
-  gotenberg/gotenberg:8.27.0
+docker exec $SOFFICE wc -l /tmp/strace_mmap.txt
 ```
 
 ## Choosing a container image
