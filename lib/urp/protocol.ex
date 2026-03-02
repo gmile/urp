@@ -337,6 +337,19 @@ defmodule URP.Protocol do
     data
   end
 
+  @doc "Parse a reply returning `sequence<string>`."
+  @spec parse_string_sequence_reply(binary()) :: [String.t()] | nil
+  def parse_string_sequence_reply(payload) do
+    {flags, rest} = skip_reply_header(payload)
+
+    if (flags &&& @exception) != 0 do
+      nil
+    else
+      {count, rest} = dec_count(rest)
+      dec_strings(rest, count, [])
+    end
+  end
+
   @doc """
   Extract a human-readable error message from an exception reply.
 
@@ -390,5 +403,15 @@ defmodule URP.Protocol do
       end
 
     {flags, rest}
+  end
+
+  defp dec_count(<<0xFF, count::32, rest::binary>>), do: {count, rest}
+  defp dec_count(<<count, rest::binary>>), do: {count, rest}
+
+  defp dec_strings(_rest, 0, acc), do: Enum.reverse(acc)
+
+  defp dec_strings(rest, n, acc) do
+    {s, rest} = dec_str(rest)
+    dec_strings(rest, n - 1, [s | acc])
   end
 end
