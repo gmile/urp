@@ -45,54 +45,39 @@ docker run --detach --name soffice --publish 2002:2002 soffice
 
 ## Usage
 
-A default connection pool starts automatically, connecting to `localhost:2002`.
-No supervision tree setup needed.
+A default pool connects to `localhost:2002` automatically:
 
 ```elixir
-# File path — convert to PDF, write to temp file
-{:ok, pdf_path} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export")
-
-# Explicit output path
-{:ok, "/tmp/out.pdf"} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export", output: "/tmp/out.pdf")
-
-# Return bytes in memory
-{:ok, pdf_bytes} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export", output: :binary)
-
-# Raw bytes input
-{:ok, pdf_bytes} = URP.convert({:binary, xlsx_bytes}, filter: "calc_pdf_Export", output: :binary)
-
-# Enumerable input (e.g. File.stream!, S3 download stream)
-{:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
-
-# Stream chunks to a callback
-:ok = URP.convert(input, filter: "writer_pdf_Export", output: fn chunk -> send_chunk(chunk) end)
-
-# Query soffice version
-{:ok, "26.2.0.3"} = URP.version()
+{:ok, pdf_bytes} =
+  URP.convert({:binary, docx_bytes},
+    filter: "writer_pdf_Export",
+    filter_data: [
+      UseLosslessCompression: false,
+      Quality: 90,
+      ReduceImageResolution: true,
+      MaxImageResolution: 150,
+      ExportBookmarks: true,
+      ExportFormFields: false
+    ],
+    output: :binary
+  )
 ```
 
-Configure the default pool in `config/runtime.exs`:
+Input can be `{:binary, bytes}`, a file path, or any `Enumerable`
+(e.g. `File.stream!/2`). Output defaults to a temp file path; pass
+`output: :binary` to get bytes in memory. See
+[filter names](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
+for all formats (`calc_pdf_Export`, `impress_pdf_Export`, etc.) and
+[FilterData properties](https://wiki.documentfoundation.org/Macros/Python_Guide/PDF_export_filter_data)
+for PDF export options.
+
+Configure in `config/runtime.exs`:
 
 ```elixir
 config :urp, :default,
   host: "soffice",
   port: 2002,
   pool_size: 1
-```
-
-### Named pools
-
-For multiple soffice instances, configure named pools:
-
-```elixir
-config :urp, :pools,
-  spreadsheets: [host: "soffice-2", port: 2002, pool_size: 3]
-```
-
-Named pools are started on first use:
-
-```elixir
-{:ok, pdf} = URP.convert({:binary, xlsx_bytes}, pool: :spreadsheets, filter: "calc_pdf_Export")
 ```
 
 ## Testing
