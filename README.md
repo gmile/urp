@@ -1,5 +1,8 @@
 # URP
 
+[![Hex.pm](https://img.shields.io/hexpm/v/urp.svg)](https://hex.pm/packages/urp)
+[![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/urp/readme.html)
+
 Pure Elixir client for the [UNO Remote Protocol](https://wiki.openoffice.org/wiki/Uno/Binary/Spec/Protocol).
 Converts documents by talking directly to `soffice` over a TCP socket —
 no wrappers or sidecars needed.
@@ -22,7 +25,7 @@ Add `urp` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:urp, "~> 0.6"}
+    {:urp, "~> 0.7"}
   ]
 end
 ```
