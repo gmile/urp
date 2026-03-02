@@ -91,7 +91,8 @@ defmodule URP.Pool do
           try do
             fun.(conn)
           rescue
-            e -> {{:error, Exception.message(e)}, :closed}
+            e in [RuntimeError, MatchError, File.Error] ->
+              {{:error, Exception.message(e)}, :closed}
           end
         end,
         timeout
@@ -129,7 +130,7 @@ defmodule URP.Pool do
   defp open_with_retry(host, port, attempt \\ 1) do
     Bridge.open!(host, port)
   rescue
-    e ->
+    e in [MatchError, RuntimeError] ->
       if attempt < @max_retries do
         Process.sleep(@retry_interval_ms * attempt)
         open_with_retry(host, port, attempt + 1)
@@ -153,11 +154,12 @@ defmodule URP.Pool do
   end
 
   @impl NimblePool
-  def terminate_worker(_reason, conn, pool_state) do
-    if is_struct(conn, Bridge) do
-      Bridge.close!(conn)
-    end
+  def terminate_worker(_reason, %Bridge{} = conn, pool_state) do
+    Bridge.close!(conn)
+    {:ok, pool_state}
+  end
 
+  def terminate_worker(_reason, _conn, pool_state) do
     {:ok, pool_state}
   end
 
@@ -178,14 +180,14 @@ defmodule URP.Pool do
   defp safe_cleanup(conn, url) do
     Bridge.delete_file!(conn, url)
   rescue
-    _ -> :ok
+    RuntimeError -> :ok
   end
 
   defp safe_close(conn, doc) do
     Bridge.close_document!(conn, doc)
     :ok
   rescue
-    _ -> :closed
+    RuntimeError -> :closed
   end
 
   defp wrap_result(:ok), do: :ok

@@ -63,29 +63,39 @@ defmodule URP.Bridge do
   @func_request_change 4
 
   # Per-interface function IDs — counted from XInterface(0-2), then IDL order.
+
   # XComponentLoader: loadComponentFromURL=3
   @func_loader_load 3
+
   # XComponentContext: getValueByName=3, getServiceManager=4
   @func_ctx_get_value_by_name 3
   @func_ctx_get_service_manager 4
+
   # XMultiComponentFactory: createInstanceWithContext=3
   @func_mcf_create_with_context 3
+
   # XStorable2: storeToURL=8 (XInterface 0-2, XStorable 3-7, storeToURL 8)
   @func_storable_store_to_url 8
+
   # XCloseable: close=5 (XInterface 0-2, XCloseBroadcaster 3-4, close 5)
   @func_closeable_close 5
+
   # XMultiServiceFactory: createInstanceWithArguments=4
   @func_msf_create_with_args 4
+
   # XNameAccess: getByName=5 (XInterface 0-2, XElementAccess 3-4, getByName 5)
   @func_na_get_by_name 5
+
   # XSimpleFileAccess (XInterface 0-2, then IDL order):
   # copy=3, move=4, kill=5, isFolder=6, ..., openFileRead=15, openFileWrite=16
   @func_sfa_kill 5
   @func_sfa_open_file_read 15
   @func_sfa_open_file_write 16
+
   # XInputStream: readBytes=3, ..., closeInput=7
   @func_is_read_bytes 3
   @func_is_close_input 7
+
   # XOutputStream: writeBytes=3, flush=4, closeOutput=5
   @func_os_write_bytes 3
   @func_os_close_output 5
@@ -136,6 +146,24 @@ defmodule URP.Bridge do
   @type_new_msf {:new, @xi_multi_service_factory, 13}
   @type_new_name_access {:new, @xi_name_access, 16}
 
+  # Type cache indices for queryInterface body registration (see cache table above).
+  # QI bodies and request headers each get their own slot, even for the same interface.
+  @qi_cache_component_ctx 2
+  @qi_cache_loader 5
+  @qi_cache_storable 7
+  @qi_cache_closeable 9
+  @qi_cache_msf 12
+  @qi_cache_name_access 15
+  @qi_cache_sfa 19
+  @qi_cache_sfa_output 20
+  @qi_cache_sfa_input 21
+
+  # Inline type cache indices for property value encoding (not request headers)
+  @cache_export_input 10
+  @cache_export_output 11
+  @cache_named_value 14
+  @cache_filter_data_seq 18
+
   # Well-known OIDs and TIDs used during handshake and bootstrap
   @oid_protocol_props "UrpProtocolProperties"
   @tid_protocol_props ".UrpProtocolPropertiesTid"
@@ -153,11 +181,16 @@ defmodule URP.Bridge do
   @oid_config_provider 7
   @oid_config_access 8
   @oid_sfa 9
+  @oid_export_input 10
+  @oid_export_output 11
   @oid_sfa_os 12
   @oid_sfa_is 13
 
   # createInstanceWithContext body suffix: null OID + component context cache
   @ctx_ref <<0x00, @oid_ctx::16>>
+
+  # Reply marker byte — integer form of P.reply() for use in pattern matching
+  @reply_byte 0x80
 
   import Bitwise
 
@@ -172,6 +205,9 @@ defmodule URP.Bridge do
 
   # Minimum signed int32 — guarantees we lose the nonce negotiation
   @losing_nonce <<-2_147_483_648::32-signed>>
+
+  # loadComponentFromURL fixed parameters
+  @frame_search_default <<0::32>>
 
   # Pre-built static frame bodies — no runtime values, computed at compile time.
 
@@ -205,11 +241,20 @@ defmodule URP.Bridge do
                           P.null_ctx() <>
                           P.enc_str("com.sun.star.configuration.ConfigurationAccess") <>
                           <<1>> <>
-                          <<@tc_struct ||| @tc_new, 14::16>> <>
+                          <<@tc_struct ||| @tc_new, @cache_named_value::16>> <>
                           P.enc_str("com.sun.star.beans.NamedValue") <>
                           P.enc_str("nodepath") <>
                           <<@tc_string>> <>
                           P.enc_str("/org.openoffice.Setup/Product")
+
+  # Pre-built request prefixes — static header + null context, dynamic args appended at runtime.
+
+  @load_url_prefix P.request(@func_loader_load, type: @type_new_loader) <> P.null_ctx()
+
+  @store_to_url_prefix P.request(@func_storable_store_to_url, type: @type_new_storable) <>
+                         P.null_ctx()
+
+  @write_bytes_prefix P.request(@func_os_write_bytes, type: @type_os_sfa) <> P.null_ctx()
 
   @doc "Connect to soffice, perform URP handshake, and bootstrap a Desktop reference."
   @spec open!(String.t(), non_neg_integer()) :: t()
@@ -241,30 +286,25 @@ defmodule URP.Bridge do
         type: @type_interface,
         oid: {conn.desktop_oid, @oid_desktop}
       ),
-      P.type_new(@xi_component_loader, 5)
+      P.type_new(@xi_component_loader, @qi_cache_loader)
     )
 
     # loadComponentFromURL(url, "_blank", 0, [Hidden=true])
-    P.send_frame(
-      conn.sock,
-      P.request(@func_loader_load, type: @type_new_loader) <>
-        P.null_ctx() <>
-        P.enc_str(url) <>
-        P.enc_str("_blank") <>
-        <<0::32>> <>
-        <<1>> <>
-        P.property("Hidden", @tc_boolean, <<1>>)
-    )
+    hidden_prop = P.property("Hidden", @tc_boolean, <<1>>)
 
-    reply = recv_reply!(conn.sock)
+    reply =
+      call!(
+        conn.sock,
+        @load_url_prefix <>
+          P.enc_str(url) <>
+          P.enc_str("_blank") <>
+          @frame_search_default <>
+          <<1>> <>
+          hidden_prop
+      )
 
-    case P.parse_interface_reply(reply) do
-      nil ->
-        raise "loadComponentFromURL failed: #{P.parse_exception(reply)}"
-
-      oid ->
-        oid
-    end
+    P.parse_interface_reply(reply) ||
+      raise "loadComponentFromURL failed: #{P.parse_exception(reply)}"
   end
 
   @doc """
@@ -283,26 +323,24 @@ defmodule URP.Bridge do
         type: @type_interface,
         oid: {doc_oid, @oid_doc_storable}
       ),
-      P.type_new(@xi_storable2, 7)
+      P.type_new(@xi_storable2, @qi_cache_storable)
     )
 
-    filter_data_bin = encode_filter_data(filter_data)
-    prop_count = if filter_data == [], do: 1, else: 2
+    filter_name_prop = P.property("FilterName", @tc_string, P.enc_str(filter))
+    filter_data_prop = encode_filter_data(filter_data)
+    props = [filter_name_prop, filter_data_prop]
+    prop_count = Enum.count(props, &(&1 != <<>>))
 
-    # storeToURL
-    P.send_frame(
-      conn.sock,
-      P.request(@func_storable_store_to_url, type: @type_new_storable) <>
-        P.null_ctx() <>
-        P.enc_str(url) <>
-        <<prop_count>> <>
-        P.property("FilterName", @tc_string, P.enc_str(filter)) <>
-        filter_data_bin
-    )
+    reply =
+      call!(
+        conn.sock,
+        @store_to_url_prefix <>
+          P.enc_str(url) <>
+          <<prop_count>> <>
+          IO.iodata_to_binary(props)
+      )
 
-    reply = recv_reply!(conn.sock)
-
-    if reply != <<0x80>> do
+    if reply != P.reply() do
       raise "storeToURL failed: #{P.parse_exception(reply)}"
     end
   end
@@ -316,13 +354,10 @@ defmodule URP.Bridge do
         type: @type_interface,
         oid: {doc_oid, @oid_doc_closeable}
       ),
-      P.type_new(@xi_closeable, 9)
+      P.type_new(@xi_closeable, @qi_cache_closeable)
     )
 
-    # close(deliverOwnership=true)
-    P.send_frame(conn.sock, @close_document)
-
-    recv_reply!(conn.sock)
+    call!(conn.sock, @close_document)
   end
 
   @doc """
@@ -333,59 +368,49 @@ defmodule URP.Bridge do
   the connection (no streaming).
   """
   @spec version!(t()) :: String.t()
-  def version!(%__MODULE__{} = conn) do
-    sock = conn.sock
-
-    # Step 1: getValueByName("/singletons/com.sun.star.configuration.theDefaultProvider")
-    P.send_frame(
-      sock,
-      P.request(@func_ctx_get_value_by_name,
-        type: @type_component_ctx,
-        oid: {conn.ctx_oid, @oid_ctx}
-      ) <>
-        P.null_ctx() <>
-        P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
-    )
-
-    reply = recv_reply!(sock)
+  def version!(%__MODULE__{sock: sock} = conn) do
+    # Resolve the configuration provider singleton
+    reply =
+      call!(
+        sock,
+        P.request(@func_ctx_get_value_by_name,
+          type: @type_component_ctx,
+          oid: {conn.ctx_oid, @oid_ctx}
+        ) <>
+          P.null_ctx() <>
+          P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
+      )
 
     config_provider_oid =
       P.parse_qi_reply(reply) ||
         raise "getValueByName(theDefaultProvider) failed: #{P.parse_exception(reply)}"
 
-    # Step 2: QI ConfigProvider for XMultiServiceFactory
     qi!(
       conn,
       P.request(@func_query_interface,
         type: @type_interface,
         oid: {config_provider_oid, @oid_config_provider}
       ),
-      P.type_new(@xi_multi_service_factory, 12)
+      P.type_new(@xi_multi_service_factory, @qi_cache_msf)
     )
 
-    # Step 3: createInstanceWithArguments("...ConfigurationAccess", [NamedValue("nodepath", ...)])
-    P.send_frame(sock, @create_config_access)
-
-    reply = recv_reply!(sock)
+    # Open /org.openoffice.Setup/Product via ConfigurationAccess
+    reply = call!(sock, @create_config_access)
 
     config_access_oid =
       P.parse_interface_reply(reply) ||
         raise "createInstanceWithArguments(ConfigurationAccess) failed: #{P.parse_exception(reply)}"
 
-    # Step 4: QI ConfigAccess for XNameAccess
     qi!(
       conn,
       P.request(@func_query_interface,
         type: @type_interface,
         oid: {config_access_oid, @oid_config_access}
       ),
-      P.type_new(@xi_name_access, 15)
+      P.type_new(@xi_name_access, @qi_cache_name_access)
     )
 
-    # Step 5: getByName("ooSetupVersionAboutBox")
-    P.send_frame(sock, @get_version)
-
-    reply = recv_reply!(sock)
+    reply = call!(sock, @get_version)
 
     P.parse_any_string_reply(reply) ||
       raise "getByName(ooSetupVersionAboutBox) failed: #{P.parse_exception(reply)}"
@@ -458,49 +483,25 @@ defmodule URP.Bridge do
   """
   @spec load_document_write!(t(), binary()) :: {doc_oid(), t(), String.t()}
   def load_document_write!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
-    # Seed the TID read cache (bootstrap ran in pool worker, we're in checkout process)
-    if conn.tid_cache != %{} do
-      existing = Process.get(:urp_tid_cache, %{})
-      Process.put(:urp_tid_cache, Map.merge(conn.tid_cache, existing))
-    end
-
+    conn = seed_tid_cache(conn)
     {sfa_oid, conn} = ensure_sfa!(conn)
     id = :erlang.unique_integer([:positive])
     url = "file:///tmp/urp_in_#{id}"
 
-    # openFileWrite(url) → XOutputStream
-    P.send_frame(
-      conn.sock,
-      P.request(@func_sfa_open_file_write, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
-        P.null_ctx() <> P.enc_str(url)
-    )
-
     os_oid =
-      P.parse_interface_reply(recv_reply!(conn.sock)) ||
-        raise "openFileWrite failed"
+      P.parse_interface_reply(
+        sfa_call!(conn.sock, sfa_oid, @func_sfa_open_file_write, P.enc_str(url))
+      ) || raise "openFileWrite failed"
 
-    # QI for XOutputStream
     qi!(
       conn,
       P.request(@func_query_interface, type: @type_interface, oid: {os_oid, @oid_sfa_os}),
-      P.type_new(@xi_output_stream, 20)
+      P.type_new(@xi_output_stream, @qi_cache_sfa_output)
     )
 
-    # writeBytes(bytes) — single URP frame with all data
-    P.send_frame(
-      conn.sock,
-      P.request(@func_os_write_bytes, type: @type_os_sfa) <>
-        P.null_ctx() <> P.enc_str(bytes)
-    )
+    call!(conn.sock, @write_bytes_prefix <> P.enc_str(bytes))
+    call!(conn.sock, @close_output)
 
-    recv_reply!(conn.sock)
-
-    # closeOutput()
-    P.send_frame(conn.sock, @close_output)
-
-    recv_reply!(conn.sock)
-
-    # loadComponentFromURL(url, ...)
     doc_oid = load_document!(conn, url)
 
     {doc_oid, conn, url}
@@ -509,13 +510,7 @@ defmodule URP.Bridge do
   @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
   @spec delete_file!(t(), String.t()) :: :ok
   def delete_file!(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
-    P.send_frame(
-      conn.sock,
-      P.request(@func_sfa_kill, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
-        P.null_ctx() <> P.enc_str(url)
-    )
-
-    recv_reply!(conn.sock)
+    sfa_call!(conn.sock, sfa_oid, @func_sfa_kill, P.enc_str(url))
     :ok
   end
 
@@ -549,41 +544,25 @@ defmodule URP.Bridge do
   def read_file!(%__MODULE__{} = conn, url) do
     {sfa_oid, conn} = ensure_sfa!(conn)
 
-    # openFileRead(url) → XInputStream
-    P.send_frame(
-      conn.sock,
-      P.request(@func_sfa_open_file_read, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
-        P.null_ctx() <> P.enc_str(url)
-    )
-
     is_oid =
-      P.parse_interface_reply(recv_reply!(conn.sock)) ||
-        raise "openFileRead failed"
+      P.parse_interface_reply(
+        sfa_call!(conn.sock, sfa_oid, @func_sfa_open_file_read, P.enc_str(url))
+      ) || raise "openFileRead failed"
 
-    # QI for XInputStream
     qi!(
       conn,
       P.request(@func_query_interface, type: @type_interface, oid: {is_oid, @oid_sfa_is}),
-      P.type_new(@xi_input_stream, 21)
+      P.type_new(@xi_input_stream, @qi_cache_sfa_input)
     )
 
-    P.send_frame(conn.sock, @read_all_bytes)
-    bytes = P.parse_read_bytes_reply(recv_reply!(conn.sock))
-
-    P.send_frame(conn.sock, @close_input)
-
-    recv_reply!(conn.sock)
+    bytes = P.parse_read_bytes_reply(call!(conn.sock, @read_all_bytes))
+    call!(conn.sock, @close_input)
 
     {bytes, conn}
   end
 
   defp load_from_input_source!(conn, source) do
-    # Seed the TID read cache with entries from bootstrap (which ran in the pool worker process)
-    if conn.tid_cache != %{} do
-      existing = Process.get(:urp_tid_cache, %{})
-      Process.put(:urp_tid_cache, Map.merge(conn.tid_cache, existing))
-    end
-
+    conn = seed_tid_cache(conn)
     stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
 
     qi!(
@@ -592,35 +571,37 @@ defmodule URP.Bridge do
         type: @type_interface,
         oid: {conn.desktop_oid, @oid_desktop}
       ),
-      P.type_new(@xi_component_loader, 5)
+      P.type_new(@xi_component_loader, @qi_cache_loader)
     )
 
     # loadComponentFromURL("private:stream", "_blank", 0, [Hidden, InputStream])
+    hidden_prop = P.property("Hidden", @tc_boolean, <<1>>)
+
+    input_stream_prop =
+      P.property(
+        "InputStream",
+        @tc_interface ||| @tc_new,
+        <<@cache_export_input::16>> <>
+          P.enc_str(@xi_input_stream) <>
+          P.enc_str(stream_oid) <> <<@oid_export_input::16>>
+      )
+
     P.send_frame(
       conn.sock,
-      P.request(@func_loader_load, type: @type_new_loader) <>
-        P.null_ctx() <>
+      @load_url_prefix <>
         P.enc_str("private:stream") <>
         P.enc_str("_blank") <>
-        <<0::32>> <>
+        @frame_search_default <>
         <<2>> <>
-        P.property("Hidden", @tc_boolean, <<1>>) <>
-        P.property(
-          "InputStream",
-          @tc_interface ||| @tc_new,
-          <<10::16>> <>
-            P.enc_str(@xi_input_stream) <>
-            P.enc_str(stream_oid) <> <<10::16>>
-        )
+        hidden_prop <>
+        input_stream_prop
     )
 
     # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
     reply = URP.Stream.recv_handling_input(conn.sock, source, stream_oid)
 
-    case P.parse_interface_reply(reply) do
-      nil -> raise "loadComponentFromURL(stream) failed: #{P.parse_exception(reply)}"
-      oid -> oid
-    end
+    P.parse_interface_reply(reply) ||
+      raise "loadComponentFromURL(stream) failed: #{P.parse_exception(reply)}"
   end
 
   @doc """
@@ -648,31 +629,32 @@ defmodule URP.Bridge do
         type: @type_interface,
         oid: {doc_oid, @oid_doc_storable}
       ),
-      P.type_new(@xi_storable2, 7)
+      P.type_new(@xi_storable2, @qi_cache_storable)
     )
 
-    filter_data_bin = encode_filter_data(filter_data)
-    prop_count = if filter_data == [], do: 2, else: 3
+    filter_name_prop = P.property("FilterName", @tc_string, P.enc_str(filter))
+    filter_data_prop = encode_filter_data(filter_data)
 
-    # storeToURL("private:stream", [FilterName, FilterData?, OutputStream])
+    output_stream_prop =
+      P.property(
+        "OutputStream",
+        @tc_interface ||| @tc_new,
+        <<@cache_export_output::16>> <>
+          P.enc_str(@xi_output_stream) <>
+          P.enc_str(stream_oid) <> <<@oid_export_output::16>>
+      )
+
+    props = [filter_name_prop, filter_data_prop, output_stream_prop]
+    prop_count = Enum.count(props, &(&1 != <<>>))
+
     P.send_frame(
       conn.sock,
-      P.request(@func_storable_store_to_url, type: @type_new_storable) <>
-        P.null_ctx() <>
+      @store_to_url_prefix <>
         P.enc_str("private:stream") <>
         <<prop_count>> <>
-        P.property("FilterName", @tc_string, P.enc_str(filter)) <>
-        filter_data_bin <>
-        P.property(
-          "OutputStream",
-          @tc_interface ||| @tc_new,
-          <<11::16>> <>
-            P.enc_str(@xi_output_stream) <>
-            P.enc_str(stream_oid) <> <<11::16>>
-        )
+        IO.iodata_to_binary(props)
     )
 
-    # soffice will call writeBytes/flush/closeOutput on our stream
     {_reply, result} = URP.Stream.recv_handling_output(conn.sock, sink)
     result
   end
@@ -682,27 +664,26 @@ defmodule URP.Bridge do
   defp ensure_sfa!(%__MODULE__{sfa_oid: oid} = conn) when is_binary(oid), do: {oid, conn}
 
   defp ensure_sfa!(%__MODULE__{} = conn) do
-    # createInstanceWithContext on smgr
-    P.send_frame(
-      conn.sock,
-      P.request(@func_mcf_create_with_context,
-        type: @type_multi_comp_fac,
-        oid: {conn.smgr_oid, @oid_smgr}
-      ) <>
-        P.null_ctx() <>
-        P.enc_str("com.sun.star.ucb.SimpleFileAccess") <>
-        @ctx_ref
-    )
+    reply =
+      call!(
+        conn.sock,
+        P.request(@func_mcf_create_with_context,
+          type: @type_multi_comp_fac,
+          oid: {conn.smgr_oid, @oid_smgr}
+        ) <>
+          P.null_ctx() <>
+          P.enc_str("com.sun.star.ucb.SimpleFileAccess") <>
+          @ctx_ref
+      )
 
     sfa_oid =
-      P.parse_interface_reply(recv_reply!(conn.sock)) ||
+      P.parse_interface_reply(reply) ||
         raise "createInstanceWithContext(SimpleFileAccess) failed"
 
-    # QI for XSimpleFileAccess
     qi!(
       conn,
       P.request(@func_query_interface, type: @type_interface, oid: {sfa_oid, @oid_sfa}),
-      P.type_new(@xi_simple_file_access, 19)
+      P.type_new(@xi_simple_file_access, @qi_cache_sfa)
     )
 
     conn = %{conn | sfa_oid: sfa_oid}
@@ -718,7 +699,8 @@ defmodule URP.Bridge do
 
     P.send_frame(sock, @handshake_request_change)
 
-    <<0x80, 0::32>> = P.recv_frame(sock)
+    # requestChange reply: we lost the nonce negotiation (expected)
+    <<@reply_byte, 0::32>> = P.recv_frame(sock)
     P.send_frame(sock, P.reply(<<1::32-signed>>))
     P.recv_frame(sock)
     P.send_frame(sock, P.reply())
@@ -743,7 +725,7 @@ defmodule URP.Bridge do
     qi!(
       sock,
       P.request(@func_query_interface, oid: {ctx_oid, @oid_ctx}),
-      P.type_new(@xi_component_ctx, 2)
+      P.type_new(@xi_component_ctx, @qi_cache_component_ctx)
     )
 
     P.send_frame(sock, @get_service_manager)
@@ -772,8 +754,7 @@ defmodule URP.Bridge do
   end
 
   defp qi!(sock, header, body_type_param) do
-    P.send_frame(sock, header <> P.null_ctx() <> body_type_param)
-    P.parse_qi_reply(recv_reply!(sock))
+    P.parse_qi_reply(call!(sock, header <> P.null_ctx() <> body_type_param))
   end
 
   ## FilterData encoding — nested sequence<PropertyValue> for export options
@@ -790,7 +771,7 @@ defmodule URP.Bridge do
     P.property(
       "FilterData",
       @tc_sequence ||| @tc_new,
-      <<18::16>> <>
+      <<@cache_filter_data_seq::16>> <>
         P.enc_str("[]com.sun.star.beans.PropertyValue") <>
         <<length(filter_data)>> <>
         inner
@@ -802,9 +783,31 @@ defmodule URP.Bridge do
   defp encode_any_value(n) when is_integer(n), do: {@tc_long, <<n::32-signed>>}
   defp encode_any_value(s) when is_binary(s), do: {@tc_string, P.enc_str(s)}
 
-  ## Dispatching recv — handles stray incoming requests (e.g. release() on
-  ## exported stream objects) with a void reply, until we get the actual reply.
-  ## One-way calls (like release) must not receive a reply.
+  # Bootstrap runs in the pool worker process, but conversions run in the
+  # checkout caller's process. Seed the TID cache so reply parsing works.
+  defp seed_tid_cache(%__MODULE__{tid_cache: cache} = conn) when cache == %{}, do: conn
+
+  defp seed_tid_cache(%__MODULE__{tid_cache: cache} = conn) do
+    existing = Process.get(:urp_tid_cache, %{})
+    Process.put(:urp_tid_cache, Map.merge(cache, existing))
+    conn
+  end
+
+  ## Send + receive helpers
+
+  # Send a frame and return the reply, handling any interleaved requests.
+  defp call!(sock, frame) do
+    P.send_frame(sock, frame)
+    recv_reply!(sock)
+  end
+
+  # Send an SFA method call (all share the same type + OID pattern).
+  defp sfa_call!(sock, sfa_oid, func, args) do
+    call!(
+      sock,
+      P.request(func, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <> P.null_ctx() <> args
+    )
+  end
 
   defp recv_reply!(sock) do
     payload = P.recv_frame(sock)
@@ -812,16 +815,12 @@ defmodule URP.Bridge do
     if P.is_reply?(payload) do
       payload
     else
-      case URP.Stream.try_handle_input(sock, payload) do
-        :handled ->
-          :ok
+      if URP.Stream.try_handle_input(sock, payload) == :not_input do
+        %{func_id: func_id, tid: new_tid} = P.parse_request(payload)
+        tid = URP.Stream.track_tid(new_tid)
 
-        :not_input ->
-          %{func_id: func_id, tid: new_tid} = P.parse_request(payload)
-          tid = URP.Stream.track_tid(new_tid)
-
-          unless P.one_way?(func_id),
-            do: P.send_frame(sock, URP.Stream.inject_tid(P.reply(), tid))
+        if not P.one_way?(func_id),
+          do: P.send_frame(sock, URP.Stream.inject_tid(P.reply(), tid))
       end
 
       recv_reply!(sock)

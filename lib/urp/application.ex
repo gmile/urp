@@ -5,10 +5,17 @@ defmodule URP.Application do
 
   @impl true
   def start(_type, _args) do
+    config = Application.get_env(:urp, :default, [])
+
     children = [
       {NimblePool,
-       worker: {URP.Pool, default_pool_config()},
-       pool_size: default_pool_size(),
+       worker:
+         {URP.Pool,
+          %{
+            host: Keyword.get(config, :host, "localhost"),
+            port: Keyword.get(config, :port, 2002)
+          }},
+       pool_size: Keyword.get(config, :pool_size, 1),
        lazy: true,
        name: URP.Pool.Default},
       {DynamicSupervisor, strategy: :one_for_one, name: URP.PoolSupervisor},
@@ -16,19 +23,5 @@ defmodule URP.Application do
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: URP.Supervisor)
-  end
-
-  defp default_pool_config do
-    config = Application.get_env(:urp, :default, [])
-
-    %{
-      host: Keyword.get(config, :host, "localhost"),
-      port: Keyword.get(config, :port, 2002)
-    }
-  end
-
-  defp default_pool_size do
-    config = Application.get_env(:urp, :default, [])
-    Keyword.get(config, :pool_size, 1)
   end
 end

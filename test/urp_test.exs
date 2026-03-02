@@ -15,7 +15,7 @@ defmodule URPTest do
       try do
         assert {:ok, tmp_path} = URP.convert(input, filter: @pdf)
         assert String.ends_with?(tmp_path, ".pdf")
-        assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
+        assert "%PDF-" <> _ = File.read!(tmp_path)
       after
         File.rm(input)
       end
@@ -28,7 +28,7 @@ defmodule URPTest do
       try do
         assert {:ok, ^output} = URP.convert(input, filter: @pdf, output: output)
         assert File.exists?(output)
-        assert <<"%PDF-" <> _rest>> = File.read!(output)
+        assert "%PDF-" <> _ = File.read!(output)
       after
         File.rm(input)
         File.rm(output)
@@ -40,7 +40,7 @@ defmodule URPTest do
 
       try do
         assert {:ok, pdf} = URP.convert(input, filter: @pdf, output: :binary)
-        assert <<"%PDF-" <> _rest>> = pdf
+        assert "%PDF-" <> _ = pdf
       after
         File.rm(input)
       end
@@ -59,7 +59,7 @@ defmodule URPTest do
 
         chunks = collect_chunks()
         pdf = IO.iodata_to_binary(chunks)
-        assert <<"%PDF-" <> _rest>> = pdf
+        assert "%PDF-" <> _ = pdf
       after
         File.rm(input)
       end
@@ -69,13 +69,13 @@ defmodule URPTest do
   describe "{:binary, bytes} input" do
     test "output: :binary" do
       assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert <<"%PDF-" <> _rest>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
 
     test "default output (temp file)" do
       assert {:ok, tmp_path} = URP.convert({:binary, build_test_docx()}, filter: @pdf)
       assert String.ends_with?(tmp_path, ".pdf")
-      assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
+      assert "%PDF-" <> _ = File.read!(tmp_path)
     end
   end
 
@@ -84,13 +84,13 @@ defmodule URPTest do
       chunks = to_chunks(build_test_docx(), 512)
       assert {:ok, tmp_path} = URP.convert(chunks, filter: @pdf)
       assert String.ends_with?(tmp_path, ".pdf")
-      assert <<"%PDF-" <> _rest>> = File.read!(tmp_path)
+      assert "%PDF-" <> _ = File.read!(tmp_path)
     end
 
     test "output: :binary" do
       chunks = to_chunks(build_test_docx(), 512)
       assert {:ok, pdf} = URP.convert(chunks, filter: @pdf, output: :binary)
-      assert <<"%PDF-" <> _rest>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
   end
 
@@ -102,7 +102,7 @@ defmodule URPTest do
                  output: :binary
                )
 
-      assert <<"%PDF-" <> _rest>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
 
     # Markdown export requires LibreOffice 26.2+ (confirmed working on macOS 26.2.1.2).
@@ -128,7 +128,7 @@ defmodule URPTest do
       docx = File.read!("test/fixtures/sample3.docx")
 
       assert {:ok, pdf} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
-      assert <<"%PDF-" <> _>> = pdf
+      assert "%PDF-" <> _ = pdf
       assert pdf_page_count(pdf) >= 2
     end
 
@@ -138,7 +138,7 @@ defmodule URPTest do
       assert {:ok, pdf} =
                URP.convert({:binary, xlsx}, filter: "calc_pdf_Export", output: :binary)
 
-      assert <<"%PDF-" <> _>> = pdf
+      assert "%PDF-" <> _ = pdf
       assert pdf_page_count(pdf) >= 9
     end
   end
@@ -152,7 +152,7 @@ defmodule URPTest do
                  output: :binary
                )
 
-      assert <<"%PDF-" <> _>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
 
     test "integer filter option (FormsType)" do
@@ -163,7 +163,7 @@ defmodule URPTest do
                  output: :binary
                )
 
-      assert <<"%PDF-" <> _>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
 
     test "pool stays usable after filter_data conversion" do
@@ -175,7 +175,7 @@ defmodule URPTest do
                )
 
       assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert <<"%PDF-" <> _>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
   end
 
@@ -196,12 +196,14 @@ defmodule URPTest do
   end
 
   describe "error handling" do
-    test "nonexistent file returns error" do
-      assert {:error, _message} =
+    test "nonexistent file returns error with message" do
+      assert {:error, message} =
                URP.convert("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx",
                  filter: @pdf,
                  output: :binary
                )
+
+      assert message =~ "no such file"
     end
 
     test "pool stays alive after error" do
@@ -213,7 +215,7 @@ defmodule URPTest do
                )
 
       assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert <<"%PDF-" <> _rest>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
   end
 
@@ -226,7 +228,7 @@ defmodule URPTest do
     test "pool stays usable after version query" do
       assert {:ok, _version} = URP.version()
       assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert <<"%PDF-" <> _rest>> = pdf
+      assert "%PDF-" <> _ = pdf
     end
   end
 
@@ -235,8 +237,8 @@ defmodule URPTest do
       docx = build_test_docx()
       assert {:ok, pdf1} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
       assert {:ok, pdf2} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
-      assert <<"%PDF-" <> _rest>> = pdf1
-      assert <<"%PDF-" <> _rest>> = pdf2
+      assert "%PDF-" <> _ = pdf1
+      assert "%PDF-" <> _ = pdf2
     end
   end
 

@@ -41,9 +41,17 @@ defmodule URP.Stream do
   @tc_void 0
   @tc_new 0x80
   @tc_interface 22
+
   @xi_seekable "com.sun.star.io.XSeekable"
+
   # Our outgoing type cache index for XSeekable (bridge.ex uses 0–16)
   @seekable_out_type_cache 17
+
+  # OID encoding: 0 = cached reference, then 16-bit cache index
+  @oid_cached 0
+
+  # OID cache slot 10 = exported input stream (set in bridge.ex loadComponentFromURL)
+  @oid_cache_export_input 10
 
   @doc """
   Receive frames while handling XInputStream/XSeekable calls from soffice.
@@ -98,19 +106,15 @@ defmodule URP.Stream do
       %{func_id: func_id, body: body, type_cache: type_cache, tid: new_tid} =
         P.parse_request(payload)
 
-      # Track TID for cross-thread replies (Calc uses multiple threads during load)
       tid = track_tid(new_tid)
-      # Short headers (type_cache=nil) reuse the last type
       active_type = type_cache || last_type
-      # Track globally so the store/close phase knows the current reader type
       track_type(type_cache)
-      # Track the XInputStream cache (first non-seekable type seen)
       input_cache = input_cache || type_cache
 
       {reply, source, seekable_cache} =
         dispatch_input(func_id, active_type, body, source, stream_oid, seekable_cache)
 
-      unless P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
+      if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
       do_recv_input(sock, source, stream_oid, seekable_cache, active_type, input_cache)
     end
   end
@@ -144,13 +148,13 @@ defmodule URP.Stream do
 
           ctx.seekable_cache != nil and active_type == ctx.seekable_cache ->
             {reply, source} = handle_seekable(func_id, body, ctx.source)
-            unless P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
+            if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
             Process.put(:urp_input_ctx, %{ctx | source: source})
             :handled
 
           active_type == ctx.input_cache ->
             {reply, source} = handle_input(func_id, body, ctx.source)
-            unless P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
+            if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
             Process.put(:urp_input_ctx, %{ctx | source: source})
             :handled
 
@@ -208,7 +212,7 @@ defmodule URP.Stream do
         P.reply(
           <<@tc_interface ||| @tc_new, @seekable_out_type_cache::16>> <>
             P.enc_str(@xi_seekable) <>
-            <<0, 10::16>>
+            <<@oid_cached, @oid_cache_export_input::16>>
         )
 
       {reply, source, incoming_cache}
@@ -222,13 +226,13 @@ defmodule URP.Stream do
 
   # funcIDs 3+ — dispatch based on active type (XInputStream vs XSeekable)
   defp dispatch_input(func_id, type, body, source, _oid, seekable_cache) do
-    if seekable_cache != nil and type == seekable_cache do
-      {reply, source} = handle_seekable(func_id, body, source)
-      {reply, source, seekable_cache}
-    else
-      {reply, source} = handle_input(func_id, body, source)
-      {reply, source, seekable_cache}
-    end
+    handler =
+      if seekable_cache != nil and type == seekable_cache,
+        do: &handle_seekable/3,
+        else: &handle_input/3
+
+    {reply, source} = handler.(func_id, body, source)
+    {reply, source, seekable_cache}
   end
 
   ## QI helpers
@@ -237,6 +241,7 @@ defmodule URP.Stream do
   # Plain text, CSV, HTML, RTF etc. are forward-only and loop if XSeekable is accepted.
   @zip_magic "PK"
   @ole2_magic <<0xD0, 0xCF, 0x11, 0xE0>>
+  @magic_bytes_len max(byte_size(@zip_magic), byte_size(@ole2_magic))
 
   defp seekable_source?({:enum, _, _}), do: false
 
@@ -247,18 +252,9 @@ defmodule URP.Stream do
   defp seekable_source?({:file, fd, _size}) do
     {:ok, pos} = :file.position(fd, :cur)
     {:ok, _} = :file.position(fd, {:bof, 0})
-
-    result =
-      case IO.binread(fd, 4) do
-        data when is_binary(data) ->
-          match?(@zip_magic <> _, data) or match?(@ole2_magic <> _, data)
-
-        _ ->
-          false
-      end
-
+    magic = IO.binread(fd, @magic_bytes_len)
     {:ok, _} = :file.position(fd, {:bof, pos})
-    result
+    is_binary(magic) and (match?(@zip_magic <> _, magic) or match?(@ole2_magic <> _, magic))
   end
 
   defp qi_for_seekable?(body) do
@@ -280,50 +276,39 @@ defmodule URP.Stream do
     cache
   end
 
-  ## XInputStream handlers
+  ## XInputStream handlers — funcIDs: readBytes=3, readSomeBytes=4, skipBytes=5, available=6, closeInput=7
 
-  # readBytes([in] long nBytesToRead) → long + [out] sequence<byte>
   defp handle_input(3, body, src) do
     n = parse_long_param(body)
     {chunk, src} = read_chunk(src, n)
     {P.reply(<<byte_size(chunk)::32-signed>> <> P.enc_str(chunk)), src}
   end
 
-  # readSomeBytes — same behavior as readBytes
   defp handle_input(4, body, src), do: handle_input(3, body, src)
 
-  # skipBytes([in] long nBytesToSkip) → void
   defp handle_input(5, body, src) do
     {P.reply(), skip_chunk(src, parse_long_param(body))}
   end
 
-  # available() → long
   defp handle_input(6, _body, src) do
     {P.reply(<<available(src)::32-signed>>), src}
   end
 
-  # closeInput() → void
   defp handle_input(7, _body, src), do: {P.reply(), src}
 
-  ## XSeekable handlers
+  ## XSeekable handlers — funcIDs: seek=3, getPosition=4, getLength=5
 
-  # seek([in] hyper nPos) → void
   defp handle_seekable(3, body, src) do
-    pos = parse_hyper_param(body)
-    {P.reply(), seek_to(src, pos)}
+    {P.reply(), seek_to(src, parse_hyper_param(body))}
   end
 
-  # getPosition() → hyper
   defp handle_seekable(4, _body, src) do
     {P.reply(<<get_position(src)::64-signed>>), src}
   end
 
-  # getLength() → hyper
   defp handle_seekable(5, _body, src) do
     {P.reply(<<get_length(src)::64-signed>>), src}
   end
-
-  ## XOutputStream handling (unchanged — no XSeekable needed)
 
   @doc """
   Receive frames while handling XOutputStream calls from soffice.
@@ -361,8 +346,7 @@ defmodule URP.Stream do
     if P.is_reply?(payload) do
       {payload, finalize_sink(sink)}
     else
-      # During the store phase, soffice may also send input stream requests
-      # (lazy content loading). Check for those first.
+      # soffice may interleave input stream requests (lazy content loading) during store
       case try_handle_input(sock, payload) do
         :handled ->
           do_recv_output(sock, sink)
@@ -374,50 +358,39 @@ defmodule URP.Stream do
           tid = track_tid(new_tid)
           track_type(tc)
           {reply, sink} = handle_output(func_id, body, sink)
-          unless P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
+          if not P.one_way?(func_id), do: P.send_frame(sock, inject_tid(reply, tid))
           do_recv_output(sock, sink)
       end
     end
   end
 
-  ## XOutputStream handlers
+  ## XOutputStream handlers — funcIDs: writeBytes=3, flush=4, closeOutput=5
 
-  # queryInterface — return null
   defp handle_output(0, _body, sink), do: {P.reply(<<@tc_void>>), sink}
-  # acquire / release
   defp handle_output(1, _body, sink), do: {P.reply(), sink}
   defp handle_output(2, _body, sink), do: {P.reply(), sink}
 
-  # writeBytes([in] sequence<byte>) → void
   defp handle_output(3, body, sink) do
-    body = skip_null_ctx(body)
-    {data, _rest} = P.dec_str(body)
+    {data, _} = body |> skip_null_ctx() |> P.dec_str()
     {P.reply(), write_sink(sink, data)}
   end
 
-  # flush() → void
   defp handle_output(4, _body, sink), do: {P.reply(), sink}
-
-  # closeOutput() → void
   defp handle_output(5, _body, sink), do: {P.reply(), sink}
 
   ## Sink helpers
 
   defp write_sink({:mem, chunks}, data), do: {:mem, [data | chunks]}
 
-  defp write_sink({:file, fd} = sink, data),
-    do:
-      (
-        IO.binwrite(fd, data)
-        sink
-      )
+  defp write_sink({:file, fd} = sink, data) do
+    IO.binwrite(fd, data)
+    sink
+  end
 
-  defp write_sink({:fun, fun} = sink, data),
-    do:
-      (
-        fun.(data)
-        sink
-      )
+  defp write_sink({:fun, fun} = sink, data) do
+    fun.(data)
+    sink
+  end
 
   defp finalize_sink({:mem, chunks}), do: chunks |> Enum.reverse() |> IO.iodata_to_binary()
   defp finalize_sink({:file, _fd}), do: :ok
@@ -488,11 +461,8 @@ defmodule URP.Stream do
 
   defp available({:enum, buffer, :eof}), do: byte_size(buffer)
 
-  defp available({:enum, _buffer, _reader}) do
-    # We can't know the total remaining size for an enumerable.
-    # Return a large value so soffice doesn't think the stream is empty.
-    1_000_000
-  end
+  # Unknown remaining size — return a large value so soffice keeps reading
+  defp available({:enum, _buffer, _reader}), do: 1_000_000
 
   ## XSeekable source helpers
 

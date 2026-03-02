@@ -142,7 +142,7 @@ defmodule URP do
         fun.(input, opts)
 
       :error ->
-        unless Keyword.has_key?(opts, :filter) do
+        if not Keyword.has_key?(opts, :filter) do
           raise ArgumentError,
                 "URP.convert/2 requires the :filter option. " <>
                   "Common filters: \"writer_pdf_Export\", \"calc_pdf_Export\", \"impress_pdf_Export\", \"Markdown\""
@@ -167,20 +167,12 @@ defmodule URP do
               Keyword.put(opts, :sink, fun)
           end
 
-        result = URP.Pool.convert(pool, input, pool_opts)
-
-        case {output, result} do
-          {nil, :ok} ->
-            {:ok, pool_opts[:sink] |> elem(1)}
-
-          {path, :ok} when is_binary(path) ->
-            {:ok, path}
-
-          {fun, :ok} when is_function(fun, 1) ->
-            :ok
-
-          _ ->
-            result
+        case URP.Pool.convert(pool, input, pool_opts) do
+          :ok when is_nil(output) -> {:ok, elem(pool_opts[:sink], 1)}
+          :ok when is_binary(output) -> {:ok, output}
+          :ok when is_function(output, 1) -> :ok
+          {:ok, _bytes} = ok when output == :binary -> ok
+          {:error, _msg} = err -> err
         end
     end
   end
@@ -214,14 +206,7 @@ defmodule URP do
 
   defp resolve_pool(opts) do
     {pool_name, opts} = Keyword.pop(opts, :pool)
-
-    pool =
-      if pool_name do
-        ensure_pool!(pool_name)
-      else
-        URP.Pool.Default
-      end
-
+    pool = if pool_name, do: ensure_pool!(pool_name), else: URP.Pool.Default
     {pool, opts}
   end
 

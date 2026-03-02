@@ -21,12 +21,14 @@ defmodule URP.Protocol do
   @newoid 0x10
   @newtid 0x08
   @functionid16 0x04
+
   # reply-specific, shares bit 5 with @newtype
   @exception 0x20
 
   # UNO TypeClass — include/typelib/typeclass.h
   @tc_string 12
   @tc_interface 22
+
   # ORed into type class byte for uncached types
   @tc_new 0x80
   @tc_void 0
@@ -347,13 +349,11 @@ defmodule URP.Protocol do
     {flags, rest} = skip_reply_header(payload)
 
     if (flags &&& @exception) != 0 do
-      # Exception body is Any(type + value). Skip the type encoding
-      # to get to the struct value, whose first member is Message (string).
+      # Exception body: Any(type + struct). Skip type encoding to reach
+      # the struct whose first member is always Message (string).
       try do
-        # Skip the type class byte
         <<tc, rest::binary>> = rest
 
-        # Skip cache index + optional type name for complex types
         rest =
           if tc > 14 do
             <<_cache::16, rest::binary>> = rest
@@ -362,11 +362,10 @@ defmodule URP.Protocol do
             rest
           end
 
-        # First struct member is Message (string)
         {message, _} = dec_str(rest)
         message
       rescue
-        _ -> "UNO exception (could not parse message)"
+        MatchError -> "UNO exception (could not parse message)"
       end
     else
       "no exception"
