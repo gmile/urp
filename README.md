@@ -123,6 +123,23 @@ Integration tests require soffice on `localhost:2002`:
 mix test
 ```
 
+## Benchmarks
+
+Compare URP against [Gotenberg](https://gotenberg.dev/) end-to-end.
+Prerequisites: soffice on port 2002, Gotenberg on port 3002.
+
+```sh
+# Quick phase-level profiling (manual timer.tc, 5 iterations)
+mix run benchmarks/profile.exs
+
+# Statistical benchmark via Benchee (warmup + 15s per scenario)
+mix run benchmarks/bench.exs
+
+# Override fixture or iteration count
+FIXTURE=sample3.docx mix run benchmarks/profile.exs
+FIXTURE=sample3.docx mix run benchmarks/bench.exs
+```
+
 ## Scope
 
 Implements document conversion and version detection via UNO. The output
