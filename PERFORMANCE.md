@@ -75,7 +75,7 @@ allocator issues `mmap`/`munmap` for most allocations — 21,432
 syscalls per conversion vs 25 on glibc. This adds ~260 ms. It's
 [inherent to musl](https://docs.bell-sw.com/alpaquita-linux/latest/how-to/malloc/)
 and can be mitigated with
-[`LD_PRELOAD=/usr/lib/libjemalloc.so.2`](https://jemalloc.net/).
+[`LD_PRELOAD=/usr/lib/libjemalloc.so.2`](https://github.com/jemalloc/jemalloc/wiki/Getting-Started).
 
 **Image bloat.** Despite Alpine's small-image reputation,
 `libreofficedocker/alpine` is 1.78 GB — nearly 3x the Debian image.
