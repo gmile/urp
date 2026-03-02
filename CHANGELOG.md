@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.7.0] - 2026-03-02
+
+- **Performance:** load documents via XSimpleFileAccess instead of XInputStream streaming — eliminates ~4000 TCP round-trips per conversion, ~8x faster for typical documents
+- Add `Bridge.load_document_write!/2` — write bytes to soffice filesystem, load from `file://` URL
+- Add `Bridge.delete_file!/2` — clean up temp files via XSimpleFileAccess
+- Preserve XInputStream streaming path for enumerable inputs (lazy iteration)
+
 ## [v0.6.1] - 2026-03-01
 
 - Add `URP.version/1` — query soffice version string over URP (no CLI access needed)
