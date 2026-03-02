@@ -148,10 +148,11 @@ The pre-built [`libreofficedocker/alpine`](https://hub.docker.com/r/libreofficed
 image works with URP out of the box, but has some drawbacks compared
 to the Debian image above.
 
-### Outdated LibreOffice
+### LibreOffice version lag
 
-Alpine community repos track the Still line (25.8.x). Debian
-trixie-backports ships 26.2.x (Fresh).
+Alpine community repos typically lag behind — they track the Still
+line rather than Fresh. As of March 2025, Alpine ships 25.8.x while
+Debian trixie-backports has 26.2.x.
 
 ### Larger image
 
