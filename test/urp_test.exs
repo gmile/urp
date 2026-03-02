@@ -119,6 +119,30 @@ defmodule URPTest do
     end
   end
 
+  describe "real-world fixtures" do
+    # These tests convert non-trivial documents from filesamples.com and verify
+    # the PDF output has the expected page count — catching regressions like
+    # empty-page output from missing XSeekable or broken TID caching.
+
+    test "sample3.docx produces multi-page PDF" do
+      docx = File.read!("test/fixtures/sample3.docx")
+
+      assert {:ok, pdf} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
+      assert <<"%PDF-" <> _>> = pdf
+      assert pdf_page_count(pdf) >= 4
+    end
+
+    test "sample1.xlsx produces multi-page PDF" do
+      xlsx = File.read!("test/fixtures/sample1.xlsx")
+
+      assert {:ok, pdf} =
+               URP.convert({:binary, xlsx}, filter: "calc_pdf_Export", output: :binary)
+
+      assert <<"%PDF-" <> _>> = pdf
+      assert pdf_page_count(pdf) >= 9
+    end
+  end
+
   describe "error handling" do
     test "nonexistent file returns error" do
       assert {:error, _message} =
@@ -215,6 +239,15 @@ defmodule URPTest do
     path = tmp_path(ext)
     File.write!(path, content)
     path
+  end
+
+  # Extract page count from the PDF Pages dictionary (/Type /Pages ... /Count N).
+  # Returns 0 if parsing fails.
+  defp pdf_page_count(pdf) when is_binary(pdf) do
+    case Regex.run(~r|/Type\s*/Pages.*?/Count\s+(\d+)|s, pdf) do
+      [_, count] -> String.to_integer(count)
+      nil -> 0
+    end
   end
 
   defp build_test_docx do
