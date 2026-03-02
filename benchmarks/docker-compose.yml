@@ -1,0 +1,34 @@
+# Benchmark infrastructure for URP vs CLI vs Gotenberg comparisons.
+#
+# Usage:
+#   cd benchmarks && docker compose up -d
+#   cd .. && nix develop --command mix run benchmarks/convert.exs
+#
+# Three services:
+#   soffice     — URP listener on port 2002 (for URP benchmark)
+#   soffice-cli — idle container for CLI shell-out (separate instance to avoid lock contention)
+#   gotenberg   — HTTP API on port 3002
+#
+# All three use LibreOffice 25.8.1 for apples-to-apples comparison.
+
+services:
+  soffice:
+    image: libreofficedocker/alpine:3.23
+    command:
+      - soffice
+      - --headless
+      - --norestore
+      - --accept=socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;
+    ports:
+      - "2002:2002"
+
+  soffice-cli:
+    image: libreofficedocker/alpine:3.23
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - ./fixtures:/fixtures:ro
+
+  gotenberg:
+    image: gotenberg/gotenberg:8.23.1
+    ports:
+      - "3002:3000"
