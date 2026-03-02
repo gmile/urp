@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.8.0] - 2026-03-02
+
+- Add `URP.services/1` — list all registered UNO service names
+- Add `URP.filters/1` — list all export filter names (discover available filters at runtime)
+- Add `URP.types/1` — list all document type names
+- Add `URP.locale/1` — query soffice locale setting
+- Add `Protocol.parse_string_sequence_reply/1` for `sequence<string>` replies
+- Add Diagnostics section to module docs with examples
+
 ## [v0.7.0] - 2026-03-02
 
 - **File-based I/O:** load and store documents via XSimpleFileAccess instead of
