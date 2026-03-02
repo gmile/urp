@@ -62,21 +62,91 @@ defmodule URP.Bridge do
   @func_query_interface 0
   @func_request_change 4
 
-  # XSimpleFileAccess funcIDs (XInterface 0-2, then IDL order):
-  # copy=3, move=4, kill=5, isFolder=6, ..., openFileWrite=16
+  # Per-interface function IDs — counted from XInterface(0-2), then IDL order.
+  # XComponentLoader: loadComponentFromURL=3
+  @func_loader_load 3
+  # XComponentContext: getValueByName=3, getServiceManager=4
+  @func_ctx_get_value_by_name 3
+  @func_ctx_get_service_manager 4
+  # XMultiComponentFactory: createInstanceWithContext=3
+  @func_mcf_create_with_context 3
+  # XStorable2: storeToURL=8 (XInterface 0-2, XStorable 3-7, storeToURL 8)
+  @func_storable_store_to_url 8
+  # XCloseable: close=5 (XInterface 0-2, XCloseBroadcaster 3-4, close 5)
+  @func_closeable_close 5
+  # XMultiServiceFactory: createInstanceWithArguments=4
+  @func_msf_create_with_args 4
+  # XNameAccess: getByName=5 (XInterface 0-2, XElementAccess 3-4, getByName 5)
+  @func_na_get_by_name 5
+  # XSimpleFileAccess (XInterface 0-2, then IDL order):
+  # copy=3, move=4, kill=5, isFolder=6, ..., openFileRead=15, openFileWrite=16
   @func_sfa_kill 5
-  @func_sfa_open_file_write 16
-
-  # XSimpleFileAccess: openFileRead=15 (IDL order after XInterface 0-2)
   @func_sfa_open_file_read 15
-
-  # XInputStream funcIDs (for read-back from soffice's filesystem)
+  @func_sfa_open_file_write 16
+  # XInputStream: readBytes=3, ..., closeInput=7
   @func_is_read_bytes 3
   @func_is_close_input 7
-
-  # XOutputStream funcIDs (writeBytes=3, flush=4, closeOutput=5)
+  # XOutputStream: writeBytes=3, flush=4, closeOutput=5
   @func_os_write_bytes 3
   @func_os_close_output 5
+
+  # Maximum signed int32 — used with readBytes to pull entire file in one frame
+  @max_read_bytes 0x7FFFFFFF
+
+  # URP type cache — sequential allocation shared between request headers and QI bodies.
+  #
+  #  idx | interface/struct                    | registered by
+  # -----+------------------------------------+--------------------
+  #   0  | XProtocolProperties                | handshake
+  #   1  | XInterface                         | bootstrap
+  #   2  | XComponentContext                   | bootstrap QI body
+  #   3  | XComponentContext                   | getServiceManager header
+  #   4  | XMultiComponentFactory             | createInstanceWithContext header
+  #   5  | XComponentLoader                   | load QI body
+  #   6  | XComponentLoader                   | loadComponentFromURL header
+  #   7  | XStorable2                         | store QI body
+  #   8  | XStorable2                         | storeToURL header
+  #   9  | XCloseable                         | close QI body + close header
+  #  10  | XInputStream                       | exported stream property
+  #  11  | XOutputStream                      | exported stream property
+  #  12  | XMultiServiceFactory               | version QI body
+  #  13  | XMultiServiceFactory               | createInstanceWithArgs header
+  #  14  | NamedValue struct                   | version config access
+  #  15  | XNameAccess                        | version QI body
+  #  16  | XNameAccess                        | getByName header
+  #  18  | []PropertyValue                    | FilterData encoding
+  #  19  | XSimpleFileAccess                  | SFA QI body + method headers
+  #  20  | XOutputStream                      | SFA write QI body + method headers
+  #  21  | XInputStream                       | SFA read QI body + method headers
+
+  # Request header type tuples — {:cached, idx} or {:new, name, idx}
+  @type_interface {:cached, 1}
+  @type_component_ctx {:cached, 3}
+  @type_multi_comp_fac {:cached, 4}
+  @type_closeable {:cached, 9}
+  @type_sfa {:cached, 19}
+  @type_os_sfa {:cached, 20}
+  @type_is_sfa {:cached, 21}
+  @type_new_protocol_props {:new, @xi_protocol_props, 0}
+  @type_new_interface {:new, @xi_interface, 1}
+  @type_new_component_ctx {:new, @xi_component_ctx, 3}
+  @type_new_multi_comp_fac {:new, @xi_multi_comp_fac, 4}
+  @type_new_loader {:new, @xi_component_loader, 6}
+  @type_new_storable {:new, @xi_storable2, 8}
+  @type_new_msf {:new, @xi_multi_service_factory, 13}
+  @type_new_name_access {:new, @xi_name_access, 16}
+
+  # OID cache indices — sequential allocation for object identity references
+  @oid_ctx 2
+  @oid_smgr 3
+  @oid_desktop 4
+  @oid_doc_storable 5
+  @oid_doc_closeable 6
+  @oid_config_provider 7
+  @oid_config_access 8
+  @oid_sfa 9
+  @oid_sfa_os 12
+  @oid_sfa_is 13
 
   import Bitwise
 
@@ -119,17 +189,16 @@ defmodule URP.Bridge do
     qi!(
       conn,
       P.request(@func_query_interface,
-        type: {:cached, 1},
-        oid: {conn.desktop_oid, 4}
+        type: @type_interface,
+        oid: {conn.desktop_oid, @oid_desktop}
       ),
       P.type_new(@xi_component_loader, 5)
     )
 
     # loadComponentFromURL(url, "_blank", 0, [Hidden=true])
-    # funcID 3 on XComponentLoader
     P.send_frame(
       conn.sock,
-      P.request(3, type: {:new, @xi_component_loader, 6}) <>
+      P.request(@func_loader_load, type: @type_new_loader) <>
         P.null_ctx() <>
         P.enc_str(url) <>
         P.enc_str("_blank") <>
@@ -162,8 +231,8 @@ defmodule URP.Bridge do
     qi!(
       conn,
       P.request(@func_query_interface,
-        type: {:cached, 1},
-        oid: {doc_oid, 5}
+        type: @type_interface,
+        oid: {doc_oid, @oid_doc_storable}
       ),
       P.type_new(@xi_storable2, 7)
     )
@@ -171,10 +240,10 @@ defmodule URP.Bridge do
     filter_data_bin = encode_filter_data(filter_data)
     prop_count = if filter_data == [], do: 1, else: 2
 
-    # storeToURL — funcID 8: XInterface(0-2) + XStorable(3-8)
+    # storeToURL
     P.send_frame(
       conn.sock,
-      P.request(8, type: {:new, @xi_storable2, 8}) <>
+      P.request(@func_storable_store_to_url, type: @type_new_storable) <>
         P.null_ctx() <>
         P.enc_str(url) <>
         <<prop_count>> <>
@@ -195,17 +264,16 @@ defmodule URP.Bridge do
     qi!(
       conn,
       P.request(@func_query_interface,
-        type: {:cached, 1},
-        oid: {doc_oid, 6}
+        type: @type_interface,
+        oid: {doc_oid, @oid_doc_closeable}
       ),
       P.type_new(@xi_closeable, 9)
     )
 
     # close(deliverOwnership=true)
-    # funcID 5: XInterface(0-2) + XCloseBroadcaster(3-4) + XCloseable(5)
     P.send_frame(
       conn.sock,
-      P.request(5, type: {:cached, 9}) <>
+      P.request(@func_closeable_close, type: @type_closeable) <>
         P.null_ctx() <> <<1>>
     )
 
@@ -224,12 +292,11 @@ defmodule URP.Bridge do
     sock = conn.sock
 
     # Step 1: getValueByName("/singletons/com.sun.star.configuration.theDefaultProvider")
-    # funcID 3 on XComponentContext (XInterface 0-2, getValueByName 3, getServiceManager 4)
     P.send_frame(
       sock,
-      P.request(3,
-        type: {:cached, 3},
-        oid: {conn.ctx_oid, 2}
+      P.request(@func_ctx_get_value_by_name,
+        type: @type_component_ctx,
+        oid: {conn.ctx_oid, @oid_ctx}
       ) <>
         P.null_ctx() <>
         P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
@@ -245,18 +312,16 @@ defmodule URP.Bridge do
     qi!(
       conn,
       P.request(@func_query_interface,
-        type: {:cached, 1},
-        oid: {config_provider_oid, 7}
+        type: @type_interface,
+        oid: {config_provider_oid, @oid_config_provider}
       ),
       P.type_new(@xi_multi_service_factory, 12)
     )
 
     # Step 3: createInstanceWithArguments("...ConfigurationAccess", [NamedValue("nodepath", ...)])
-    # funcID 4 on XMultiServiceFactory (XInterface 0-2, createInstance 3, createInstanceWithArguments 4)
     P.send_frame(
       sock,
-      # sequence<any> with 1 element: any(NamedValue)
-      P.request(4, type: {:new, @xi_multi_service_factory, 13}) <>
+      P.request(@func_msf_create_with_args, type: @type_new_msf) <>
         P.null_ctx() <>
         P.enc_str("com.sun.star.configuration.ConfigurationAccess") <>
         <<1>> <>
@@ -277,17 +342,16 @@ defmodule URP.Bridge do
     qi!(
       conn,
       P.request(@func_query_interface,
-        type: {:cached, 1},
-        oid: {config_access_oid, 8}
+        type: @type_interface,
+        oid: {config_access_oid, @oid_config_access}
       ),
       P.type_new(@xi_name_access, 15)
     )
 
     # Step 5: getByName("ooSetupVersionAboutBox")
-    # funcID 5 on XNameAccess (XInterface 0-2, XElementAccess 3-4, getByName 5)
     P.send_frame(
       sock,
-      P.request(5, type: {:new, @xi_name_access, 16}) <>
+      P.request(@func_na_get_by_name, type: @type_new_name_access) <>
         P.null_ctx() <>
         P.enc_str("ooSetupVersionAboutBox")
     )
@@ -378,7 +442,7 @@ defmodule URP.Bridge do
     # openFileWrite(url) → XOutputStream
     P.send_frame(
       conn.sock,
-      P.request(@func_sfa_open_file_write, type: {:cached, 19}, oid: {sfa_oid, 9}) <>
+      P.request(@func_sfa_open_file_write, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
         P.null_ctx() <> P.enc_str(url)
     )
 
@@ -389,14 +453,14 @@ defmodule URP.Bridge do
     # QI for XOutputStream
     qi!(
       conn,
-      P.request(@func_query_interface, type: {:cached, 1}, oid: {os_oid, 12}),
+      P.request(@func_query_interface, type: @type_interface, oid: {os_oid, @oid_sfa_os}),
       P.type_new(@xi_output_stream, 20)
     )
 
     # writeBytes(bytes) — single URP frame with all data
     P.send_frame(
       conn.sock,
-      P.request(@func_os_write_bytes, type: {:cached, 20}) <>
+      P.request(@func_os_write_bytes, type: @type_os_sfa) <>
         P.null_ctx() <> P.enc_str(bytes)
     )
 
@@ -421,7 +485,7 @@ defmodule URP.Bridge do
   def delete_file!(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
     P.send_frame(
       conn.sock,
-      P.request(@func_sfa_kill, type: {:cached, 19}, oid: {sfa_oid, 9}) <>
+      P.request(@func_sfa_kill, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
         P.null_ctx() <> P.enc_str(url)
     )
 
@@ -462,7 +526,7 @@ defmodule URP.Bridge do
     # openFileRead(url) → XInputStream
     P.send_frame(
       conn.sock,
-      P.request(@func_sfa_open_file_read, type: {:cached, 19}, oid: {sfa_oid, 9}) <>
+      P.request(@func_sfa_open_file_read, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
         P.null_ctx() <> P.enc_str(url)
     )
 
@@ -473,15 +537,15 @@ defmodule URP.Bridge do
     # QI for XInputStream
     qi!(
       conn,
-      P.request(@func_query_interface, type: {:cached, 1}, oid: {is_oid, 13}),
+      P.request(@func_query_interface, type: @type_interface, oid: {is_oid, @oid_sfa_is}),
       P.type_new(@xi_input_stream, 21)
     )
 
     # readBytes(max_int32) — pull entire file in one frame
     P.send_frame(
       conn.sock,
-      P.request(@func_is_read_bytes, type: {:cached, 21}) <>
-        P.null_ctx() <> <<0x7FFFFFFF::32-signed>>
+      P.request(@func_is_read_bytes, type: @type_is_sfa) <>
+        P.null_ctx() <> <<@max_read_bytes::32-signed>>
     )
 
     bytes = P.parse_read_bytes_reply(recv_reply!(conn.sock))
@@ -509,17 +573,16 @@ defmodule URP.Bridge do
     qi!(
       conn,
       P.request(@func_query_interface,
-        type: {:cached, 1},
-        oid: {conn.desktop_oid, 4}
+        type: @type_interface,
+        oid: {conn.desktop_oid, @oid_desktop}
       ),
       P.type_new(@xi_component_loader, 5)
     )
 
     # loadComponentFromURL("private:stream", "_blank", 0, [Hidden, InputStream])
-    # funcID 3 on XComponentLoader
     P.send_frame(
       conn.sock,
-      P.request(3, type: {:new, @xi_component_loader, 6}) <>
+      P.request(@func_loader_load, type: @type_new_loader) <>
         P.null_ctx() <>
         P.enc_str("private:stream") <>
         P.enc_str("_blank") <>
@@ -566,8 +629,8 @@ defmodule URP.Bridge do
     qi!(
       conn,
       P.request(@func_query_interface,
-        type: {:cached, 1},
-        oid: {doc_oid, 5}
+        type: @type_interface,
+        oid: {doc_oid, @oid_doc_storable}
       ),
       P.type_new(@xi_storable2, 7)
     )
@@ -576,10 +639,9 @@ defmodule URP.Bridge do
     prop_count = if filter_data == [], do: 2, else: 3
 
     # storeToURL("private:stream", [FilterName, FilterData?, OutputStream])
-    # funcID 8: XInterface(0-2) + XStorable(3-8)
     P.send_frame(
       conn.sock,
-      P.request(8, type: {:new, @xi_storable2, 8}) <>
+      P.request(@func_storable_store_to_url, type: @type_new_storable) <>
         P.null_ctx() <>
         P.enc_str("private:stream") <>
         <<prop_count>> <>
@@ -604,10 +666,10 @@ defmodule URP.Bridge do
   defp ensure_sfa!(%__MODULE__{sfa_oid: oid} = conn) when is_binary(oid), do: {oid, conn}
 
   defp ensure_sfa!(%__MODULE__{} = conn) do
-    # createInstanceWithContext on smgr (XMultiComponentFactory cached at type 4)
+    # createInstanceWithContext on smgr
     P.send_frame(
       conn.sock,
-      P.request(3, type: {:cached, 4}, oid: {conn.smgr_oid, 3}) <>
+      P.request(@func_mcf_create_with_context, type: @type_multi_comp_fac, oid: {conn.smgr_oid, @oid_smgr}) <>
         P.null_ctx() <>
         P.enc_str("com.sun.star.ucb.SimpleFileAccess") <>
         <<0x00, 2::16>>
@@ -620,7 +682,7 @@ defmodule URP.Bridge do
     # QI for XSimpleFileAccess
     qi!(
       conn,
-      P.request(@func_query_interface, type: {:cached, 1}, oid: {sfa_oid, 9}),
+      P.request(@func_query_interface, type: @type_interface, oid: {sfa_oid, @oid_sfa}),
       P.type_new(@xi_simple_file_access, 19)
     )
 
@@ -638,7 +700,7 @@ defmodule URP.Bridge do
     P.send_frame(
       sock,
       P.request(@func_request_change,
-        type: {:new, @xi_protocol_props, 0},
+        type: @type_new_protocol_props,
         oid: {"UrpProtocolProperties", 0},
         tid: {".UrpProtocolPropertiesTid", 0}
       ) <> @losing_nonce
@@ -659,7 +721,7 @@ defmodule URP.Bridge do
       qi!(
         sock,
         P.request(@func_query_interface,
-          type: {:new, @xi_interface, 1},
+          type: @type_new_interface,
           oid: {"StarOffice.ComponentContext", 1},
           tid: {tid, 1}
         ),
@@ -668,25 +730,24 @@ defmodule URP.Bridge do
 
     qi!(
       sock,
-      P.request(@func_query_interface, oid: {ctx_oid, 2}),
+      P.request(@func_query_interface, oid: {ctx_oid, @oid_ctx}),
       P.type_new(@xi_component_ctx, 2)
     )
 
-    # getServiceManager — funcID 4 on XComponentContext
+    # getServiceManager
     P.send_frame(
       sock,
-      P.request(4, type: {:new, @xi_component_ctx, 3}) <> P.null_ctx()
+      P.request(@func_ctx_get_service_manager, type: @type_new_component_ctx) <> P.null_ctx()
     )
 
     smgr_oid = P.parse_interface_reply(P.recv_frame(sock))
 
     # createInstanceWithContext("com.sun.star.frame.Desktop")
-    # funcID 3 on XMultiComponentFactory
     P.send_frame(
       sock,
-      P.request(3,
-        type: {:new, @xi_multi_comp_fac, 4},
-        oid: {smgr_oid, 3}
+      P.request(@func_mcf_create_with_context,
+        type: @type_new_multi_comp_fac,
+        oid: {smgr_oid, @oid_smgr}
       ) <>
         P.null_ctx() <>
         P.enc_str("com.sun.star.frame.Desktop") <>

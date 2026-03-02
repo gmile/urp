@@ -128,7 +128,7 @@ mix test
 Compare URP against [Gotenberg](https://gotenberg.dev/) end-to-end:
 
 ```sh
-cd benchmarks && docker compose up -d && cd ..
+docker compose --file benchmarks/docker-compose.yml up --detach --wait
 mix run benchmarks/bench.exs
 
 # Override fixture
