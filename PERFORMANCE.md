@@ -2,7 +2,7 @@
 
 URP converts documents by talking directly to `soffice` over TCP.
 This page compares URP against [Gotenberg](https://gotenberg.dev/),
-the most popular LibreOffice-based conversion service.
+a popular LibreOffice-based conversion service.
 
 ## Benchmarks
 
