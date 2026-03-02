@@ -7,3 +7,4 @@ erl_crash.dump
 /priv/plts/
 /doc/
 /benchmarks/fixtures/
+/.worktrees/
