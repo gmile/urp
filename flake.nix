@@ -18,6 +18,8 @@
             packages = [
               beamPackages.erlang
               beamPackages.elixir_1_19
+              pkgs.git
+              pkgs.uv
             ];
           };
         }
