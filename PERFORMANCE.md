@@ -175,7 +175,7 @@ LibreOffice and the fonts you need is smaller and easier to audit.
 
 ### Benchmark
 
-As of March 2025, Alpine ships LO 25.8.x (Still line) while Debian
+As of March 2026, Alpine ships LO 25.8.x (Still line) while Debian
 trixie-backports has 26.2.x (Fresh). The benchmark fixture uses
 Liberation fonts — present in both images. Carlito (Calibri
 replacement) is missing from the stock Alpine image, so documents
