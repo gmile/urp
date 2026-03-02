@@ -52,11 +52,13 @@ defmodule URP.Pool do
           {:ok, binary()} | :ok | {:error, String.t()}
   def convert(pool, input, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
-    store_opts = Keyword.take(opts, [:filter, :filter_data, :sink])
+    {sink, opts} = Keyword.pop(opts, :sink)
+    store_opts = Keyword.take(opts, [:filter, :filter_data])
 
     do_checkout(pool, timeout, fn conn ->
       {doc, conn, cleanup_url} = load_input!(conn, input)
-      result = Bridge.store_to_stream!(conn, doc, store_opts)
+      {bytes, conn} = Bridge.store_document_write!(conn, doc, store_opts)
+      result = apply_sink(bytes, sink)
       close_status = safe_close(conn, doc)
       safe_cleanup(conn, cleanup_url)
       URP.Stream.clear_input_ctx()
@@ -157,6 +159,18 @@ defmodule URP.Pool do
     end
 
     {:ok, pool_state}
+  end
+
+  defp apply_sink(bytes, nil), do: bytes
+
+  defp apply_sink(bytes, {:path, path}) do
+    File.write!(path, bytes)
+    :ok
+  end
+
+  defp apply_sink(bytes, fun) when is_function(fun, 1) do
+    fun.(bytes)
+    :ok
   end
 
   defp safe_cleanup(_conn, nil), do: :ok

@@ -186,6 +186,13 @@ defmodule URPTest do
 
       assert Enum.empty?(Path.wildcard("/tmp/urp_in_*"))
     end
+
+    test "no urp_out temp files linger after conversion" do
+      assert {:ok, _pdf} =
+               URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+
+      assert Enum.empty?(Path.wildcard("/tmp/urp_out_*"))
+    end
   end
 
   describe "error handling" do
