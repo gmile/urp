@@ -98,6 +98,13 @@ config :urp, :default,
   pool_size: 1
 ```
 
+> #### pool_size {: .warning}
+>
+> Keep `pool_size: 1` per soffice instance. Multiple concurrent connections
+> to the same soffice process share UNO singletons (Desktop, XSimpleFileAccess)
+> that are not safe under concurrent document operations. Scale by running
+> multiple soffice containers with separate named pools instead.
+
 ## Testing
 
 Stub conversions in tests — no running soffice needed:
