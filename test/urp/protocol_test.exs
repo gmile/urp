@@ -168,35 +168,35 @@ defmodule URP.ProtocolTest do
     test "extracts string from any(string) reply" do
       # Reply: LONGHEADER, any body: TC_STRING (12) + encoded string
       payload = <<0x80, 12>> <> P.enc_str("25.8.1.1")
-      assert P.parse_any_string_reply(payload) == "25.8.1.1"
+      assert P.parse_any_string_reply(payload) == {:ok, "25.8.1.1"}
     end
 
-    test "returns nil for exception reply" do
+    test "returns error for exception reply" do
       payload = <<0x80 ||| 0x20, 19, 0::16>> <> P.enc_str("some error")
-      assert P.parse_any_string_reply(payload) == nil
+      assert {:error, "some error"} = P.parse_any_string_reply(payload)
     end
   end
 
   describe "parse_string_sequence_reply/1" do
     test "parses empty sequence" do
       payload = <<0x80, 0>>
-      assert P.parse_string_sequence_reply(payload) == []
+      assert P.parse_string_sequence_reply(payload) == {:ok, []}
     end
 
     test "parses sequence with multiple strings" do
       payload = <<0x80>> <> <<2>> <> P.enc_str("foo") <> P.enc_str("bar")
-      assert P.parse_string_sequence_reply(payload) == ["foo", "bar"]
+      assert P.parse_string_sequence_reply(payload) == {:ok, ["foo", "bar"]}
     end
 
     test "parses sequence with long count encoding" do
       # Count >= 255 uses 0xFF + 4-byte uint32
       payload = <<0x80, 0xFF, 2::32>> <> P.enc_str("a") <> P.enc_str("b")
-      assert P.parse_string_sequence_reply(payload) == ["a", "b"]
+      assert P.parse_string_sequence_reply(payload) == {:ok, ["a", "b"]}
     end
 
-    test "returns nil for exception reply" do
+    test "returns error for exception reply" do
       payload = <<0x80 ||| 0x20, 19, 0::16>> <> P.enc_str("some error")
-      assert P.parse_string_sequence_reply(payload) == nil
+      assert {:error, "some error"} = P.parse_string_sequence_reply(payload)
     end
   end
 

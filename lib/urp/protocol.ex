@@ -278,75 +278,75 @@ defmodule URP.Protocol do
   ## Reply parsing
 
   @doc "Parse a queryInterface reply — extracts OID from `any(XInterface)` return value."
-  @spec parse_qi_reply(binary()) :: String.t() | nil
+  @spec parse_qi_reply(binary()) :: {:ok, String.t()} | {:error, String.t()}
   def parse_qi_reply(payload) do
     {flags, rest} = skip_reply_header(payload)
 
     if (flags &&& @exception) != 0 do
-      nil
+      {:error, parse_exception(payload)}
     else
       case rest do
         <<@tc_void, _::binary>> ->
-          nil
+          {:error, "queryInterface returned void"}
 
         <<tc, _ci::16, rest::binary>> ->
           rest = if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
-          elem(dec_str(rest), 0)
+          {:ok, elem(dec_str(rest), 0)}
       end
     end
   end
 
   @doc "Parse a reply returning a single interface reference (OID string)."
-  @spec parse_interface_reply(binary()) :: String.t() | nil
+  @spec parse_interface_reply(binary()) :: {:ok, String.t()} | {:error, String.t()}
   def parse_interface_reply(payload) do
     {flags, rest} = skip_reply_header(payload)
 
     if (flags &&& @exception) != 0 do
-      nil
+      {:error, parse_exception(payload)}
     else
       {oid, _} = dec_str(rest)
-      if oid == "", do: nil, else: oid
+      if oid == "", do: {:error, "empty OID"}, else: {:ok, oid}
     end
   end
 
   @doc "Parse a reply returning `any(string)` — extracts the string value."
-  @spec parse_any_string_reply(binary()) :: String.t() | nil
+  @spec parse_any_string_reply(binary()) :: {:ok, String.t()} | {:error, String.t()}
   def parse_any_string_reply(payload) do
     {flags, rest} = skip_reply_header(payload)
 
     if (flags &&& @exception) != 0 do
-      nil
+      {:error, parse_exception(payload)}
     else
       <<@tc_string, rest::binary>> = rest
       {value, _} = dec_str(rest)
-      value
+      {:ok, value}
     end
   end
 
   @doc "Parse a readBytes reply — return value (long) + out param (sequence<byte>)."
-  @spec parse_read_bytes_reply(binary()) :: binary()
+  @spec parse_read_bytes_reply(binary()) :: {:ok, binary()} | {:error, String.t()}
   def parse_read_bytes_reply(payload) do
     {flags, rest} = skip_reply_header(payload)
 
     if (flags &&& @exception) != 0 do
-      raise "readBytes failed: #{parse_exception(payload)}"
+      {:error, parse_exception(payload)}
+    else
+      <<_bytes_read::32-signed, rest::binary>> = rest
+      {data, _} = dec_str(rest)
+      {:ok, data}
     end
-
-    <<_bytes_read::32-signed, rest::binary>> = rest
-    {data, _} = dec_str(rest)
-    data
   end
 
   @doc "Parse a reply returning `sequence<string>`."
-  @spec parse_string_sequence_reply(binary()) :: [String.t()] | nil
+  @spec parse_string_sequence_reply(binary()) :: {:ok, [String.t()]} | {:error, String.t()}
   def parse_string_sequence_reply(payload) do
     {flags, rest} = skip_reply_header(payload)
 
     if (flags &&& @exception) != 0 do
-      nil
+      {:error, parse_exception(payload)}
     else
       {count, rest} = dec_count(rest)
-      dec_strings(rest, count, [])
+      {:ok, dec_strings(rest, count, [])}
     end
   end
 

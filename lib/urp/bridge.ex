@@ -385,11 +385,10 @@ defmodule URP.Bridge do
           hidden_prop
       )
 
-    doc_oid =
-      P.parse_interface_reply(reply) ||
-        raise "loadComponentFromURL failed: #{P.parse_exception(reply)}"
-
-    %{conn | doc_oid: doc_oid}
+    case P.parse_interface_reply(reply) do
+      {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
+      {:error, msg} -> %{conn | error: msg}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -436,11 +435,11 @@ defmodule URP.Bridge do
           IO.iodata_to_binary(props)
       )
 
-    if conn.reply != P.reply() do
-      raise "storeToURL failed: #{P.parse_exception(conn.reply)}"
+    if conn.reply == P.reply() do
+      conn
+    else
+      %{conn | error: P.parse_exception(conn.reply)}
     end
-
-    conn
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -479,54 +478,43 @@ defmodule URP.Bridge do
   def version(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def version(%__MODULE__{sock: sock} = conn) do
-    # Resolve the configuration provider singleton
-    reply =
-      call!(
-        sock,
-        P.request(@func_ctx_get_value_by_name,
-          type: @type_component_ctx,
-          oid: {conn.ctx_oid, @oid_ctx}
-        ) <>
-          P.null_ctx() <>
-          P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
-      )
-
-    config_provider_oid =
-      P.parse_qi_reply(reply) ||
-        raise "getValueByName(theDefaultProvider) failed: #{P.parse_exception(reply)}"
-
-    qi!(
-      conn,
-      P.request(@func_query_interface,
-        type: @type_interface,
-        oid: {config_provider_oid, @oid_config_provider}
-      ),
-      P.type_new(@xi_multi_service_factory, @qi_cache_msf)
-    )
-
-    # Open /org.openoffice.Setup/Product via ConfigurationAccess
-    reply = call!(sock, @create_config_access)
-
-    config_access_oid =
-      P.parse_interface_reply(reply) ||
-        raise "createInstanceWithArguments(ConfigurationAccess) failed: #{P.parse_exception(reply)}"
-
-    qi!(
-      conn,
-      P.request(@func_query_interface,
-        type: @type_interface,
-        oid: {config_access_oid, @oid_config_access}
-      ),
-      P.type_new(@xi_name_access, @qi_cache_name_access)
-    )
-
-    reply = call!(sock, @get_version)
-
-    version =
-      P.parse_any_string_reply(reply) ||
-        raise "getByName(ooSetupVersionAboutBox) failed: #{P.parse_exception(reply)}"
-
-    put_private(conn, :version, version)
+    with {:ok, config_provider_oid} <-
+           call!(
+             sock,
+             P.request(@func_ctx_get_value_by_name,
+               type: @type_component_ctx,
+               oid: {conn.ctx_oid, @oid_ctx}
+             ) <>
+               P.null_ctx() <>
+               P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
+           )
+           |> P.parse_qi_reply(),
+         _ =
+           qi!(
+             conn,
+             P.request(@func_query_interface,
+               type: @type_interface,
+               oid: {config_provider_oid, @oid_config_provider}
+             ),
+             P.type_new(@xi_multi_service_factory, @qi_cache_msf)
+           ),
+         {:ok, config_access_oid} <-
+           call!(sock, @create_config_access) |> P.parse_interface_reply(),
+         _ =
+           qi!(
+             conn,
+             P.request(@func_query_interface,
+               type: @type_interface,
+               oid: {config_access_oid, @oid_config_access}
+             ),
+             P.type_new(@xi_name_access, @qi_cache_name_access)
+           ),
+         {:ok, version} <-
+           call!(sock, @get_version) |> P.parse_any_string_reply() do
+      put_private(conn, :version, version)
+    else
+      {:error, msg} -> %{conn | error: msg}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -542,20 +530,17 @@ defmodule URP.Bridge do
   def services(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def services(%__MODULE__{sock: sock} = conn) do
-    reply =
-      call!(
-        sock,
-        P.request(@func_mcf_get_avail_services,
-          type: @type_multi_comp_fac,
-          oid: {conn.smgr_oid, @oid_smgr}
-        ) <> P.null_ctx()
-      )
-
-    services =
-      P.parse_string_sequence_reply(reply) ||
-        raise "getAvailableServiceNames failed: #{P.parse_exception(reply)}"
-
-    put_private(conn, :services, services)
+    case call!(
+           sock,
+           P.request(@func_mcf_get_avail_services,
+             type: @type_multi_comp_fac,
+             oid: {conn.smgr_oid, @oid_smgr}
+           ) <> P.null_ctx()
+         )
+         |> P.parse_string_sequence_reply() do
+      {:ok, services} -> put_private(conn, :services, services)
+      {:error, msg} -> %{conn | error: msg}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -571,46 +556,38 @@ defmodule URP.Bridge do
   def filters(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def filters(%__MODULE__{sock: sock} = conn) do
-    # 1. Create FilterFactory
-    reply =
-      call!(
-        sock,
-        P.request(@func_mcf_create_with_context,
-          type: @type_multi_comp_fac,
-          oid: {conn.smgr_oid, @oid_smgr}
-        ) <>
-          P.null_ctx() <>
-          P.enc_str("com.sun.star.document.FilterFactory") <> @ctx_ref
-      )
-
-    ff_oid =
-      P.parse_interface_reply(reply) ||
-        raise "createInstanceWithContext(FilterFactory) failed: #{P.parse_exception(reply)}"
-
-    # 2. QI to XNameAccess
-    qi!(
-      conn,
-      P.request(@func_query_interface,
-        type: @type_interface,
-        oid: {ff_oid, @oid_filter_factory}
-      ),
-      P.type_new(@xi_name_access, @qi_cache_ff_name_access)
-    )
-
-    # 3. getElementNames()
-    reply =
-      call!(
-        sock,
-        P.request(@func_na_get_element_names,
-          type: @type_new_ff_name_access
-        ) <> P.null_ctx()
-      )
-
-    filters =
-      P.parse_string_sequence_reply(reply) ||
-        raise "getElementNames(FilterFactory) failed: #{P.parse_exception(reply)}"
-
-    put_private(conn, :filters, filters)
+    with {:ok, ff_oid} <-
+           call!(
+             sock,
+             P.request(@func_mcf_create_with_context,
+               type: @type_multi_comp_fac,
+               oid: {conn.smgr_oid, @oid_smgr}
+             ) <>
+               P.null_ctx() <>
+               P.enc_str("com.sun.star.document.FilterFactory") <> @ctx_ref
+           )
+           |> P.parse_interface_reply(),
+         _ =
+           qi!(
+             conn,
+             P.request(@func_query_interface,
+               type: @type_interface,
+               oid: {ff_oid, @oid_filter_factory}
+             ),
+             P.type_new(@xi_name_access, @qi_cache_ff_name_access)
+           ),
+         {:ok, filters} <-
+           call!(
+             sock,
+             P.request(@func_na_get_element_names,
+               type: @type_new_ff_name_access
+             ) <> P.null_ctx()
+           )
+           |> P.parse_string_sequence_reply() do
+      put_private(conn, :filters, filters)
+    else
+      {:error, msg} -> %{conn | error: msg}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -626,46 +603,38 @@ defmodule URP.Bridge do
   def types(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def types(%__MODULE__{sock: sock} = conn) do
-    # 1. Create TypeDetection
-    reply =
-      call!(
-        sock,
-        P.request(@func_mcf_create_with_context,
-          type: @type_multi_comp_fac,
-          oid: {conn.smgr_oid, @oid_smgr}
-        ) <>
-          P.null_ctx() <>
-          P.enc_str("com.sun.star.document.TypeDetection") <> @ctx_ref
-      )
-
-    td_oid =
-      P.parse_interface_reply(reply) ||
-        raise "createInstanceWithContext(TypeDetection) failed: #{P.parse_exception(reply)}"
-
-    # 2. QI to XNameAccess
-    qi!(
-      conn,
-      P.request(@func_query_interface,
-        type: @type_interface,
-        oid: {td_oid, @oid_type_detection}
-      ),
-      P.type_new(@xi_name_access, @qi_cache_td_name_access)
-    )
-
-    # 3. getElementNames()
-    reply =
-      call!(
-        sock,
-        P.request(@func_na_get_element_names,
-          type: @type_new_td_name_access
-        ) <> P.null_ctx()
-      )
-
-    types =
-      P.parse_string_sequence_reply(reply) ||
-        raise "getElementNames(TypeDetection) failed: #{P.parse_exception(reply)}"
-
-    put_private(conn, :types, types)
+    with {:ok, td_oid} <-
+           call!(
+             sock,
+             P.request(@func_mcf_create_with_context,
+               type: @type_multi_comp_fac,
+               oid: {conn.smgr_oid, @oid_smgr}
+             ) <>
+               P.null_ctx() <>
+               P.enc_str("com.sun.star.document.TypeDetection") <> @ctx_ref
+           )
+           |> P.parse_interface_reply(),
+         _ =
+           qi!(
+             conn,
+             P.request(@func_query_interface,
+               type: @type_interface,
+               oid: {td_oid, @oid_type_detection}
+             ),
+             P.type_new(@xi_name_access, @qi_cache_td_name_access)
+           ),
+         {:ok, types} <-
+           call!(
+             sock,
+             P.request(@func_na_get_element_names,
+               type: @type_new_td_name_access
+             ) <> P.null_ctx()
+           )
+           |> P.parse_string_sequence_reply() do
+      put_private(conn, :types, types)
+    else
+      {:error, msg} -> %{conn | error: msg}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -681,57 +650,43 @@ defmodule URP.Bridge do
   def locale(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def locale(%__MODULE__{sock: sock} = conn) do
-    # 1. Resolve the configuration provider singleton
-    reply =
-      call!(
-        sock,
-        P.request(@func_ctx_get_value_by_name,
-          type: @type_component_ctx,
-          oid: {conn.ctx_oid, @oid_ctx}
-        ) <>
-          P.null_ctx() <>
-          P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
-      )
-
-    config_provider_oid =
-      P.parse_qi_reply(reply) ||
-        raise "getValueByName(theDefaultProvider) failed: #{P.parse_exception(reply)}"
-
-    # 2. QI to XMultiServiceFactory
-    qi!(
-      conn,
-      P.request(@func_query_interface,
-        type: @type_interface,
-        oid: {config_provider_oid, @oid_config_provider}
-      ),
-      P.type_new(@xi_multi_service_factory, @qi_cache_locale_msf)
-    )
-
-    # 3. Open /org.openoffice.Setup/L10N via ConfigurationAccess
-    reply = call!(sock, @create_locale_config_access)
-
-    config_access_oid =
-      P.parse_interface_reply(reply) ||
-        raise "createInstanceWithArguments(ConfigurationAccess/L10N) failed: #{P.parse_exception(reply)}"
-
-    # 4. QI to XNameAccess
-    qi!(
-      conn,
-      P.request(@func_query_interface,
-        type: @type_interface,
-        oid: {config_access_oid, @oid_locale_config}
-      ),
-      P.type_new(@xi_name_access, @qi_cache_locale_na)
-    )
-
-    # 5. getByName("ooLocale")
-    reply = call!(sock, @get_locale)
-
-    locale =
-      P.parse_any_string_reply(reply) ||
-        raise "getByName(ooLocale) failed: #{P.parse_exception(reply)}"
-
-    put_private(conn, :locale, locale)
+    with {:ok, config_provider_oid} <-
+           call!(
+             sock,
+             P.request(@func_ctx_get_value_by_name,
+               type: @type_component_ctx,
+               oid: {conn.ctx_oid, @oid_ctx}
+             ) <>
+               P.null_ctx() <>
+               P.enc_str("/singletons/com.sun.star.configuration.theDefaultProvider")
+           )
+           |> P.parse_qi_reply(),
+         _ =
+           qi!(
+             conn,
+             P.request(@func_query_interface,
+               type: @type_interface,
+               oid: {config_provider_oid, @oid_config_provider}
+             ),
+             P.type_new(@xi_multi_service_factory, @qi_cache_locale_msf)
+           ),
+         {:ok, config_access_oid} <-
+           call!(sock, @create_locale_config_access) |> P.parse_interface_reply(),
+         _ =
+           qi!(
+             conn,
+             P.request(@func_query_interface,
+               type: @type_interface,
+               oid: {config_access_oid, @oid_locale_config}
+             ),
+             P.type_new(@xi_name_access, @qi_cache_locale_na)
+           ),
+         {:ok, locale} <-
+           call!(sock, @get_locale) |> P.parse_any_string_reply() do
+      put_private(conn, :locale, locale)
+    else
+      {:error, msg} -> %{conn | error: msg}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -828,19 +783,24 @@ defmodule URP.Bridge do
     url = "file:///tmp/urp_in_#{id}"
 
     conn = sfa_call(conn, sfa_oid, @func_sfa_open_file_write, P.enc_str(url))
-    os_oid = P.parse_interface_reply(conn.reply) || raise "openFileWrite failed"
 
-    conn =
-      conn
-      |> qi(
-        P.request(@func_query_interface, type: @type_interface, oid: {os_oid, @oid_sfa_os}),
-        P.type_new(@xi_output_stream, @qi_cache_sfa_output)
-      )
-      |> call(@write_bytes_prefix <> P.enc_str(bytes))
-      |> call(@close_output)
-      |> load_document(url)
+    case P.parse_interface_reply(conn.reply) do
+      {:ok, os_oid} ->
+        conn =
+          conn
+          |> qi(
+            P.request(@func_query_interface, type: @type_interface, oid: {os_oid, @oid_sfa_os}),
+            P.type_new(@xi_output_stream, @qi_cache_sfa_output)
+          )
+          |> call(@write_bytes_prefix <> P.enc_str(bytes))
+          |> call(@close_output)
+          |> load_document(url)
 
-    %{conn | cleanup_url: url}
+        %{conn | cleanup_url: url}
+
+      {:error, msg} ->
+        %{conn | error: msg}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -896,20 +856,28 @@ defmodule URP.Bridge do
     {sfa_oid, conn} = ensure_sfa!(conn)
 
     conn = sfa_call(conn, sfa_oid, @func_sfa_open_file_read, P.enc_str(url))
-    is_oid = P.parse_interface_reply(conn.reply) || raise "openFileRead failed"
 
-    conn =
-      qi(
-        conn,
-        P.request(@func_query_interface, type: @type_interface, oid: {is_oid, @oid_sfa_is}),
-        P.type_new(@xi_input_stream, @qi_cache_sfa_input)
-      )
+    with {:ok, is_oid} <- P.parse_interface_reply(conn.reply) do
+      conn =
+        qi(
+          conn,
+          P.request(@func_query_interface, type: @type_interface, oid: {is_oid, @oid_sfa_is}),
+          P.type_new(@xi_input_stream, @qi_cache_sfa_input)
+        )
 
-    conn = call(conn, @read_all_bytes)
-    bytes = P.parse_read_bytes_reply(conn.reply)
-    conn = call(conn, @close_input)
+      conn = call(conn, @read_all_bytes)
 
-    {bytes, conn}
+      case P.parse_read_bytes_reply(conn.reply) do
+        {:ok, bytes} ->
+          conn = call(conn, @close_input)
+          {bytes, conn}
+
+        {:error, msg} ->
+          {nil, %{conn | error: msg}}
+      end
+    else
+      {:error, msg} -> {nil, %{conn | error: msg}}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       {nil, %{conn | error: Exception.message(e)}}
@@ -954,11 +922,10 @@ defmodule URP.Bridge do
     # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
     {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
 
-    doc_oid =
-      P.parse_interface_reply(reply) ||
-        raise "loadComponentFromURL(stream) failed: #{P.parse_exception(reply)}"
-
-    %{conn | doc_oid: doc_oid}
+    case P.parse_interface_reply(reply) do
+      {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
+      {:error, msg} -> %{conn | error: msg}
+    end
   end
 
   @doc """
@@ -1042,9 +1009,7 @@ defmodule URP.Bridge do
           @ctx_ref
       )
 
-    sfa_oid =
-      P.parse_interface_reply(conn.reply) ||
-        raise "createInstanceWithContext(SimpleFileAccess) failed"
+    {:ok, sfa_oid} = P.parse_interface_reply(conn.reply)
 
     conn =
       qi(
@@ -1096,7 +1061,7 @@ defmodule URP.Bridge do
     )
 
     P.send_frame(sock, @get_service_manager)
-    smgr_oid = P.parse_interface_reply(P.recv_frame(sock))
+    {:ok, smgr_oid} = P.parse_interface_reply(P.recv_frame(sock))
 
     # createInstanceWithContext("com.sun.star.frame.Desktop")
     P.send_frame(
@@ -1110,7 +1075,7 @@ defmodule URP.Bridge do
         @ctx_ref
     )
 
-    desktop_oid = P.parse_interface_reply(P.recv_frame(sock))
+    {:ok, desktop_oid} = P.parse_interface_reply(P.recv_frame(sock))
     {ctx_oid, smgr_oid, desktop_oid}
   end
 
@@ -1122,7 +1087,8 @@ defmodule URP.Bridge do
   end
 
   defp qi!(sock, header, body_type_param) do
-    P.parse_qi_reply(call!(sock, header <> P.null_ctx() <> body_type_param))
+    {:ok, oid} = P.parse_qi_reply(call!(sock, header <> P.null_ctx() <> body_type_param))
+    oid
   end
 
   # Conn-threading variant — returns conn (OID discarded).
