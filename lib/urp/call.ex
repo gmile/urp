@@ -108,7 +108,7 @@ defmodule URP.Call do
   @type_new_locale_msf {:new, @xi_multi_service_factory, 27}
   @type_new_locale_na {:new, @xi_name_access, 29}
 
-  # QI body type cache indices
+  # Query Interface (QI) body type cache indices
   @qi_cache_component_ctx 2
   @qi_cache_loader 5
   @qi_cache_storable 7
