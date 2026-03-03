@@ -43,8 +43,13 @@ defmodule URP.Pool do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.version!(conn)
-      {{:ok, conn.private.version}, {:ok, conn}}
+      conn = Bridge.version(conn)
+
+      if conn.last_error do
+        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
+      else
+        {{:ok, conn.private.version}, {:ok, conn}}
+      end
     end)
   end
 
@@ -54,8 +59,13 @@ defmodule URP.Pool do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.services!(conn)
-      {{:ok, conn.private.services}, {:ok, conn}}
+      conn = Bridge.services(conn)
+
+      if conn.last_error do
+        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
+      else
+        {{:ok, conn.private.services}, {:ok, conn}}
+      end
     end)
   end
 
@@ -65,8 +75,13 @@ defmodule URP.Pool do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.filters!(conn)
-      {{:ok, conn.private.filters}, {:ok, conn}}
+      conn = Bridge.filters(conn)
+
+      if conn.last_error do
+        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
+      else
+        {{:ok, conn.private.filters}, {:ok, conn}}
+      end
     end)
   end
 
@@ -76,8 +91,13 @@ defmodule URP.Pool do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.types!(conn)
-      {{:ok, conn.private.types}, {:ok, conn}}
+      conn = Bridge.types(conn)
+
+      if conn.last_error do
+        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
+      else
+        {{:ok, conn.private.types}, {:ok, conn}}
+      end
     end)
   end
 
@@ -87,8 +107,13 @@ defmodule URP.Pool do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.locale!(conn)
-      {{:ok, conn.private.locale}, {:ok, conn}}
+      conn = Bridge.locale(conn)
+
+      if conn.last_error do
+        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
+      else
+        {{:ok, conn.private.locale}, {:ok, conn}}
+      end
     end)
   end
 
@@ -101,30 +126,31 @@ defmodule URP.Pool do
     store_opts = Keyword.take(opts, [:filter, :filter_data])
 
     do_checkout(pool, timeout, fn conn ->
-      conn = load_input!(conn, input)
-      {bytes, conn} = Bridge.store_document_write!(conn, store_opts)
-      result = apply_sink(bytes, sink)
-      {close_status, conn} = safe_close(conn)
+      conn = load_input(conn, input)
+      {bytes, conn} = Bridge.store_document_write(conn, store_opts)
+      result = if bytes, do: apply_sink(bytes, sink)
+      conn = Bridge.close_document(conn)
       conn = safe_cleanup(conn)
       Process.delete(:urp_tid_cache)
 
-      case close_status do
-        :ok -> {wrap_result(result), {:ok, reset_conversion_state(conn)}}
-        :closed -> {wrap_result(result), :closed}
+      if conn.last_error do
+        {{:error, conn.last_error}, :closed}
+      else
+        {wrap_result(result), {:ok, reset_conversion_state(conn)}}
       end
     end)
   end
 
-  defp load_input!(conn, {:binary, bytes}) when is_binary(bytes) do
-    Bridge.load_document_write!(conn, bytes)
+  defp load_input(conn, {:binary, bytes}) when is_binary(bytes) do
+    Bridge.load_document_write(conn, bytes)
   end
 
-  defp load_input!(conn, path) when is_binary(path) do
-    Bridge.load_document_write!(conn, File.read!(path))
+  defp load_input(conn, path) when is_binary(path) do
+    Bridge.load_document_write(conn, File.read!(path))
   end
 
-  defp load_input!(conn, enumerable) do
-    Bridge.load_document_enum_stream!(conn, enumerable)
+  defp load_input(conn, enumerable) do
+    Bridge.load_document_enum_stream(conn, enumerable)
   end
 
   defp do_checkout(pool, timeout, fun, attempt \\ 1) do
@@ -221,21 +247,18 @@ defmodule URP.Pool do
   end
 
   defp safe_cleanup(%{cleanup_url: nil} = conn), do: conn
-
-  defp safe_cleanup(%{cleanup_url: url} = conn) do
-    Bridge.delete_file!(conn, url)
-  rescue
-    RuntimeError -> conn
-  end
-
-  defp safe_close(conn) do
-    {:ok, Bridge.close_document!(conn)}
-  rescue
-    e in RuntimeError -> {:closed, %{conn | last_error: Exception.message(e)}}
-  end
+  defp safe_cleanup(conn), do: Bridge.delete_file(conn, conn.cleanup_url)
 
   defp reset_conversion_state(conn) do
-    %{conn | doc_oid: nil, cleanup_url: nil, input_ctx: nil, reply_tid: nil, reader_type: nil}
+    %{
+      conn
+      | doc_oid: nil,
+        cleanup_url: nil,
+        input_ctx: nil,
+        reply_tid: nil,
+        reader_type: nil,
+        last_error: nil
+    }
   end
 
   defp wrap_result(:ok), do: :ok
