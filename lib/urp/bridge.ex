@@ -132,9 +132,6 @@ defmodule URP.Bridge do
       |> call(C.load_component_from_url(url, [C.hidden_property()]), :interface)
 
     if conn.error, do: conn, else: %{conn | doc_oid: conn.reply}
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -159,9 +156,6 @@ defmodule URP.Bridge do
     conn
     |> call(C.qi_storable(doc_oid), :qi)
     |> call(C.store_to_url(url, props), :void)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc "Close the loaded document, releasing soffice resources."
@@ -176,9 +170,6 @@ defmodule URP.Bridge do
       |> call(C.close_document(), :void)
 
     %{conn | doc_oid: nil}
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -201,9 +192,6 @@ defmodule URP.Bridge do
       |> call(C.get_version(), :string)
 
     if conn.error, do: conn, else: put_private(conn, :version, conn.reply)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -218,9 +206,6 @@ defmodule URP.Bridge do
   def services(%__MODULE__{} = conn) do
     conn = call(conn, C.get_available_service_names(conn.smgr_oid), :strings)
     if conn.error, do: conn, else: put_private(conn, :services, conn.reply)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -246,9 +231,6 @@ defmodule URP.Bridge do
       |> call(C.get_filter_element_names(), :strings)
 
     if conn.error, do: conn, else: put_private(conn, :filters, conn.reply)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -274,9 +256,6 @@ defmodule URP.Bridge do
       |> call(C.get_type_element_names(), :strings)
 
     if conn.error, do: conn, else: put_private(conn, :types, conn.reply)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -299,9 +278,6 @@ defmodule URP.Bridge do
       |> call(C.get_locale(), :string)
 
     if conn.error, do: conn, else: put_private(conn, :locale, conn.reply)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -315,10 +291,7 @@ defmodule URP.Bridge do
   def load_document_stream(%__MODULE__{error: e} = conn, _bytes) when not is_nil(e), do: conn
 
   def load_document_stream(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
-    load_from_input_source!(conn, bytes)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
+    load_from_input_source(conn, bytes)
   end
 
   @doc """
@@ -338,12 +311,12 @@ defmodule URP.Bridge do
     fd = File.open!(path, [:read, :binary, :raw])
 
     try do
-      load_from_input_source!(conn, {:file, fd, size})
+      load_from_input_source(conn, {:file, fd, size})
     after
       File.close(fd)
     end
   rescue
-    e in [RuntimeError, File.Error] ->
+    e in File.Error ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -364,14 +337,11 @@ defmodule URP.Bridge do
     reader = URP.Stream.start_enum_reader(enumerable)
 
     try do
-      load_from_input_source!(conn, {:enum, <<>>, reader})
+      load_from_input_source(conn, {:enum, <<>>, reader})
     after
       Process.unlink(reader)
       Process.exit(reader, :kill)
     end
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -404,9 +374,6 @@ defmodule URP.Bridge do
       |> load_document(url)
 
     %{conn | cleanup_url: url}
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
@@ -415,9 +382,6 @@ defmodule URP.Bridge do
 
   def delete_file(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
     call(conn, C.sfa_kill(sfa_oid, url), :void)
-  rescue
-    e in [RuntimeError, File.Error] ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -442,9 +406,6 @@ defmodule URP.Bridge do
     conn = delete_file(conn, url)
 
     {bytes, conn}
-  rescue
-    e in [RuntimeError, File.Error] ->
-      {nil, %{conn | error: Exception.message(e)}}
   end
 
   @doc """
@@ -468,12 +429,9 @@ defmodule URP.Bridge do
     conn = call(conn, C.close_input(), :void)
 
     if conn.error, do: {nil, conn}, else: {bytes, conn}
-  rescue
-    e in [RuntimeError, File.Error] ->
-      {nil, %{conn | error: Exception.message(e)}}
   end
 
-  defp load_from_input_source!(conn, source) do
+  defp load_from_input_source(conn, source) do
     conn = seed_tid_cache(conn)
     conn = call(conn, C.qi_loader(conn.desktop_oid), :qi)
 
@@ -482,20 +440,25 @@ defmodule URP.Bridge do
     else
       stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
 
-      P.send_frame(
-        conn.sock,
-        C.load_component_from_url("private:stream", [
-          C.hidden_property(),
-          C.input_stream_property(stream_oid)
-        ])
-      )
+      conn =
+        send_frame(
+          conn,
+          C.load_component_from_url("private:stream", [
+            C.hidden_property(),
+            C.input_stream_property(stream_oid)
+          ])
+        )
 
-      # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
-      {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
+      if conn.error do
+        conn
+      else
+        # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
+        {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
 
-      case P.parse_interface_reply(reply) do
-        {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-        {:error, message} -> %{conn | error: message}
+        case P.parse_interface_reply(reply) do
+          {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
+          {:error, message} -> %{conn | error: message}
+        end
       end
     end
   end
@@ -537,14 +500,15 @@ defmodule URP.Bridge do
         C.output_stream_property(stream_oid)
       ]
 
-      P.send_frame(conn.sock, C.store_to_url("private:stream", props))
+      conn = send_frame(conn, C.store_to_url("private:stream", props))
 
-      {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
-      {result, conn}
+      if conn.error do
+        {nil, conn}
+      else
+        {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
+        {result, conn}
+      end
     end
-  rescue
-    e in [RuntimeError, File.Error] ->
-      {nil, %{conn | error: Exception.message(e)}}
   end
 
   ## SimpleFileAccess — lazily created for write-based document loading
@@ -638,7 +602,11 @@ defmodule URP.Bridge do
   defp send_frame(%__MODULE__{} = conn, frame) do
     P.send_frame(conn.sock, frame)
     conn
+  rescue
+    e -> %{conn | error: Exception.message(e)}
   end
+
+  defp recv_reply(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   defp recv_reply(%__MODULE__{} = conn) do
     payload = P.recv_frame(conn.sock)
@@ -660,6 +628,8 @@ defmodule URP.Bridge do
           recv_reply(conn)
       end
     end
+  rescue
+    e -> %{conn | error: Exception.message(e)}
   end
 
   # Bootstrap runs in the pool worker process, but conversions run in the

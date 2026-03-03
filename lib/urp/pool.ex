@@ -100,7 +100,10 @@ defmodule URP.Pool do
   end
 
   defp load_input(conn, path) when is_binary(path) do
-    Bridge.load_document_write(conn, File.read!(path))
+    case File.read(path) do
+      {:ok, bytes} -> Bridge.load_document_write(conn, bytes)
+      {:error, reason} -> %{conn | error: "could not read file #{path}: #{:file.format_error(reason)}"}
+    end
   end
 
   defp load_input(conn, enumerable) do
@@ -112,14 +115,7 @@ defmodule URP.Pool do
       NimblePool.checkout!(
         pool,
         :checkout,
-        fn _from, conn ->
-          try do
-            fun.(conn)
-          rescue
-            e in [RuntimeError, File.Error] ->
-              {{:error, Exception.message(e)}, :closed}
-          end
-        end,
+        fn _from, conn -> fun.(conn) end,
         timeout
       )
 
