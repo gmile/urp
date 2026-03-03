@@ -124,8 +124,8 @@ defmodule URP.Pool do
       )
 
     case result do
-      {:error, msg} when is_binary(msg) and attempt < @max_retries ->
-        if String.contains?(msg, @bridge_disposed) do
+      {:error, message} when is_binary(message) and attempt < @max_retries ->
+        if String.contains?(message, @bridge_disposed) do
           Process.sleep(@retry_interval_ms * attempt)
           do_checkout(pool, timeout, fun, attempt + 1)
         else

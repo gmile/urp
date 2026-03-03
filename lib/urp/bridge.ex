@@ -387,7 +387,7 @@ defmodule URP.Bridge do
 
     case P.parse_interface_reply(reply) do
       {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-      {:error, msg} -> %{conn | error: msg}
+      {:error, message} -> %{conn | error: message}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -513,7 +513,7 @@ defmodule URP.Bridge do
            call!(sock, @get_version) |> P.parse_any_string_reply() do
       put_private(conn, :version, version)
     else
-      {:error, msg} -> %{conn | error: msg}
+      {:error, message} -> %{conn | error: message}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -539,7 +539,7 @@ defmodule URP.Bridge do
          )
          |> P.parse_string_sequence_reply() do
       {:ok, services} -> put_private(conn, :services, services)
-      {:error, msg} -> %{conn | error: msg}
+      {:error, message} -> %{conn | error: message}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -586,7 +586,7 @@ defmodule URP.Bridge do
            |> P.parse_string_sequence_reply() do
       put_private(conn, :filters, filters)
     else
-      {:error, msg} -> %{conn | error: msg}
+      {:error, message} -> %{conn | error: message}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -633,7 +633,7 @@ defmodule URP.Bridge do
            |> P.parse_string_sequence_reply() do
       put_private(conn, :types, types)
     else
-      {:error, msg} -> %{conn | error: msg}
+      {:error, message} -> %{conn | error: message}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -685,7 +685,7 @@ defmodule URP.Bridge do
            call!(sock, @get_locale) |> P.parse_any_string_reply() do
       put_private(conn, :locale, locale)
     else
-      {:error, msg} -> %{conn | error: msg}
+      {:error, message} -> %{conn | error: message}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -798,8 +798,8 @@ defmodule URP.Bridge do
 
         %{conn | cleanup_url: url}
 
-      {:error, msg} ->
-        %{conn | error: msg}
+      {:error, message} ->
+        %{conn | error: message}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -872,11 +872,11 @@ defmodule URP.Bridge do
           conn = call(conn, @close_input)
           {bytes, conn}
 
-        {:error, msg} ->
-          {nil, %{conn | error: msg}}
+        {:error, message} ->
+          {nil, %{conn | error: message}}
       end
     else
-      {:error, msg} -> {nil, %{conn | error: msg}}
+      {:error, message} -> {nil, %{conn | error: message}}
     end
   rescue
     e in [RuntimeError, File.Error] ->
@@ -924,7 +924,7 @@ defmodule URP.Bridge do
 
     case P.parse_interface_reply(reply) do
       {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-      {:error, msg} -> %{conn | error: msg}
+      {:error, message} -> %{conn | error: message}
     end
   end
 

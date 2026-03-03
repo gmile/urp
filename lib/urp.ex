@@ -82,7 +82,7 @@ defmodule URP do
   def version!(opts \\ []) do
     case version(opts) do
       {:ok, v} -> v
-      {:error, msg} -> raise msg
+      {:error, message} -> raise message
     end
   end
 
@@ -113,7 +113,7 @@ defmodule URP do
   def services!(opts \\ []) do
     case services(opts) do
       {:ok, v} -> v
-      {:error, msg} -> raise msg
+      {:error, message} -> raise message
     end
   end
 
@@ -145,7 +145,7 @@ defmodule URP do
   def filters!(opts \\ []) do
     case filters(opts) do
       {:ok, v} -> v
-      {:error, msg} -> raise msg
+      {:error, message} -> raise message
     end
   end
 
@@ -177,7 +177,7 @@ defmodule URP do
   def types!(opts \\ []) do
     case types(opts) do
       {:ok, v} -> v
-      {:error, msg} -> raise msg
+      {:error, message} -> raise message
     end
   end
 
@@ -207,7 +207,7 @@ defmodule URP do
   def locale!(opts \\ []) do
     case locale(opts) do
       {:ok, v} -> v
-      {:error, msg} -> raise msg
+      {:error, message} -> raise message
     end
   end
 
@@ -292,7 +292,7 @@ defmodule URP do
     case convert(input, opts) do
       {:ok, v} -> v
       :ok -> :ok
-      {:error, msg} -> raise msg
+      {:error, message} -> raise message
     end
   end
 
