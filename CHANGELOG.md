@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.8.1] - 2026-03-03
 
 Internal refactor of Bridge and Pool internals. No public API changes.
 
