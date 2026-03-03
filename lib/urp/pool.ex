@@ -39,80 +39,34 @@ defmodule URP.Pool do
 
   @doc false
   @spec version(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
-  def version(pool, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.version(conn)
-
-      if conn.last_error do
-        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
-      else
-        {{:ok, conn.private.version}, {:ok, conn}}
-      end
-    end)
-  end
+  def version(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.version/1, :version)
 
   @doc false
   @spec services(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
-  def services(pool, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.services(conn)
-
-      if conn.last_error do
-        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
-      else
-        {{:ok, conn.private.services}, {:ok, conn}}
-      end
-    end)
-  end
+  def services(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.services/1, :services)
 
   @doc false
   @spec filters(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
-  def filters(pool, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.filters(conn)
-
-      if conn.last_error do
-        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
-      else
-        {{:ok, conn.private.filters}, {:ok, conn}}
-      end
-    end)
-  end
+  def filters(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.filters/1, :filters)
 
   @doc false
   @spec types(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
-  def types(pool, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.types(conn)
-
-      if conn.last_error do
-        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
-      else
-        {{:ok, conn.private.types}, {:ok, conn}}
-      end
-    end)
-  end
+  def types(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.types/1, :types)
 
   @doc false
   @spec locale(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
-  def locale(pool, opts \\ []) do
+  def locale(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.locale/1, :locale)
+
+  defp diagnose(pool, opts, bridge_fun, key) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     do_checkout(pool, timeout, fn conn ->
-      conn = Bridge.locale(conn)
+      conn = bridge_fun.(conn)
 
       if conn.last_error do
         {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
       else
-        {{:ok, conn.private.locale}, {:ok, conn}}
+        {{:ok, conn.private[key]}, {:ok, conn}}
       end
     end)
   end
