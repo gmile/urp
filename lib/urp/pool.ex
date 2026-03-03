@@ -153,15 +153,14 @@ defmodule URP.Pool do
   end
 
   defp open_with_retry(host, port, attempt \\ 1) do
-    Bridge.open!(host, port)
-  rescue
-    e in [MatchError, RuntimeError] ->
-      if attempt < @max_retries do
-        Process.sleep(@retry_interval_ms * attempt)
-        open_with_retry(host, port, attempt + 1)
-      else
-        reraise e, __STACKTRACE__
-      end
+    conn = Bridge.open(host, port)
+
+    if conn.error && attempt < @max_retries do
+      Process.sleep(@retry_interval_ms * attempt)
+      open_with_retry(host, port, attempt + 1)
+    else
+      conn
+    end
   end
 
   @impl NimblePool

@@ -7,7 +7,7 @@ defmodule URP.Bridge do
   storing to URL, and closing.
 
   Each connection performs a handshake and bootstraps a Desktop reference
-  on `open!/2`. A connection handles one conversion at a time (soffice is
+  on `open/2`. A connection handles one conversion at a time (soffice is
   single-threaded). Close the connection with `close!/1` when done.
 
   All functions take and return `conn`, following the Plug pattern. Document
@@ -17,7 +17,7 @@ defmodule URP.Bridge do
   ## Example
 
       "localhost"
-      |> URP.Bridge.open!(2002)
+      |> URP.Bridge.open(2002)
       |> URP.Bridge.load_document("file:///tmp/input.docx")
       |> URP.Bridge.store_to_url("file:///tmp/output.pdf", "writer_pdf_Export")
       |> URP.Bridge.close_document()
@@ -31,7 +31,7 @@ defmodule URP.Bridge do
 
       conn =
         "localhost"
-        |> URP.Bridge.open!(2002)
+        |> URP.Bridge.open(2002)
         |> URP.Bridge.load_document_stream(File.read!("input.docx"))
 
       {pdf, conn} = URP.Bridge.store_to_stream(conn, filter: "writer_pdf_Export")
@@ -43,7 +43,7 @@ defmodule URP.Bridge do
 
       conn =
         "localhost"
-        |> URP.Bridge.open!(2002)
+        |> URP.Bridge.open(2002)
         |> URP.Bridge.version()
 
       conn.private.version
@@ -97,22 +97,25 @@ defmodule URP.Bridge do
   @config_provider_path "/singletons/com.sun.star.configuration.theDefaultProvider"
 
   @doc "Connect to soffice, perform URP handshake, and bootstrap a Desktop reference."
-  @spec open!(String.t(), non_neg_integer()) :: t()
-  def open!(host \\ "localhost", port \\ 2002) do
-    {:ok, sock} = :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false])
-    conn = %__MODULE__{sock: sock}
-    handshake!(conn)
-    conn = bootstrap(conn)
-    if conn.error, do: raise(conn.error)
-    tid_cache = Process.get(:urp_tid_cache, %{})
-    %{conn | tid_cache: tid_cache}
+  @spec open(String.t(), non_neg_integer()) :: t()
+  def open(host \\ "localhost", port \\ 2002) do
+    case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false]) do
+      {:ok, sock} ->
+        conn = %__MODULE__{sock: sock}
+        handshake!(conn)
+        conn = bootstrap(conn)
+        tid_cache = Process.get(:urp_tid_cache, %{})
+        %{conn | tid_cache: tid_cache}
+
+      {:error, reason} ->
+        %__MODULE__{error: "connection failed: #{:inet.format_error(reason)}"}
+    end
   end
 
   @doc "Close the TCP connection."
   @spec close!(t()) :: :ok
-  def close!(%__MODULE__{sock: sock}) do
-    :gen_tcp.close(sock)
-  end
+  def close!(%__MODULE__{sock: nil}), do: :ok
+  def close!(%__MODULE__{sock: sock}), do: :gen_tcp.close(sock)
 
   @doc """
   Load a document from a `file://` URL. Stashes the document OID on `conn.doc_oid`.
