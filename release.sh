@@ -32,7 +32,8 @@ if ! grep -q '## \[Unreleased\]' CHANGELOG.md; then
   git checkout VERSION
   exit 1
 fi
-sed -i '' "s/## \[Unreleased\]/## [v$new] - $today/" CHANGELOG.md
+tmp=$(mktemp)
+sed "s/## \[Unreleased\]/## [v$new] - $today/" CHANGELOG.md > "$tmp" && mv "$tmp" CHANGELOG.md
 
 # Commit and tag
 git add VERSION CHANGELOG.md
@@ -43,4 +44,4 @@ echo ""
 echo "Release v$new prepared!"
 echo ""
 echo "Run this to publish:"
-echo "  git push origin main --tags && mix hex.publish"
+echo "  git push origin main --tags"

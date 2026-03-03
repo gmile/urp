@@ -144,6 +144,16 @@ Mutating UNO APIs (editing, formatting, macros) are not implemented.
 - [typeclass.h](https://git.libreoffice.org/core/+/refs/heads/master/include/typelib/typeclass.h)
 - [Export filter names](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html)
 
+## Releasing
+
+```sh
+./release.sh patch   # or minor, major
+git push origin main --tags
+```
+
+This bumps `VERSION`, stamps `CHANGELOG.md`, commits, and tags.
+Pushing the tag triggers CI to publish to Hex automatically.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
