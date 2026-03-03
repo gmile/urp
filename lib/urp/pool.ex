@@ -81,8 +81,8 @@ defmodule URP.Pool do
 
     do_checkout(pool, timeout, fn conn ->
       conn = load_input(conn, input)
-      {bytes, conn} = Bridge.store_document_write(conn, store_opts)
-      result = if bytes, do: apply_sink(bytes, sink)
+      conn = Bridge.store_document_write(conn, store_opts)
+      result = if conn.reply, do: apply_sink(conn.reply, sink)
       conn = Bridge.close_document(conn)
       conn = safe_cleanup(conn)
       Process.delete(:urp_tid_cache)
@@ -101,8 +101,11 @@ defmodule URP.Pool do
 
   defp load_input(conn, path) when is_binary(path) do
     case File.read(path) do
-      {:ok, bytes} -> Bridge.load_document_write(conn, bytes)
-      {:error, reason} -> %{conn | error: "could not read file #{path}: #{:file.format_error(reason)}"}
+      {:ok, bytes} ->
+        Bridge.load_document_write(conn, bytes)
+
+      {:error, reason} ->
+        %{conn | error: "could not read file #{path}: #{:file.format_error(reason)}"}
     end
   end
 
@@ -152,11 +155,15 @@ defmodule URP.Pool do
     conn = Bridge.open(host, port)
 
     cond do
-      !conn.error -> conn
+      is_nil(conn.error) ->
+        conn
+
       attempt < @max_retries ->
         Process.sleep(@retry_interval_ms * attempt)
         open_with_retry(host, port, attempt + 1)
-      true -> raise "URP: #{conn.error} (after #{attempt} attempts)"
+
+      true ->
+        raise "URP: #{conn.error} (after #{attempt} attempts)"
     end
   end
 

@@ -33,9 +33,10 @@ defmodule URP.Bridge do
         "localhost"
         |> URP.Bridge.open(2002)
         |> URP.Bridge.load_document_stream(File.read!("input.docx"))
+        |> URP.Bridge.store_to_stream(filter: "writer_pdf_Export")
+        |> tap(&URP.Bridge.close!/1)
 
-      {pdf, conn} = URP.Bridge.store_to_stream(conn, filter: "writer_pdf_Export")
-      URP.Bridge.close!(conn)
+      pdf = conn.reply
 
   ## Private storage
 
@@ -382,9 +383,8 @@ defmodule URP.Bridge do
   soffice's filesystem, then reads it back in one shot via `read_file/2`.
   Replaces hundreds of round-trips with ~6. Reads `conn.doc_oid`.
   """
-  @spec store_document_write(t(), keyword()) :: {binary() | nil, t()}
-  def store_document_write(%__MODULE__{error: e} = conn, _opts) when not is_nil(e),
-    do: {nil, conn}
+  @spec store_document_write(t(), keyword()) :: t()
+  def store_document_write(%__MODULE__{error: e} = conn, _opts) when not is_nil(e), do: conn
 
   def store_document_write(%__MODULE__{doc_oid: doc_oid} = conn, opts) when is_binary(doc_oid) do
     filter = Keyword.fetch!(opts, :filter)
@@ -392,11 +392,12 @@ defmodule URP.Bridge do
     id = :erlang.unique_integer([:positive])
     url = "file:///tmp/urp_out_#{id}"
 
-    conn = store_to_url(conn, url, filter, filter_data)
-    {bytes, conn} = read_file(conn, url)
-    conn = delete_file(conn, url)
+    conn =
+      conn
+      |> store_to_url(url, filter, filter_data)
+      |> read_file(url)
 
-    {bytes, conn}
+    %{delete_file(conn, url) | reply: conn.reply}
   end
 
   @doc """
@@ -404,8 +405,8 @@ defmodule URP.Bridge do
 
   Opens the file, reads all bytes in one frame, closes the stream.
   """
-  @spec read_file(t(), String.t()) :: {binary() | nil, t()}
-  def read_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: {nil, conn}
+  @spec read_file(t(), String.t()) :: t()
+  def read_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
 
   def read_file(%__MODULE__{} = conn, url) do
     conn = ensure_sfa(conn)
@@ -416,10 +417,7 @@ defmodule URP.Bridge do
       |> call(C.qi_sfa_input(conn.reply), :qi)
       |> call(C.read_all_bytes(), :read_bytes)
 
-    bytes = conn.reply
-    conn = call(conn, C.close_input(), :void)
-
-    if conn.error, do: {nil, conn}, else: {bytes, conn}
+    %{call(conn, C.close_input(), :void) | reply: conn.reply}
   end
 
   defp load_from_input_source(conn, source) do
@@ -461,11 +459,10 @@ defmodule URP.Bridge do
     * `{:path, path}` — write to file as chunks arrive, returns `:ok`
     * `fun/1` — call with each chunk as it arrives, returns `:ok`
   """
-  @spec store_to_stream(t(), keyword()) :: {binary() | :ok | nil, t()}
+  @spec store_to_stream(t(), keyword()) :: t()
   def store_to_stream(conn, opts \\ [])
 
-  def store_to_stream(%__MODULE__{error: e} = conn, _opts) when not is_nil(e),
-    do: {nil, conn}
+  def store_to_stream(%__MODULE__{error: e} = conn, _opts) when not is_nil(e), do: conn
 
   def store_to_stream(%__MODULE__{doc_oid: doc_oid} = conn, opts)
       when is_binary(doc_oid) do
@@ -487,10 +484,10 @@ defmodule URP.Bridge do
       |> send_frame(C.store_to_url("private:stream", props))
 
     if conn.error do
-      {nil, conn}
+      conn
     else
       {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
-      {result, conn}
+      %{conn | reply: result}
     end
   end
 
