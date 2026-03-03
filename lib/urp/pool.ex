@@ -116,7 +116,7 @@ defmodule URP.Pool do
           try do
             fun.(conn)
           rescue
-            e in [RuntimeError, MatchError, File.Error] ->
+            e in [RuntimeError, File.Error] ->
               {{:error, Exception.message(e)}, :closed}
           end
         end,

@@ -391,7 +391,7 @@ defmodule URP.Bridge do
 
     %{conn | doc_oid: doc_oid}
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -442,7 +442,7 @@ defmodule URP.Bridge do
 
     conn
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -465,7 +465,7 @@ defmodule URP.Bridge do
 
     %{conn | doc_oid: nil}
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -528,7 +528,7 @@ defmodule URP.Bridge do
 
     put_private(conn, :version, version)
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -557,7 +557,7 @@ defmodule URP.Bridge do
 
     put_private(conn, :services, services)
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -612,7 +612,7 @@ defmodule URP.Bridge do
 
     put_private(conn, :filters, filters)
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -667,7 +667,7 @@ defmodule URP.Bridge do
 
     put_private(conn, :types, types)
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -733,7 +733,7 @@ defmodule URP.Bridge do
 
     put_private(conn, :locale, locale)
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -750,7 +750,7 @@ defmodule URP.Bridge do
   def load_document_stream(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     load_from_input_source!(conn, bytes)
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -776,7 +776,7 @@ defmodule URP.Bridge do
       File.close(fd)
     end
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -803,7 +803,7 @@ defmodule URP.Bridge do
       Process.exit(reader, :kill)
     end
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -842,7 +842,7 @@ defmodule URP.Bridge do
 
     %{conn | cleanup_url: url}
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -853,7 +853,7 @@ defmodule URP.Bridge do
   def delete_file(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
     sfa_call(conn, sfa_oid, @func_sfa_kill, P.enc_str(url))
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
   end
 
@@ -880,7 +880,7 @@ defmodule URP.Bridge do
 
     {bytes, conn}
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       {nil, %{conn | error: Exception.message(e)}}
   end
 
@@ -911,7 +911,7 @@ defmodule URP.Bridge do
 
     {bytes, conn}
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       {nil, %{conn | error: Exception.message(e)}}
   end
 
@@ -1021,7 +1021,7 @@ defmodule URP.Bridge do
     {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
     {result, conn}
   rescue
-    e in [RuntimeError, MatchError, File.Error] ->
+    e in [RuntimeError, File.Error] ->
       {nil, %{conn | error: Exception.message(e)}}
   end
 
