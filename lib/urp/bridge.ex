@@ -10,24 +10,36 @@ defmodule URP.Bridge do
   on `open!/2`. A connection handles one conversion at a time (soffice is
   single-threaded). Close the connection with `close!/1` when done.
 
+  All functions take and return `conn`, following the Plug pattern. Document
+  OIDs and conversion state are stashed on the conn struct — no separate
+  values to track.
+
   ## Example
 
       conn = URP.Bridge.open!("localhost", 2002)
-      doc = URP.Bridge.load_document!(conn, "file:///tmp/input.docx")
-      URP.Bridge.store_to_url!(conn, doc, "file:///tmp/output.pdf")
-      URP.Bridge.close_document!(conn, doc)
+      conn = URP.Bridge.load_document!(conn, "file:///tmp/input.docx")
+      conn = URP.Bridge.store_to_url!(conn, "file:///tmp/output.pdf", "writer_pdf_Export")
+      conn = URP.Bridge.close_document!(conn)
       URP.Bridge.close!(conn)
 
   ## Streaming
 
-  `load_document_stream!/2` and `store_to_stream!/3` use UNO's
+  `load_document_stream!/2` and `store_to_stream!/2` use UNO's
   `XInputStream`/`XOutputStream` interfaces to transfer document bytes
   over the URP socket, eliminating the need for a shared filesystem.
 
       conn = URP.Bridge.open!("localhost", 2002)
-      doc = URP.Bridge.load_document_stream!(conn, File.read!("input.docx"))
-      pdf = URP.Bridge.store_to_stream!(conn, doc)
+      conn = URP.Bridge.load_document_stream!(conn, File.read!("input.docx"))
+      {pdf, conn} = URP.Bridge.store_to_stream!(conn, filter: "writer_pdf_Export")
       URP.Bridge.close!(conn)
+
+  ## Private storage
+
+  Diagnostic functions stash results in `conn.private`:
+
+      conn = URP.Bridge.version!(conn)
+      conn.private.version
+      # => "25.8.1.1"
   """
 
   alias URP.Protocol, as: P
@@ -40,28 +52,33 @@ defmodule URP.Bridge do
           desktop_oid: String.t(),
           ctx_oid: String.t(),
           smgr_oid: String.t(),
+          doc_oid: String.t() | nil,
+          cleanup_url: String.t() | nil,
           sfa_oid: String.t() | nil,
           input_ctx: map() | nil,
           reply_tid: binary() | nil,
           reader_type: non_neg_integer() | nil,
           last_reply: binary() | nil,
           last_error: String.t() | nil,
-          tid_cache: map()
+          tid_cache: map(),
+          private: map()
         }
-  @type doc_oid :: String.t()
 
   defstruct [
     :sock,
     :desktop_oid,
     :ctx_oid,
     :smgr_oid,
+    :doc_oid,
+    :cleanup_url,
     :sfa_oid,
     :input_ctx,
     :reply_tid,
     :reader_type,
     :last_reply,
     :last_error,
-    tid_cache: %{}
+    tid_cache: %{},
+    private: %{}
   ]
 
   # UNO interface names
@@ -329,12 +346,12 @@ defmodule URP.Bridge do
   end
 
   @doc """
-  Load a document from a `file://` URL. Returns the document OID.
+  Load a document from a `file://` URL. Stashes the document OID on `conn.doc_oid`.
 
   Raises if soffice cannot open the file.
   """
-  @spec load_document!(t(), String.t()) :: doc_oid()
-  def load_document!(%__MODULE__{} = conn, url) do
+  @spec load_document!(t(), String.t()) :: t()
+  def load_document!(%__MODULE__{sock: sock} = conn, url) do
     qi!(
       conn,
       P.request(@func_query_interface,
@@ -349,7 +366,7 @@ defmodule URP.Bridge do
 
     reply =
       call!(
-        conn.sock,
+        sock,
         @load_url_prefix <>
           P.enc_str(url) <>
           P.enc_str("_blank") <>
@@ -358,8 +375,11 @@ defmodule URP.Bridge do
           hidden_prop
       )
 
-    P.parse_interface_reply(reply) ||
-      raise "loadComponentFromURL failed: #{P.parse_exception(reply)}"
+    doc_oid =
+      P.parse_interface_reply(reply) ||
+        raise "loadComponentFromURL failed: #{P.parse_exception(reply)}"
+
+    %{conn | doc_oid: doc_oid}
   end
 
   @doc """
@@ -370,8 +390,9 @@ defmodule URP.Bridge do
   `filter_data` is an optional keyword list of export-specific options passed
   as a nested `FilterData` property (e.g. `[UseLosslessCompression: true]`).
   """
-  @spec store_to_url!(t(), doc_oid(), String.t(), String.t(), keyword()) :: t()
-  def store_to_url!(%__MODULE__{} = conn, doc_oid, url, filter, filter_data \\ []) do
+  @spec store_to_url!(t(), String.t(), String.t(), keyword()) :: t()
+  def store_to_url!(%__MODULE__{doc_oid: doc_oid} = conn, url, filter, filter_data \\ [])
+      when is_binary(doc_oid) do
     conn =
       qi(
         conn,
@@ -403,28 +424,30 @@ defmodule URP.Bridge do
     conn
   end
 
-  @doc "Close a loaded document, releasing soffice resources."
-  @spec close_document!(t(), doc_oid()) :: t()
-  def close_document!(%__MODULE__{} = conn, doc_oid) do
-    conn
-    |> qi(
-      P.request(@func_query_interface,
-        type: @type_interface,
-        oid: {doc_oid, @oid_doc_closeable}
-      ),
-      P.type_new(@xi_closeable, @qi_cache_closeable)
-    )
-    |> call(@close_document)
+  @doc "Close the loaded document, releasing soffice resources."
+  @spec close_document!(t()) :: t()
+  def close_document!(%__MODULE__{doc_oid: doc_oid} = conn) when is_binary(doc_oid) do
+    conn =
+      conn
+      |> qi(
+        P.request(@func_query_interface,
+          type: @type_interface,
+          oid: {doc_oid, @oid_doc_closeable}
+        ),
+        P.type_new(@xi_closeable, @qi_cache_closeable)
+      )
+      |> call(@close_document)
+
+    %{conn | doc_oid: nil}
   end
 
   @doc """
   Query the soffice version string over URP.
 
   Reads `ooSetupVersionAboutBox` from the configuration API via 5 UNO
-  round trips. Returns a string like `"25.8.1.1"`. Does not consume
-  the connection (no streaming).
+  round trips. Stashes the result in `conn.private.version`.
   """
-  @spec version!(t()) :: String.t()
+  @spec version!(t()) :: t()
   def version!(%__MODULE__{sock: sock} = conn) do
     # Resolve the configuration provider singleton
     reply =
@@ -469,17 +492,20 @@ defmodule URP.Bridge do
 
     reply = call!(sock, @get_version)
 
-    P.parse_any_string_reply(reply) ||
-      raise "getByName(ooSetupVersionAboutBox) failed: #{P.parse_exception(reply)}"
+    version =
+      P.parse_any_string_reply(reply) ||
+        raise "getByName(ooSetupVersionAboutBox) failed: #{P.parse_exception(reply)}"
+
+    put_private(conn, :version, version)
   end
 
   @doc """
   List all service names registered in the UNO service manager.
 
   Calls `XMultiComponentFactory.getAvailableServiceNames()`.
-  Returns a list of service name strings.
+  Stashes the result in `conn.private.services`.
   """
-  @spec services!(t()) :: [String.t()]
+  @spec services!(t()) :: t()
   def services!(%__MODULE__{sock: sock} = conn) do
     reply =
       call!(
@@ -490,17 +516,20 @@ defmodule URP.Bridge do
         ) <> P.null_ctx()
       )
 
-    P.parse_string_sequence_reply(reply) ||
-      raise "getAvailableServiceNames failed: #{P.parse_exception(reply)}"
+    services =
+      P.parse_string_sequence_reply(reply) ||
+        raise "getAvailableServiceNames failed: #{P.parse_exception(reply)}"
+
+    put_private(conn, :services, services)
   end
 
   @doc """
   List all export filter names registered in soffice.
 
   Creates a `FilterFactory` instance and calls `getElementNames()` via `XNameAccess`.
-  Returns a list like `["writer_pdf_Export", "calc_pdf_Export", ...]`.
+  Stashes the result in `conn.private.filters`.
   """
-  @spec filters!(t()) :: [String.t()]
+  @spec filters!(t()) :: t()
   def filters!(%__MODULE__{sock: sock} = conn) do
     # 1. Create FilterFactory
     reply =
@@ -537,17 +566,20 @@ defmodule URP.Bridge do
         ) <> P.null_ctx()
       )
 
-    P.parse_string_sequence_reply(reply) ||
-      raise "getElementNames(FilterFactory) failed: #{P.parse_exception(reply)}"
+    filters =
+      P.parse_string_sequence_reply(reply) ||
+        raise "getElementNames(FilterFactory) failed: #{P.parse_exception(reply)}"
+
+    put_private(conn, :filters, filters)
   end
 
   @doc """
   List all document type names registered in soffice.
 
   Creates a `TypeDetection` instance and calls `getElementNames()` via `XNameAccess`.
-  Returns a list like `["writer8", "calc8", ...]`.
+  Stashes the result in `conn.private.types`.
   """
-  @spec types!(t()) :: [String.t()]
+  @spec types!(t()) :: t()
   def types!(%__MODULE__{sock: sock} = conn) do
     # 1. Create TypeDetection
     reply =
@@ -584,17 +616,20 @@ defmodule URP.Bridge do
         ) <> P.null_ctx()
       )
 
-    P.parse_string_sequence_reply(reply) ||
-      raise "getElementNames(TypeDetection) failed: #{P.parse_exception(reply)}"
+    types =
+      P.parse_string_sequence_reply(reply) ||
+        raise "getElementNames(TypeDetection) failed: #{P.parse_exception(reply)}"
+
+    put_private(conn, :types, types)
   end
 
   @doc """
   Query the soffice locale string over URP.
 
   Reads `ooLocale` from `/org.openoffice.Setup/L10N` via the configuration API.
-  Returns a locale string like `"en-US"` or `""` if not set.
+  Stashes the result in `conn.private.locale`.
   """
-  @spec locale!(t()) :: String.t()
+  @spec locale!(t()) :: t()
   def locale!(%__MODULE__{sock: sock} = conn) do
     # 1. Resolve the configuration provider singleton
     reply =
@@ -642,8 +677,11 @@ defmodule URP.Bridge do
     # 5. getByName("ooLocale")
     reply = call!(sock, @get_locale)
 
-    P.parse_any_string_reply(reply) ||
-      raise "getByName(ooLocale) failed: #{P.parse_exception(reply)}"
+    locale =
+      P.parse_any_string_reply(reply) ||
+        raise "getByName(ooLocale) failed: #{P.parse_exception(reply)}"
+
+    put_private(conn, :locale, locale)
   end
 
   @doc """
@@ -651,10 +689,9 @@ defmodule URP.Bridge do
 
   No shared filesystem needed — bytes are streamed over the URP socket.
   soffice calls `readBytes()` on our exported stream object.
-
-  Returns the document OID.
+  Stashes the document OID on `conn.doc_oid`.
   """
-  @spec load_document_stream!(t(), binary()) :: {doc_oid(), t()}
+  @spec load_document_stream!(t(), binary()) :: t()
   def load_document_stream!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     load_from_input_source!(conn, bytes)
   end
@@ -665,10 +702,9 @@ defmodule URP.Bridge do
   Like `load_document_stream!/2` but reads from a file on demand instead of
   holding the entire document in memory. The file must be accessible to the
   Elixir node (not soffice).
-
-  Returns the document OID.
+  Stashes the document OID on `conn.doc_oid`.
   """
-  @spec load_document_file_stream!(t(), Path.t()) :: {doc_oid(), t()}
+  @spec load_document_file_stream!(t(), Path.t()) :: t()
   def load_document_file_stream!(%__MODULE__{} = conn, path) when is_binary(path) do
     %{size: size} = File.stat!(path)
     fd = File.open!(path, [:read, :binary, :raw])
@@ -686,10 +722,9 @@ defmodule URP.Bridge do
   Like `load_document_stream!/2` but pulls chunks lazily from any `Enumerable`
   (e.g. `File.stream!/2`, an S3 download stream). The enumerable is iterated
   in a linked process; chunks are buffered and fed to soffice on demand.
-
-  Returns the document OID.
+  Stashes the document OID on `conn.doc_oid`.
   """
-  @spec load_document_enum_stream!(t(), Enumerable.t()) :: {doc_oid(), t()}
+  @spec load_document_enum_stream!(t(), Enumerable.t()) :: t()
   def load_document_enum_stream!(%__MODULE__{} = conn, enumerable) do
     reader = URP.Stream.start_enum_reader(enumerable)
 
@@ -708,10 +743,11 @@ defmodule URP.Bridge do
   tiny read/seek round-trips), this writes the entire document to a temp file
   on soffice's filesystem and loads from a `file://` URL.
 
-  Returns `{doc_oid, updated_conn, temp_url}`. The caller must delete the temp
-  file after conversion via `delete_file!/2`.
+  Stashes the document OID on `conn.doc_oid` and the temp file URL on
+  `conn.cleanup_url`. The caller should delete the temp file after conversion
+  via `delete_file!/2`.
   """
-  @spec load_document_write!(t(), binary()) :: {doc_oid(), t(), String.t()}
+  @spec load_document_write!(t(), binary()) :: t()
   def load_document_write!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     conn = seed_tid_cache(conn)
     {sfa_oid, conn} = ensure_sfa!(conn)
@@ -729,10 +765,9 @@ defmodule URP.Bridge do
       )
       |> call(@write_bytes_prefix <> P.enc_str(bytes))
       |> call(@close_output)
+      |> load_document!(url)
 
-    doc_oid = load_document!(conn, url)
-
-    {doc_oid, conn, url}
+    %{conn | cleanup_url: url}
   end
 
   @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
@@ -746,16 +781,16 @@ defmodule URP.Bridge do
 
   Uses `store_to_url!` to write the converted output to a temp file on
   soffice's filesystem, then reads it back in one shot via `read_file!/2`.
-  Replaces hundreds of round-trips with ~6.
+  Replaces hundreds of round-trips with ~6. Reads `conn.doc_oid`.
   """
-  @spec store_document_write!(t(), doc_oid(), keyword()) :: {binary(), t()}
-  def store_document_write!(%__MODULE__{} = conn, doc_oid, opts) do
+  @spec store_document_write!(t(), keyword()) :: {binary(), t()}
+  def store_document_write!(%__MODULE__{doc_oid: doc_oid} = conn, opts) when is_binary(doc_oid) do
     filter = Keyword.fetch!(opts, :filter)
     filter_data = Keyword.get(opts, :filter_data, [])
     id = :erlang.unique_integer([:positive])
     url = "file:///tmp/urp_out_#{id}"
 
-    conn = store_to_url!(conn, doc_oid, url, filter, filter_data)
+    conn = store_to_url!(conn, url, filter, filter_data)
     {bytes, conn} = read_file!(conn, url)
     conn = delete_file!(conn, url)
 
@@ -831,7 +866,7 @@ defmodule URP.Bridge do
       P.parse_interface_reply(reply) ||
         raise "loadComponentFromURL(stream) failed: #{P.parse_exception(reply)}"
 
-    {doc_oid, conn}
+    %{conn | doc_oid: doc_oid}
   end
 
   @doc """
@@ -846,8 +881,9 @@ defmodule URP.Bridge do
     * `{:path, path}` — write to file as chunks arrive, returns `:ok`
     * `fun/1` — call with each chunk as it arrives, returns `:ok`
   """
-  @spec store_to_stream!(t(), doc_oid(), keyword()) :: {binary() | :ok, t()}
-  def store_to_stream!(%__MODULE__{} = conn, doc_oid, opts \\ []) do
+  @spec store_to_stream!(t(), keyword()) :: {binary() | :ok, t()}
+  def store_to_stream!(%__MODULE__{doc_oid: doc_oid} = conn, opts \\ [])
+      when is_binary(doc_oid) do
     filter = Keyword.fetch!(opts, :filter)
     filter_data = Keyword.get(opts, :filter_data, [])
     sink = Keyword.get(opts, :sink)
@@ -1094,5 +1130,9 @@ defmodule URP.Bridge do
           recv_reply(conn)
       end
     end
+  end
+
+  defp put_private(%__MODULE__{private: private} = conn, key, value) do
+    %{conn | private: Map.put(private, key, value)}
   end
 end
