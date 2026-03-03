@@ -102,9 +102,10 @@ defmodule URP.Bridge do
     {:ok, sock} = :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false])
     conn = %__MODULE__{sock: sock}
     handshake!(conn)
-    {ctx_oid, smgr_oid, desktop_oid} = bootstrap_desktop!(conn)
+    conn = bootstrap(conn)
+    if conn.error, do: raise(conn.error)
     tid_cache = Process.get(:urp_tid_cache, %{})
-    %{conn | desktop_oid: desktop_oid, ctx_oid: ctx_oid, smgr_oid: smgr_oid, tid_cache: tid_cache}
+    %{conn | tid_cache: tid_cache}
   end
 
   @doc "Close the TCP connection."
@@ -121,15 +122,13 @@ defmodule URP.Bridge do
   @spec load_document(t(), String.t()) :: t()
   def load_document(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
 
-  def load_document(%__MODULE__{sock: sock} = conn, url) do
-    qi!(conn, C.qi_loader(conn.desktop_oid))
+  def load_document(%__MODULE__{} = conn, url) do
+    conn =
+      conn
+      |> call(C.qi_loader(conn.desktop_oid), :qi)
+      |> call(C.load_component_from_url(url, [C.hidden_property()]), :interface)
 
-    reply = call!(sock, C.load_component_from_url(url, [C.hidden_property()]))
-
-    case P.parse_interface_reply(reply) do
-      {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-      {:error, message} -> %{conn | error: message}
-    end
+    if conn.error, do: conn, else: %{conn | doc_oid: conn.reply}
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -154,16 +153,9 @@ defmodule URP.Bridge do
       when is_binary(doc_oid) do
     props = [C.filter_name_property(filter), C.filter_data_property(filter_data)]
 
-    conn =
-      conn
-      |> call(C.qi_storable(doc_oid))
-      |> call(C.store_to_url(url, props))
-
-    if conn.reply == P.reply() do
-      conn
-    else
-      %{conn | error: P.parse_exception(conn.reply)}
-    end
+    conn
+    |> call(C.qi_storable(doc_oid), :qi)
+    |> call(C.store_to_url(url, props), :void)
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -177,8 +169,8 @@ defmodule URP.Bridge do
   def close_document(%__MODULE__{doc_oid: doc_oid} = conn) when is_binary(doc_oid) do
     conn =
       conn
-      |> call(C.qi_closeable(doc_oid))
-      |> call(C.close_document())
+      |> call(C.qi_closeable(doc_oid), :qi)
+      |> call(C.close_document(), :void)
 
     %{conn | doc_oid: nil}
   rescue
@@ -195,20 +187,17 @@ defmodule URP.Bridge do
   @spec version(t()) :: t()
   def version(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
-  def version(%__MODULE__{sock: sock} = conn) do
-    with {:ok, config_provider_oid} <-
-           call!(sock, C.get_value_by_name(conn.ctx_oid, @config_provider_path))
-           |> P.parse_qi_reply(),
-         _ = qi!(conn, C.qi_msf(config_provider_oid)),
-         {:ok, config_access_oid} <-
-           call!(sock, C.create_config_access()) |> P.parse_interface_reply(),
-         _ = qi!(conn, C.qi_name_access(config_access_oid)),
-         {:ok, version} <-
-           call!(sock, C.get_version()) |> P.parse_any_string_reply() do
-      put_private(conn, :version, version)
-    else
-      {:error, message} -> %{conn | error: message}
-    end
+  def version(%__MODULE__{} = conn) do
+    conn = call(conn, C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
+    conn = call(conn, C.qi_msf(conn.reply), :qi)
+    conn = call(conn, C.create_config_access(), :interface)
+
+    conn =
+      conn
+      |> call(C.qi_name_access(conn.reply), :qi)
+      |> call(C.get_version(), :string)
+
+    if conn.error, do: conn, else: put_private(conn, :version, conn.reply)
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -223,12 +212,9 @@ defmodule URP.Bridge do
   @spec services(t()) :: t()
   def services(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
-  def services(%__MODULE__{sock: sock} = conn) do
-    case call!(sock, C.get_available_service_names(conn.smgr_oid))
-         |> P.parse_string_sequence_reply() do
-      {:ok, services} -> put_private(conn, :services, services)
-      {:error, message} -> %{conn | error: message}
-    end
+  def services(%__MODULE__{} = conn) do
+    conn = call(conn, C.get_available_service_names(conn.smgr_oid), :strings)
+    if conn.error, do: conn, else: put_private(conn, :services, conn.reply)
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -243,20 +229,20 @@ defmodule URP.Bridge do
   @spec filters(t()) :: t()
   def filters(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
-  def filters(%__MODULE__{sock: sock} = conn) do
-    with {:ok, ff_oid} <-
-           call!(
-             sock,
-             C.create_instance_with_context(conn.smgr_oid, "com.sun.star.document.FilterFactory")
-           )
-           |> P.parse_interface_reply(),
-         _ = qi!(conn, C.qi_ff_name_access(ff_oid)),
-         {:ok, filters} <-
-           call!(sock, C.get_filter_element_names()) |> P.parse_string_sequence_reply() do
-      put_private(conn, :filters, filters)
-    else
-      {:error, message} -> %{conn | error: message}
-    end
+  def filters(%__MODULE__{} = conn) do
+    conn =
+      call(
+        conn,
+        C.create_instance_with_context(conn.smgr_oid, "com.sun.star.document.FilterFactory"),
+        :interface
+      )
+
+    conn =
+      conn
+      |> call(C.qi_ff_name_access(conn.reply), :qi)
+      |> call(C.get_filter_element_names(), :strings)
+
+    if conn.error, do: conn, else: put_private(conn, :filters, conn.reply)
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -271,20 +257,20 @@ defmodule URP.Bridge do
   @spec types(t()) :: t()
   def types(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
-  def types(%__MODULE__{sock: sock} = conn) do
-    with {:ok, td_oid} <-
-           call!(
-             sock,
-             C.create_instance_with_context(conn.smgr_oid, "com.sun.star.document.TypeDetection")
-           )
-           |> P.parse_interface_reply(),
-         _ = qi!(conn, C.qi_td_name_access(td_oid)),
-         {:ok, types} <-
-           call!(sock, C.get_type_element_names()) |> P.parse_string_sequence_reply() do
-      put_private(conn, :types, types)
-    else
-      {:error, message} -> %{conn | error: message}
-    end
+  def types(%__MODULE__{} = conn) do
+    conn =
+      call(
+        conn,
+        C.create_instance_with_context(conn.smgr_oid, "com.sun.star.document.TypeDetection"),
+        :interface
+      )
+
+    conn =
+      conn
+      |> call(C.qi_td_name_access(conn.reply), :qi)
+      |> call(C.get_type_element_names(), :strings)
+
+    if conn.error, do: conn, else: put_private(conn, :types, conn.reply)
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -299,20 +285,17 @@ defmodule URP.Bridge do
   @spec locale(t()) :: t()
   def locale(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
-  def locale(%__MODULE__{sock: sock} = conn) do
-    with {:ok, config_provider_oid} <-
-           call!(sock, C.get_value_by_name(conn.ctx_oid, @config_provider_path))
-           |> P.parse_qi_reply(),
-         _ = qi!(conn, C.qi_locale_msf(config_provider_oid)),
-         {:ok, config_access_oid} <-
-           call!(sock, C.create_locale_config_access()) |> P.parse_interface_reply(),
-         _ = qi!(conn, C.qi_locale_na(config_access_oid)),
-         {:ok, locale} <-
-           call!(sock, C.get_locale()) |> P.parse_any_string_reply() do
-      put_private(conn, :locale, locale)
-    else
-      {:error, message} -> %{conn | error: message}
-    end
+  def locale(%__MODULE__{} = conn) do
+    conn = call(conn, C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
+    conn = call(conn, C.qi_locale_msf(conn.reply), :qi)
+    conn = call(conn, C.create_locale_config_access(), :interface)
+
+    conn =
+      conn
+      |> call(C.qi_locale_na(conn.reply), :qi)
+      |> call(C.get_locale(), :string)
+
+    if conn.error, do: conn, else: put_private(conn, :locale, conn.reply)
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -408,22 +391,16 @@ defmodule URP.Bridge do
     id = :erlang.unique_integer([:positive])
     url = "file:///tmp/urp_in_#{id}"
 
-    conn = call(conn, C.sfa_open_file_write(sfa_oid, url))
+    conn = call(conn, C.sfa_open_file_write(sfa_oid, url), :interface)
 
-    case P.parse_interface_reply(conn.reply) do
-      {:ok, os_oid} ->
-        conn =
-          conn
-          |> call(C.qi_sfa_output(os_oid))
-          |> call(C.write_bytes(bytes))
-          |> call(C.close_output())
-          |> load_document(url)
+    conn =
+      conn
+      |> call(C.qi_sfa_output(conn.reply), :qi)
+      |> call(C.write_bytes(bytes), :void)
+      |> call(C.close_output(), :void)
+      |> load_document(url)
 
-        %{conn | cleanup_url: url}
-
-      {:error, message} ->
-        %{conn | error: message}
-    end
+    %{conn | cleanup_url: url}
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -434,7 +411,7 @@ defmodule URP.Bridge do
   def delete_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
 
   def delete_file(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
-    call(conn, C.sfa_kill(sfa_oid, url))
+    call(conn, C.sfa_kill(sfa_oid, url), :void)
   rescue
     e in [RuntimeError, File.Error] ->
       %{conn | error: Exception.message(e)}
@@ -477,25 +454,17 @@ defmodule URP.Bridge do
 
   def read_file(%__MODULE__{} = conn, url) do
     {sfa_oid, conn} = ensure_sfa!(conn)
+    conn = call(conn, C.sfa_open_file_read(sfa_oid, url), :interface)
 
-    conn = call(conn, C.sfa_open_file_read(sfa_oid, url))
+    conn =
+      conn
+      |> call(C.qi_sfa_input(conn.reply), :qi)
+      |> call(C.read_all_bytes(), :read_bytes)
 
-    with {:ok, is_oid} <- P.parse_interface_reply(conn.reply) do
-      conn = call(conn, C.qi_sfa_input(is_oid))
+    bytes = conn.reply
+    conn = call(conn, C.close_input(), :void)
 
-      conn = call(conn, C.read_all_bytes())
-
-      case P.parse_read_bytes_reply(conn.reply) do
-        {:ok, bytes} ->
-          conn = call(conn, C.close_input())
-          {bytes, conn}
-
-        {:error, message} ->
-          {nil, %{conn | error: message}}
-      end
-    else
-      {:error, message} -> {nil, %{conn | error: message}}
-    end
+    if conn.error, do: {nil, conn}, else: {bytes, conn}
   rescue
     e in [RuntimeError, File.Error] ->
       {nil, %{conn | error: Exception.message(e)}}
@@ -503,24 +472,28 @@ defmodule URP.Bridge do
 
   defp load_from_input_source!(conn, source) do
     conn = seed_tid_cache(conn)
-    stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
+    conn = call(conn, C.qi_loader(conn.desktop_oid), :qi)
 
-    qi!(conn, C.qi_loader(conn.desktop_oid))
+    if conn.error do
+      conn
+    else
+      stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
 
-    P.send_frame(
-      conn.sock,
-      C.load_component_from_url("private:stream", [
-        C.hidden_property(),
-        C.input_stream_property(stream_oid)
-      ])
-    )
+      P.send_frame(
+        conn.sock,
+        C.load_component_from_url("private:stream", [
+          C.hidden_property(),
+          C.input_stream_property(stream_oid)
+        ])
+      )
 
-    # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
-    {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
+      # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
+      {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
 
-    case P.parse_interface_reply(reply) do
-      {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-      {:error, message} -> %{conn | error: message}
+      case P.parse_interface_reply(reply) do
+        {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
+        {:error, message} -> %{conn | error: message}
+      end
     end
   end
 
@@ -547,20 +520,25 @@ defmodule URP.Bridge do
     filter = Keyword.fetch!(opts, :filter)
     filter_data = Keyword.get(opts, :filter_data, [])
     sink = Keyword.get(opts, :sink)
-    stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
 
-    qi!(conn, C.qi_storable(doc_oid))
+    conn = call(conn, C.qi_storable(doc_oid), :qi)
 
-    props = [
-      C.filter_name_property(filter),
-      C.filter_data_property(filter_data),
-      C.output_stream_property(stream_oid)
-    ]
+    if conn.error do
+      {nil, conn}
+    else
+      stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
 
-    P.send_frame(conn.sock, C.store_to_url("private:stream", props))
+      props = [
+        C.filter_name_property(filter),
+        C.filter_data_property(filter_data),
+        C.output_stream_property(stream_oid)
+      ]
 
-    {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
-    {result, conn}
+      P.send_frame(conn.sock, C.store_to_url("private:stream", props))
+
+      {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
+      {result, conn}
+    end
   rescue
     e in [RuntimeError, File.Error] ->
       {nil, %{conn | error: Exception.message(e)}}
@@ -574,12 +552,12 @@ defmodule URP.Bridge do
     conn =
       call(
         conn,
-        C.create_instance_with_context(conn.smgr_oid, "com.sun.star.ucb.SimpleFileAccess")
+        C.create_instance_with_context(conn.smgr_oid, "com.sun.star.ucb.SimpleFileAccess"),
+        :interface
       )
 
-    {:ok, sfa_oid} = P.parse_interface_reply(conn.reply)
-
-    conn = call(conn, C.qi_sfa(sfa_oid))
+    sfa_oid = conn.reply
+    conn = call(conn, C.qi_sfa(sfa_oid), :qi)
     conn = %{conn | sfa_oid: sfa_oid}
     {sfa_oid, conn}
   end
@@ -600,70 +578,63 @@ defmodule URP.Bridge do
     P.send_frame(sock, P.reply())
   end
 
-  ## Bootstrap Desktop — ComponentContext → ServiceManager → Desktop
+  ## Bootstrap — ComponentContext → ServiceManager → Desktop
 
-  defp bootstrap_desktop!(%__MODULE__{sock: sock}) do
+  defp bootstrap(conn) do
     tid = :crypto.strong_rand_bytes(20)
 
-    ctx_oid = qi!(sock, C.qi_initial(tid))
-    qi!(sock, C.qi_component_ctx(ctx_oid))
-
-    P.send_frame(sock, C.get_service_manager())
-    {:ok, smgr_oid} = P.parse_interface_reply(P.recv_frame(sock))
-
-    P.send_frame(sock, C.create_desktop(smgr_oid))
-    {:ok, desktop_oid} = P.parse_interface_reply(P.recv_frame(sock))
-
-    {ctx_oid, smgr_oid, desktop_oid}
+    conn = call(conn, C.qi_initial(tid), :qi)
+    conn = %{conn | ctx_oid: conn.reply}
+    conn = call(conn, C.qi_component_ctx(conn.ctx_oid), :qi)
+    conn = call(conn, C.get_service_manager(), :interface)
+    conn = %{conn | smgr_oid: conn.reply}
+    conn = call(conn, C.create_desktop(conn.smgr_oid), :interface)
+    %{conn | desktop_oid: conn.reply}
   end
 
-  ## queryInterface helper
+  ## Send + receive + parse
 
-  defp qi!(%__MODULE__{sock: sock}, frame), do: qi!(sock, frame)
-
-  defp qi!(sock, frame) do
-    {:ok, oid} = P.parse_qi_reply(call!(sock, frame))
-    oid
-  end
-
-  ## Send + receive helpers
-
-  # Bootstrap variants — no conn struct yet, use raw socket.
-  defp call!(sock, frame) do
-    P.send_frame(sock, frame)
-    recv_reply!(sock)
-  end
-
-  defp recv_reply!(sock) do
-    payload = P.recv_frame(sock)
-
-    if P.is_reply?(payload) do
-      payload
-    else
-      %{func_id: func_id, tid: new_tid} = P.parse_request(payload)
-
-      if new_tid, do: Process.put(:urp_reply_tid, new_tid)
-      tid = new_tid || Process.get(:urp_reply_tid)
-
-      if not P.one_way?(func_id),
-        do: P.send_frame(sock, URP.Stream.inject_tid(P.reply(), tid))
-
-      recv_reply!(sock)
-    end
-  end
-
-  # Conn-threading variants — used during conversion phases.
-  # All return conn. recv_reply stashes the reply on conn.reply.
-
-  defp send_frame(%__MODULE__{} = conn, frame) do
-    P.send_frame(conn.sock, frame)
-    conn
-  end
+  # Error-guard: short-circuit if an earlier step failed.
+  defp call(%__MODULE__{error: e} = conn, _frame) when not is_nil(e), do: conn
 
   defp call(%__MODULE__{} = conn, frame) do
     conn
     |> send_frame(frame)
     |> recv_reply()
+  end
+
+  defp call(%__MODULE__{error: e} = conn, _frame, _parser) when not is_nil(e), do: conn
+
+  defp call(%__MODULE__{} = conn, frame, parser) do
+    conn
+    |> call(frame)
+    |> parse_reply(parser)
+  end
+
+  defp parse_reply(%__MODULE__{error: e} = conn, _parser) when not is_nil(e), do: conn
+  defp parse_reply(conn, :qi), do: handle_parsed(conn, P.parse_qi_reply(conn.reply))
+  defp parse_reply(conn, :interface), do: handle_parsed(conn, P.parse_interface_reply(conn.reply))
+  defp parse_reply(conn, :string), do: handle_parsed(conn, P.parse_any_string_reply(conn.reply))
+
+  defp parse_reply(conn, :strings),
+    do: handle_parsed(conn, P.parse_string_sequence_reply(conn.reply))
+
+  defp parse_reply(conn, :read_bytes),
+    do: handle_parsed(conn, P.parse_read_bytes_reply(conn.reply))
+
+  defp parse_reply(conn, :void) do
+    case P.parse_exception(conn.reply) do
+      nil -> conn
+      message -> %{conn | error: message, reply: ""}
+    end
+  end
+
+  defp handle_parsed(conn, {:ok, value}), do: %{conn | reply: value}
+  defp handle_parsed(conn, {:error, msg}), do: %{conn | error: msg, reply: ""}
+
+  defp send_frame(%__MODULE__{} = conn, frame) do
+    P.send_frame(conn.sock, frame)
+    conn
   end
 
   defp recv_reply(%__MODULE__{} = conn) do
