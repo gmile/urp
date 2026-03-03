@@ -107,5 +107,4 @@ mix run -e '{:ok, _} = URP.convert({:binary, File.read!("benchmarks/fixtures/ben
 docker exec $SOFFICE sh -c 'kill -INT $(pgrep strace)'
 docker exec $SOFFICE cat /tmp/strace.txt
 ```
-
 </details>
