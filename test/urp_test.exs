@@ -340,6 +340,7 @@ defmodule URPTest do
 
       assert is_nil(conn.error)
       assert "%PDF-" <> _ = conn.reply
+      Bridge.delete_file(conn, conn.cleanup_url)
       Bridge.close!(conn)
     end
 
@@ -350,6 +351,7 @@ defmodule URPTest do
         |> Bridge.store_to_stream(filter: @pdf)
 
       assert is_nil(conn.error)
+      Bridge.delete_file(conn, conn.cleanup_url)
       Bridge.close!(conn)
 
       assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
