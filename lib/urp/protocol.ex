@@ -357,7 +357,7 @@ defmodule URP.Protocol do
   of all exception structs is `Message` (string). Returns the message
   string, or a fallback if parsing fails.
   """
-  @spec parse_exception(binary()) :: String.t()
+  @spec parse_exception(binary()) :: String.t() | nil
   def parse_exception(payload) do
     {flags, rest} = skip_reply_header(payload)
 
@@ -380,8 +380,6 @@ defmodule URP.Protocol do
       rescue
         MatchError -> "UNO exception (could not parse message)"
       end
-    else
-      "no exception"
     end
   end
 

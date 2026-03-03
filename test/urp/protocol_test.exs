@@ -158,9 +158,9 @@ defmodule URP.ProtocolTest do
       assert P.parse_exception(payload) == "UNO exception (could not parse message)"
     end
 
-    test "returns 'no exception' for non-exception reply" do
+    test "returns nil for non-exception reply" do
       payload = <<0x80, 0x00>>
-      assert P.parse_exception(payload) == "no exception"
+      refute P.parse_exception(payload)
     end
   end
 
