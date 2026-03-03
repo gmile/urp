@@ -77,6 +77,15 @@ defmodule URP do
     URP.Pool.version(pool, opts)
   end
 
+  @doc "Like `version/1` but raises on error."
+  @spec version!(keyword()) :: String.t()
+  def version!(opts \\ []) do
+    case version(opts) do
+      {:ok, v} -> v
+      {:error, msg} -> raise msg
+    end
+  end
+
   @doc """
   List all service names registered in the UNO service manager.
 
@@ -97,6 +106,15 @@ defmodule URP do
   def services(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.services(pool, opts)
+  end
+
+  @doc "Like `services/1` but raises on error."
+  @spec services!(keyword()) :: [String.t()]
+  def services!(opts \\ []) do
+    case services(opts) do
+      {:ok, v} -> v
+      {:error, msg} -> raise msg
+    end
   end
 
   @doc """
@@ -122,6 +140,15 @@ defmodule URP do
     URP.Pool.filters(pool, opts)
   end
 
+  @doc "Like `filters/1` but raises on error."
+  @spec filters!(keyword()) :: [String.t()]
+  def filters!(opts \\ []) do
+    case filters(opts) do
+      {:ok, v} -> v
+      {:error, msg} -> raise msg
+    end
+  end
+
   @doc """
   List all document type names registered in soffice.
 
@@ -145,6 +172,15 @@ defmodule URP do
     URP.Pool.types(pool, opts)
   end
 
+  @doc "Like `types/1` but raises on error."
+  @spec types!(keyword()) :: [String.t()]
+  def types!(opts \\ []) do
+    case types(opts) do
+      {:ok, v} -> v
+      {:error, msg} -> raise msg
+    end
+  end
+
   @doc """
   Query the soffice locale string.
 
@@ -164,6 +200,15 @@ defmodule URP do
   def locale(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.locale(pool, opts)
+  end
+
+  @doc "Like `locale/1` but raises on error."
+  @spec locale!(keyword()) :: String.t()
+  def locale!(opts \\ []) do
+    case locale(opts) do
+      {:ok, v} -> v
+      {:error, msg} -> raise msg
+    end
   end
 
   @doc """
@@ -237,6 +282,17 @@ defmodule URP do
       raise ArgumentError,
             "URP.convert/2 expects a file path (binary), {:binary, bytes}, or an Enumerable. " <>
               "Got: #{inspect(input)}"
+    end
+  end
+
+  @doc "Like `convert/2` but raises on error."
+  @spec convert!(binary() | {:binary, binary()} | Enumerable.t(), [opt()]) ::
+          Path.t() | binary() | :ok
+  def convert!(input, opts \\ []) do
+    case convert(input, opts) do
+      {:ok, v} -> v
+      :ok -> :ok
+      {:error, msg} -> raise msg
     end
   end
 
