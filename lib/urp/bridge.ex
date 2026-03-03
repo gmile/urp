@@ -307,17 +307,17 @@ defmodule URP.Bridge do
     do: conn
 
   def load_document_file_stream(%__MODULE__{} = conn, path) when is_binary(path) do
-    %{size: size} = File.stat!(path)
-    fd = File.open!(path, [:read, :binary, :raw])
-
-    try do
-      load_from_input_source(conn, {:file, fd, size})
-    after
-      File.close(fd)
+    with {:ok, %{size: size}} <- File.stat(path),
+         {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
+      try do
+        load_from_input_source(conn, {:file, fd, size})
+      after
+        File.close(fd)
+      end
+    else
+      {:error, reason} ->
+        %{conn | error: "#{path}: #{:file.format_error(reason)}"}
     end
-  rescue
-    e in File.Error ->
-      %{conn | error: Exception.message(e)}
   end
 
   @doc """
