@@ -48,7 +48,7 @@ defmodule URP.Bridge do
         |> URP.Bridge.version()
 
       conn.private.version
-      # => "25.8.1.1"
+      # => "26.2.0.3"
   """
 
   alias URP.Protocol, as: P
@@ -58,17 +58,17 @@ defmodule URP.Bridge do
   #   :inet.getstat(conn.sock)   # send/recv counts, bytes, pending
   #   :inet.peername(conn.sock)  # remote {ip, port}
   @type t :: %__MODULE__{
-          sock: :gen_tcp.socket(),
-          desktop_oid: String.t(),
-          ctx_oid: String.t(),
-          smgr_oid: String.t(),
+          sock: :gen_tcp.socket() | nil,
+          desktop_oid: String.t() | nil,
+          ctx_oid: String.t() | nil,
+          smgr_oid: String.t() | nil,
           doc_oid: String.t() | nil,
           cleanup_url: String.t() | nil,
           sfa_oid: String.t() | nil,
           input_ctx: map() | nil,
           reply_tid: binary() | nil,
           reader_type: non_neg_integer() | nil,
-          reply: binary() | nil,
+          reply: term(),
           error: String.t() | nil,
           tid_cache: map(),
           private: map()
@@ -381,7 +381,8 @@ defmodule URP.Bridge do
 
   Uses `store_to_url/4` to write the converted output to a temp file on
   soffice's filesystem, then reads it back in one shot via `read_file/2`.
-  Replaces hundreds of round-trips with ~6. Reads `conn.doc_oid`.
+  Replaces hundreds of round-trips with ~6. Stashes the output bytes in
+  `conn.reply`.
   """
   @spec store_document_write(t(), keyword()) :: t()
   def store_document_write(%__MODULE__{error: e} = conn, _opts) when not is_nil(e), do: conn
@@ -404,6 +405,7 @@ defmodule URP.Bridge do
   Read a file from soffice's filesystem via XSimpleFileAccess.
 
   Opens the file, reads all bytes in one frame, closes the stream.
+  Stashes the file contents in `conn.reply`.
   """
   @spec read_file(t(), String.t()) :: t()
   def read_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
@@ -453,11 +455,11 @@ defmodule URP.Bridge do
   No shared filesystem needed — output bytes are streamed back over the URP socket.
   soffice calls `writeBytes()` on our exported stream object.
 
-  `sink` controls where output goes:
+  Stashes the result in `conn.reply`:
 
-    * `nil` (default) — accumulate in memory, returns the output bytes
-    * `{:path, path}` — write to file as chunks arrive, returns `:ok`
-    * `fun/1` — call with each chunk as it arrives, returns `:ok`
+    * no sink (default) — `conn.reply` is the accumulated output bytes
+    * `sink: {:path, path}` — writes to file, `conn.reply` is `:ok`
+    * `sink: fun/1` — calls with each chunk, `conn.reply` is `:ok`
   """
   @spec store_to_stream(t(), keyword()) :: t()
   def store_to_stream(conn, opts \\ [])

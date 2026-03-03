@@ -22,7 +22,7 @@ defmodule URP do
 
   Query soffice state without converting anything:
 
-      {:ok, "25.8.1.1"} = URP.version()
+      {:ok, "26.2.0.3"} = URP.version()
       {:ok, services} = URP.services()
       {:ok, filters} = URP.filters()
       {:ok, types} = URP.types()
@@ -58,13 +58,13 @@ defmodule URP do
   @doc """
   Query the soffice version string over URP.
 
-  Returns the raw version string (e.g. `"25.8.1.1"`). Callers can use
+  Returns the raw version string (e.g. `"26.2.0.3"`). Callers can use
   `Version.parse/1` if needed.
 
   ## Examples
 
       {:ok, version} = URP.version()
-      # => "25.8.1.1"
+      # => "26.2.0.3"
 
   ## Options
 

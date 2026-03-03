@@ -45,9 +45,8 @@ docker run --detach --name soffice --publish 2002:2002 soffice
 
 > #### Note {: .info}
 >
-> Any image with `soffice` listening on a TCP socket works — including
-> [`libreofficedocker/alpine`](https://hub.docker.com/r/libreofficedocker/alpine).
-> See [PERFORMANCE.md](PERFORMANCE.md) for trade-offs.
+> Any image with `soffice` listening on a TCP socket works.
+> See [PERFORMANCE.md](PERFORMANCE.md) for why Debian is recommended over Alpine.
 
 ## Usage
 
@@ -82,7 +81,7 @@ for PDF export options.
 ### Diagnostics
 
 ```elixir
-{:ok, "25.8.1.1"} = URP.version()
+{:ok, "26.2.0.3"} = URP.version()
 {:ok, services}   = URP.services()   # all registered UNO service names
 {:ok, filters}    = URP.filters()    # available export filters
 {:ok, types}      = URP.types()      # known document type names
