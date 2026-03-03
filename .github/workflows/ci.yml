@@ -28,9 +28,9 @@ jobs:
 
       - name: Start soffice
         run: |
-          docker run -d --name soffice \
-            -p 2002:2002 \
-            -v /tmp:/tmp \
+          docker run --detach --name soffice \
+            --publish 2002:2002 \
+            --volume /tmp:/tmp \
             soffice
           timeout 30 bash -c 'until nc -z localhost 2002; do sleep 1; done'
 
