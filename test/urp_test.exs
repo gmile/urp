@@ -4,6 +4,12 @@ defmodule URPTest do
   @moduletag :integration
   @moduletag timeout: 15_000
 
+  # TODO: soffice occasionally enters an unrecoverable state under heavy load,
+  # producing cascading "empty OID" or "bridge already disposed" errors that
+  # persist until the process restarts. We've seen flaky test failures from
+  # this. Future work: add stress/fuzz tests that hammer concurrent conversions
+  # and verify the pool recovers (or kills and restarts the worker).
+
   # Use /tmp (not System.tmp_dir!) so paths match inside the soffice Docker container
   @test_dir "/tmp"
   @pdf "writer_pdf_Export"
@@ -105,9 +111,8 @@ defmodule URPTest do
       assert "%PDF-" <> _ = pdf
     end
 
-    # Markdown export requires LibreOffice 26.2+ (confirmed working on macOS 26.2.1.2).
-    # Alpine edge still ships 25.8 — unskip once Docker image catches up.
-    @tag :skip
+    # Requires LO 26.2+; exclude locally if running older soffice.
+    @tag :lo26
     test "docx to markdown" do
       assert {:ok, md} =
                URP.convert({:binary, build_test_docx()},
@@ -294,6 +299,61 @@ defmodule URPTest do
       assert {:ok, pdf2} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
       assert "%PDF-" <> _ = pdf1
       assert "%PDF-" <> _ = pdf2
+    end
+  end
+
+  describe "bang variants" do
+    test "version! returns string" do
+      assert URP.version!() =~ ~r/^\d+\.\d+\.\d+/
+    end
+
+    test "services! returns list" do
+      assert "com.sun.star.frame.Desktop" in URP.services!()
+    end
+
+    test "filters! returns list" do
+      assert "writer_pdf_Export" in URP.filters!()
+    end
+
+    test "types! returns list" do
+      assert "writer8" in URP.types!()
+    end
+
+    test "locale! returns string" do
+      assert is_binary(URP.locale!())
+    end
+
+    test "convert! returns bytes" do
+      pdf = URP.convert!({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert "%PDF-" <> _ = pdf
+    end
+  end
+
+  describe "store_to_stream (Bridge-level)" do
+    alias URP.Bridge
+
+    test "converts document via XOutputStream" do
+      conn =
+        Bridge.open()
+        |> Bridge.load_document_write(build_test_docx())
+        |> Bridge.store_to_stream(filter: @pdf)
+
+      assert is_nil(conn.error)
+      assert "%PDF-" <> _ = conn.reply
+      Bridge.close!(conn)
+    end
+
+    test "pool stays usable after store_to_stream" do
+      conn =
+        Bridge.open()
+        |> Bridge.load_document_write(build_test_docx())
+        |> Bridge.store_to_stream(filter: @pdf)
+
+      assert is_nil(conn.error)
+      Bridge.close!(conn)
+
+      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert "%PDF-" <> _ = pdf
     end
   end
 

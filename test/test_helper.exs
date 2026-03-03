@@ -6,4 +6,6 @@ case :gen_tcp.connect(~c"localhost", 2002, [:binary], 1000) do
     raise "soffice not reachable on localhost:2002 — start it before running tests"
 end
 
-ExUnit.start()
+# Tests tagged :lo26 require LibreOffice 26.2+. Excluded by default for
+# local development with older soffice. CI includes them (--include lo26).
+ExUnit.start(exclude: [:lo26])

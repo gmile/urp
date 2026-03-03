@@ -14,14 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build soffice image
+        uses: docker/build-push-action@v6
+        with:
+          context: benchmarks
+          file: benchmarks/Dockerfile.soffice-debian
+          tags: soffice:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Start soffice
         run: |
           docker run -d --name soffice \
             -p 2002:2002 \
             -v /tmp:/tmp \
-            libreofficedocker/alpine:3.23 \
-            soffice --headless --norestore \
-              --accept="socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;"
+            soffice
           timeout 30 bash -c 'until nc -z localhost 2002; do sleep 1; done'
 
       - uses: erlef/setup-beam@v1
@@ -58,7 +68,7 @@ jobs:
         run: mix format --check-formatted
 
       - name: Run tests
-        run: mix test
+        run: mix test --include lo26
 
       - name: Run dialyzer
         run: mix dialyzer
