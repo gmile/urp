@@ -126,12 +126,10 @@ defmodule URP.Bridge do
   def load_document(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
 
   def load_document(%__MODULE__{} = conn, url) do
-    conn =
-      conn
-      |> call(C.qi_loader(conn.desktop_oid), :qi)
-      |> call(C.load_component_from_url(url, [C.hidden_property()]), :interface)
-
-    if conn.error, do: conn, else: %{conn | doc_oid: conn.reply}
+    conn
+    |> call(C.qi_loader(conn.desktop_oid), :qi)
+    |> call(C.load_component_from_url(url, [C.hidden_property()]), :interface)
+    |> stash(:doc_oid)
   end
 
   @doc """
@@ -186,12 +184,10 @@ defmodule URP.Bridge do
     conn = call(conn, C.qi_msf(conn.reply), :qi)
     conn = call(conn, C.create_config_access(), :interface)
 
-    conn =
-      conn
-      |> call(C.qi_name_access(conn.reply), :qi)
-      |> call(C.get_version(), :string)
-
-    if conn.error, do: conn, else: put_private(conn, :version, conn.reply)
+    conn
+    |> call(C.qi_name_access(conn.reply), :qi)
+    |> call(C.get_version(), :string)
+    |> stash_private(:version)
   end
 
   @doc """
@@ -204,8 +200,9 @@ defmodule URP.Bridge do
   def services(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def services(%__MODULE__{} = conn) do
-    conn = call(conn, C.get_available_service_names(conn.smgr_oid), :strings)
-    if conn.error, do: conn, else: put_private(conn, :services, conn.reply)
+    conn
+    |> call(C.get_available_service_names(conn.smgr_oid), :strings)
+    |> stash_private(:services)
   end
 
   @doc """
@@ -225,12 +222,10 @@ defmodule URP.Bridge do
         :interface
       )
 
-    conn =
-      conn
-      |> call(C.qi_ff_name_access(conn.reply), :qi)
-      |> call(C.get_filter_element_names(), :strings)
-
-    if conn.error, do: conn, else: put_private(conn, :filters, conn.reply)
+    conn
+    |> call(C.qi_ff_name_access(conn.reply), :qi)
+    |> call(C.get_filter_element_names(), :strings)
+    |> stash_private(:filters)
   end
 
   @doc """
@@ -250,12 +245,10 @@ defmodule URP.Bridge do
         :interface
       )
 
-    conn =
-      conn
-      |> call(C.qi_td_name_access(conn.reply), :qi)
-      |> call(C.get_type_element_names(), :strings)
-
-    if conn.error, do: conn, else: put_private(conn, :types, conn.reply)
+    conn
+    |> call(C.qi_td_name_access(conn.reply), :qi)
+    |> call(C.get_type_element_names(), :strings)
+    |> stash_private(:types)
   end
 
   @doc """
@@ -272,12 +265,10 @@ defmodule URP.Bridge do
     conn = call(conn, C.qi_locale_msf(conn.reply), :qi)
     conn = call(conn, C.create_locale_config_access(), :interface)
 
-    conn =
-      conn
-      |> call(C.qi_locale_na(conn.reply), :qi)
-      |> call(C.get_locale(), :string)
-
-    if conn.error, do: conn, else: put_private(conn, :locale, conn.reply)
+    conn
+    |> call(C.qi_locale_na(conn.reply), :qi)
+    |> call(C.get_locale(), :string)
+    |> stash_private(:locale)
   end
 
   @doc """
@@ -360,11 +351,11 @@ defmodule URP.Bridge do
 
   def load_document_write(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     conn = seed_tid_cache(conn)
-    {sfa_oid, conn} = ensure_sfa!(conn)
+    conn = ensure_sfa(conn)
     id = :erlang.unique_integer([:positive])
     url = "file:///tmp/urp_in_#{id}"
 
-    conn = call(conn, C.sfa_open_file_write(sfa_oid, url), :interface)
+    conn = call(conn, C.sfa_open_file_write(conn.sfa_oid, url), :interface)
 
     conn =
       conn
@@ -417,8 +408,8 @@ defmodule URP.Bridge do
   def read_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: {nil, conn}
 
   def read_file(%__MODULE__{} = conn, url) do
-    {sfa_oid, conn} = ensure_sfa!(conn)
-    conn = call(conn, C.sfa_open_file_read(sfa_oid, url), :interface)
+    conn = ensure_sfa(conn)
+    conn = call(conn, C.sfa_open_file_read(conn.sfa_oid, url), :interface)
 
     conn =
       conn
@@ -433,32 +424,27 @@ defmodule URP.Bridge do
 
   defp load_from_input_source(conn, source) do
     conn = seed_tid_cache(conn)
-    conn = call(conn, C.qi_loader(conn.desktop_oid), :qi)
+    stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
+
+    conn =
+      conn
+      |> call(C.qi_loader(conn.desktop_oid), :qi)
+      |> send_frame(
+        C.load_component_from_url("private:stream", [
+          C.hidden_property(),
+          C.input_stream_property(stream_oid)
+        ])
+      )
 
     if conn.error do
       conn
     else
-      stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
+      # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
+      {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
 
-      conn =
-        send_frame(
-          conn,
-          C.load_component_from_url("private:stream", [
-            C.hidden_property(),
-            C.input_stream_property(stream_oid)
-          ])
-        )
-
-      if conn.error do
-        conn
-      else
-        # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
-        {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
-
-        case P.parse_interface_reply(reply) do
-          {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-          {:error, message} -> %{conn | error: message}
-        end
+      case P.parse_interface_reply(reply) do
+        {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
+        {:error, message} -> %{conn | error: message}
       end
     end
   end
@@ -487,35 +473,32 @@ defmodule URP.Bridge do
     filter_data = Keyword.get(opts, :filter_data, [])
     sink = Keyword.get(opts, :sink)
 
-    conn = call(conn, C.qi_storable(doc_oid), :qi)
+    stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
+
+    props = [
+      C.filter_name_property(filter),
+      C.filter_data_property(filter_data),
+      C.output_stream_property(stream_oid)
+    ]
+
+    conn =
+      conn
+      |> call(C.qi_storable(doc_oid), :qi)
+      |> send_frame(C.store_to_url("private:stream", props))
 
     if conn.error do
       {nil, conn}
     else
-      stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
-
-      props = [
-        C.filter_name_property(filter),
-        C.filter_data_property(filter_data),
-        C.output_stream_property(stream_oid)
-      ]
-
-      conn = send_frame(conn, C.store_to_url("private:stream", props))
-
-      if conn.error do
-        {nil, conn}
-      else
-        {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
-        {result, conn}
-      end
+      {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
+      {result, conn}
     end
   end
 
   ## SimpleFileAccess — lazily created for write-based document loading
 
-  defp ensure_sfa!(%__MODULE__{sfa_oid: oid} = conn) when is_binary(oid), do: {oid, conn}
+  defp ensure_sfa(%__MODULE__{sfa_oid: oid} = conn) when is_binary(oid), do: conn
 
-  defp ensure_sfa!(%__MODULE__{} = conn) do
+  defp ensure_sfa(%__MODULE__{} = conn) do
     conn =
       call(
         conn,
@@ -523,10 +506,9 @@ defmodule URP.Bridge do
         :interface
       )
 
-    sfa_oid = conn.reply
-    conn = call(conn, C.qi_sfa(sfa_oid), :qi)
-    conn = %{conn | sfa_oid: sfa_oid}
-    {sfa_oid, conn}
+    conn
+    |> stash(:sfa_oid)
+    |> call(C.qi_sfa(conn.reply), :qi)
   end
 
   ## Handshake
@@ -599,6 +581,8 @@ defmodule URP.Bridge do
   defp handle_parsed(conn, {:ok, value}), do: %{conn | reply: value}
   defp handle_parsed(conn, {:error, msg}), do: %{conn | error: msg, reply: ""}
 
+  defp send_frame(%__MODULE__{error: e} = conn, _frame) when not is_nil(e), do: conn
+
   defp send_frame(%__MODULE__{} = conn, frame) do
     P.send_frame(conn.sock, frame)
     conn
@@ -642,7 +626,12 @@ defmodule URP.Bridge do
     conn
   end
 
-  defp put_private(%__MODULE__{private: private} = conn, key, value) do
-    %{conn | private: Map.put(private, key, value)}
+  defp stash(%__MODULE__{error: e} = conn, _field) when not is_nil(e), do: conn
+  defp stash(conn, field), do: Map.put(conn, field, conn.reply)
+
+  defp stash_private(%__MODULE__{error: e} = conn, _key) when not is_nil(e), do: conn
+
+  defp stash_private(%__MODULE__{private: private} = conn, key) do
+    %{conn | private: Map.put(private, key, conn.reply)}
   end
 end

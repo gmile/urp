@@ -151,11 +151,12 @@ defmodule URP.Pool do
   defp open_with_retry(host, port, attempt \\ 1) do
     conn = Bridge.open(host, port)
 
-    if conn.error && attempt < @max_retries do
-      Process.sleep(@retry_interval_ms * attempt)
-      open_with_retry(host, port, attempt + 1)
-    else
-      conn
+    cond do
+      !conn.error -> conn
+      attempt < @max_retries ->
+        Process.sleep(@retry_interval_ms * attempt)
+        open_with_retry(host, port, attempt + 1)
+      true -> raise "URP: #{conn.error} (after #{attempt} attempts)"
     end
   end
 
