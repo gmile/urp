@@ -4,12 +4,6 @@ defmodule URPTest do
   @moduletag :integration
   @moduletag timeout: 15_000
 
-  # TODO: soffice occasionally enters an unrecoverable state under heavy load,
-  # producing cascading "empty OID" or "bridge already disposed" errors that
-  # persist until the process restarts. We've seen flaky test failures from
-  # this. Future work: add stress/fuzz tests that hammer concurrent conversions
-  # and verify the pool recovers (or kills and restarts the worker).
-
   # Use /tmp (not System.tmp_dir!) so paths match inside the soffice Docker container
   @test_dir "/tmp"
   @pdf "writer_pdf_Export"
