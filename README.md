@@ -27,7 +27,7 @@ Add `urp` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:urp, "~> 0.7"}
+    {:urp, "~> 0.8"}
   ]
 end
 ```
