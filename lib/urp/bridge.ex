@@ -66,8 +66,8 @@ defmodule URP.Bridge do
           input_ctx: map() | nil,
           reply_tid: binary() | nil,
           reader_type: non_neg_integer() | nil,
-          last_reply: binary() | nil,
-          last_error: String.t() | nil,
+          reply: binary() | nil,
+          error: String.t() | nil,
           tid_cache: map(),
           private: map()
         }
@@ -83,8 +83,8 @@ defmodule URP.Bridge do
     :input_ctx,
     :reply_tid,
     :reader_type,
-    :last_reply,
-    :last_error,
+    :reply,
+    :error,
     tid_cache: %{},
     private: %{}
   ]
@@ -356,10 +356,10 @@ defmodule URP.Bridge do
   @doc """
   Load a document from a `file://` URL. Stashes the document OID on `conn.doc_oid`.
 
-  On failure, stashes the error on `conn.last_error`.
+  On failure, stashes the error on `conn.error`.
   """
   @spec load_document(t(), String.t()) :: t()
-  def load_document(%__MODULE__{last_error: e} = conn, _url) when not is_nil(e), do: conn
+  def load_document(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
 
   def load_document(%__MODULE__{sock: sock} = conn, url) do
     qi!(
@@ -392,7 +392,7 @@ defmodule URP.Bridge do
     %{conn | doc_oid: doc_oid}
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -406,7 +406,7 @@ defmodule URP.Bridge do
   @spec store_to_url(t(), String.t(), String.t(), keyword()) :: t()
   def store_to_url(conn, url, filter, filter_data \\ [])
 
-  def store_to_url(%__MODULE__{last_error: e} = conn, _url, _filter, _filter_data)
+  def store_to_url(%__MODULE__{error: e} = conn, _url, _filter, _filter_data)
       when not is_nil(e),
       do: conn
 
@@ -436,19 +436,19 @@ defmodule URP.Bridge do
           IO.iodata_to_binary(props)
       )
 
-    if conn.last_reply != P.reply() do
-      raise "storeToURL failed: #{P.parse_exception(conn.last_reply)}"
+    if conn.reply != P.reply() do
+      raise "storeToURL failed: #{P.parse_exception(conn.reply)}"
     end
 
     conn
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc "Close the loaded document, releasing soffice resources."
   @spec close_document(t()) :: t()
-  def close_document(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+  def close_document(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
   def close_document(%__MODULE__{doc_oid: nil} = conn), do: conn
 
   def close_document(%__MODULE__{doc_oid: doc_oid} = conn) when is_binary(doc_oid) do
@@ -466,7 +466,7 @@ defmodule URP.Bridge do
     %{conn | doc_oid: nil}
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -476,7 +476,7 @@ defmodule URP.Bridge do
   round trips. Stashes the result in `conn.private.version`.
   """
   @spec version(t()) :: t()
-  def version(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+  def version(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def version(%__MODULE__{sock: sock} = conn) do
     # Resolve the configuration provider singleton
@@ -529,7 +529,7 @@ defmodule URP.Bridge do
     put_private(conn, :version, version)
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -539,7 +539,7 @@ defmodule URP.Bridge do
   Stashes the result in `conn.private.services`.
   """
   @spec services(t()) :: t()
-  def services(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+  def services(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def services(%__MODULE__{sock: sock} = conn) do
     reply =
@@ -558,7 +558,7 @@ defmodule URP.Bridge do
     put_private(conn, :services, services)
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -568,7 +568,7 @@ defmodule URP.Bridge do
   Stashes the result in `conn.private.filters`.
   """
   @spec filters(t()) :: t()
-  def filters(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+  def filters(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def filters(%__MODULE__{sock: sock} = conn) do
     # 1. Create FilterFactory
@@ -613,7 +613,7 @@ defmodule URP.Bridge do
     put_private(conn, :filters, filters)
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -623,7 +623,7 @@ defmodule URP.Bridge do
   Stashes the result in `conn.private.types`.
   """
   @spec types(t()) :: t()
-  def types(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+  def types(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def types(%__MODULE__{sock: sock} = conn) do
     # 1. Create TypeDetection
@@ -668,7 +668,7 @@ defmodule URP.Bridge do
     put_private(conn, :types, types)
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -678,7 +678,7 @@ defmodule URP.Bridge do
   Stashes the result in `conn.private.locale`.
   """
   @spec locale(t()) :: t()
-  def locale(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+  def locale(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def locale(%__MODULE__{sock: sock} = conn) do
     # 1. Resolve the configuration provider singleton
@@ -734,7 +734,7 @@ defmodule URP.Bridge do
     put_private(conn, :locale, locale)
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -745,13 +745,13 @@ defmodule URP.Bridge do
   Stashes the document OID on `conn.doc_oid`.
   """
   @spec load_document_stream(t(), binary()) :: t()
-  def load_document_stream(%__MODULE__{last_error: e} = conn, _bytes) when not is_nil(e), do: conn
+  def load_document_stream(%__MODULE__{error: e} = conn, _bytes) when not is_nil(e), do: conn
 
   def load_document_stream(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     load_from_input_source!(conn, bytes)
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -763,7 +763,7 @@ defmodule URP.Bridge do
   Stashes the document OID on `conn.doc_oid`.
   """
   @spec load_document_file_stream(t(), Path.t()) :: t()
-  def load_document_file_stream(%__MODULE__{last_error: e} = conn, _path) when not is_nil(e),
+  def load_document_file_stream(%__MODULE__{error: e} = conn, _path) when not is_nil(e),
     do: conn
 
   def load_document_file_stream(%__MODULE__{} = conn, path) when is_binary(path) do
@@ -777,7 +777,7 @@ defmodule URP.Bridge do
     end
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -789,7 +789,7 @@ defmodule URP.Bridge do
   Stashes the document OID on `conn.doc_oid`.
   """
   @spec load_document_enum_stream(t(), Enumerable.t()) :: t()
-  def load_document_enum_stream(%__MODULE__{last_error: e} = conn, _enumerable)
+  def load_document_enum_stream(%__MODULE__{error: e} = conn, _enumerable)
       when not is_nil(e),
       do: conn
 
@@ -804,7 +804,7 @@ defmodule URP.Bridge do
     end
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -819,7 +819,7 @@ defmodule URP.Bridge do
   via `delete_file/2`.
   """
   @spec load_document_write(t(), binary()) :: t()
-  def load_document_write(%__MODULE__{last_error: e} = conn, _bytes) when not is_nil(e), do: conn
+  def load_document_write(%__MODULE__{error: e} = conn, _bytes) when not is_nil(e), do: conn
 
   def load_document_write(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     conn = seed_tid_cache(conn)
@@ -828,7 +828,7 @@ defmodule URP.Bridge do
     url = "file:///tmp/urp_in_#{id}"
 
     conn = sfa_call(conn, sfa_oid, @func_sfa_open_file_write, P.enc_str(url))
-    os_oid = P.parse_interface_reply(conn.last_reply) || raise "openFileWrite failed"
+    os_oid = P.parse_interface_reply(conn.reply) || raise "openFileWrite failed"
 
     conn =
       conn
@@ -843,18 +843,18 @@ defmodule URP.Bridge do
     %{conn | cleanup_url: url}
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
   @spec delete_file(t(), String.t()) :: t()
-  def delete_file(%__MODULE__{last_error: e} = conn, _url) when not is_nil(e), do: conn
+  def delete_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
 
   def delete_file(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
     sfa_call(conn, sfa_oid, @func_sfa_kill, P.enc_str(url))
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      %{conn | last_error: Exception.message(e)}
+      %{conn | error: Exception.message(e)}
   end
 
   @doc """
@@ -865,7 +865,7 @@ defmodule URP.Bridge do
   Replaces hundreds of round-trips with ~6. Reads `conn.doc_oid`.
   """
   @spec store_document_write(t(), keyword()) :: {binary() | nil, t()}
-  def store_document_write(%__MODULE__{last_error: e} = conn, _opts) when not is_nil(e),
+  def store_document_write(%__MODULE__{error: e} = conn, _opts) when not is_nil(e),
     do: {nil, conn}
 
   def store_document_write(%__MODULE__{doc_oid: doc_oid} = conn, opts) when is_binary(doc_oid) do
@@ -881,7 +881,7 @@ defmodule URP.Bridge do
     {bytes, conn}
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      {nil, %{conn | last_error: Exception.message(e)}}
+      {nil, %{conn | error: Exception.message(e)}}
   end
 
   @doc """
@@ -890,13 +890,13 @@ defmodule URP.Bridge do
   Opens the file, reads all bytes in one frame, closes the stream.
   """
   @spec read_file(t(), String.t()) :: {binary() | nil, t()}
-  def read_file(%__MODULE__{last_error: e} = conn, _url) when not is_nil(e), do: {nil, conn}
+  def read_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: {nil, conn}
 
   def read_file(%__MODULE__{} = conn, url) do
     {sfa_oid, conn} = ensure_sfa!(conn)
 
     conn = sfa_call(conn, sfa_oid, @func_sfa_open_file_read, P.enc_str(url))
-    is_oid = P.parse_interface_reply(conn.last_reply) || raise "openFileRead failed"
+    is_oid = P.parse_interface_reply(conn.reply) || raise "openFileRead failed"
 
     conn =
       qi(
@@ -906,13 +906,13 @@ defmodule URP.Bridge do
       )
 
     conn = call(conn, @read_all_bytes)
-    bytes = P.parse_read_bytes_reply(conn.last_reply)
+    bytes = P.parse_read_bytes_reply(conn.reply)
     conn = call(conn, @close_input)
 
     {bytes, conn}
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      {nil, %{conn | last_error: Exception.message(e)}}
+      {nil, %{conn | error: Exception.message(e)}}
   end
 
   defp load_from_input_source!(conn, source) do
@@ -976,7 +976,7 @@ defmodule URP.Bridge do
   @spec store_to_stream(t(), keyword()) :: {binary() | :ok | nil, t()}
   def store_to_stream(conn, opts \\ [])
 
-  def store_to_stream(%__MODULE__{last_error: e} = conn, _opts) when not is_nil(e),
+  def store_to_stream(%__MODULE__{error: e} = conn, _opts) when not is_nil(e),
     do: {nil, conn}
 
   def store_to_stream(%__MODULE__{doc_oid: doc_oid} = conn, opts)
@@ -1022,7 +1022,7 @@ defmodule URP.Bridge do
     {result, conn}
   rescue
     e in [RuntimeError, MatchError, File.Error] ->
-      {nil, %{conn | last_error: Exception.message(e)}}
+      {nil, %{conn | error: Exception.message(e)}}
   end
 
   ## SimpleFileAccess — lazily created for write-based document loading
@@ -1043,7 +1043,7 @@ defmodule URP.Bridge do
       )
 
     sfa_oid =
-      P.parse_interface_reply(conn.last_reply) ||
+      P.parse_interface_reply(conn.reply) ||
         raise "createInstanceWithContext(SimpleFileAccess) failed"
 
     conn =
@@ -1193,7 +1193,7 @@ defmodule URP.Bridge do
   end
 
   # Conn-threading variants — used during conversion phases.
-  # All return conn. recv_reply stashes the reply on conn.last_reply.
+  # All return conn. recv_reply stashes the reply on conn.reply.
 
   defp send_frame(%__MODULE__{} = conn, frame) do
     P.send_frame(conn.sock, frame)
@@ -1214,7 +1214,7 @@ defmodule URP.Bridge do
     payload = P.recv_frame(conn.sock)
 
     if P.is_reply?(payload) do
-      %{conn | last_reply: payload}
+      %{conn | reply: payload}
     else
       case URP.Stream.try_handle_input(conn, payload) do
         {:handled, conn} ->

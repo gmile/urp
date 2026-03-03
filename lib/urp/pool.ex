@@ -63,8 +63,8 @@ defmodule URP.Pool do
     do_checkout(pool, timeout, fn conn ->
       conn = bridge_fun.(conn)
 
-      if conn.last_error do
-        {{:error, conn.last_error}, {:ok, %{conn | last_error: nil}}}
+      if conn.error do
+        {{:error, conn.error}, {:ok, %{conn | error: nil}}}
       else
         {{:ok, conn.private[key]}, {:ok, conn}}
       end
@@ -87,8 +87,8 @@ defmodule URP.Pool do
       conn = safe_cleanup(conn)
       Process.delete(:urp_tid_cache)
 
-      if conn.last_error do
-        {{:error, conn.last_error}, :closed}
+      if conn.error do
+        {{:error, conn.error}, :closed}
       else
         {wrap_result(result), {:ok, reset_conversion_state(conn)}}
       end
@@ -211,7 +211,7 @@ defmodule URP.Pool do
         input_ctx: nil,
         reply_tid: nil,
         reader_type: nil,
-        last_error: nil
+        error: nil
     }
   end
 
