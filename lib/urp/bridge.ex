@@ -18,23 +18,23 @@ defmodule URP.Bridge do
 
       "localhost"
       |> URP.Bridge.open!(2002)
-      |> URP.Bridge.load_document!("file:///tmp/input.docx")
-      |> URP.Bridge.store_to_url!("file:///tmp/output.pdf", "writer_pdf_Export")
-      |> URP.Bridge.close_document!()
+      |> URP.Bridge.load_document("file:///tmp/input.docx")
+      |> URP.Bridge.store_to_url("file:///tmp/output.pdf", "writer_pdf_Export")
+      |> URP.Bridge.close_document()
       |> URP.Bridge.close!()
 
   ## Streaming
 
-  `load_document_stream!/2` and `store_to_stream!/2` use UNO's
+  `load_document_stream/2` and `store_to_stream/2` use UNO's
   `XInputStream`/`XOutputStream` interfaces to transfer document bytes
   over the URP socket, eliminating the need for a shared filesystem.
 
       conn =
         "localhost"
         |> URP.Bridge.open!(2002)
-        |> URP.Bridge.load_document_stream!(File.read!("input.docx"))
+        |> URP.Bridge.load_document_stream(File.read!("input.docx"))
 
-      {pdf, conn} = URP.Bridge.store_to_stream!(conn, filter: "writer_pdf_Export")
+      {pdf, conn} = URP.Bridge.store_to_stream(conn, filter: "writer_pdf_Export")
       URP.Bridge.close!(conn)
 
   ## Private storage
@@ -44,7 +44,7 @@ defmodule URP.Bridge do
       conn =
         "localhost"
         |> URP.Bridge.open!(2002)
-        |> URP.Bridge.version!()
+        |> URP.Bridge.version()
 
       conn.private.version
       # => "25.8.1.1"
@@ -356,10 +356,12 @@ defmodule URP.Bridge do
   @doc """
   Load a document from a `file://` URL. Stashes the document OID on `conn.doc_oid`.
 
-  Raises if soffice cannot open the file.
+  On failure, stashes the error on `conn.last_error`.
   """
-  @spec load_document!(t(), String.t()) :: t()
-  def load_document!(%__MODULE__{sock: sock} = conn, url) do
+  @spec load_document(t(), String.t()) :: t()
+  def load_document(%__MODULE__{last_error: e} = conn, _url) when not is_nil(e), do: conn
+
+  def load_document(%__MODULE__{sock: sock} = conn, url) do
     qi!(
       conn,
       P.request(@func_query_interface,
@@ -388,6 +390,9 @@ defmodule URP.Bridge do
         raise "loadComponentFromURL failed: #{P.parse_exception(reply)}"
 
     %{conn | doc_oid: doc_oid}
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -398,8 +403,14 @@ defmodule URP.Bridge do
   `filter_data` is an optional keyword list of export-specific options passed
   as a nested `FilterData` property (e.g. `[UseLosslessCompression: true]`).
   """
-  @spec store_to_url!(t(), String.t(), String.t(), keyword()) :: t()
-  def store_to_url!(%__MODULE__{doc_oid: doc_oid} = conn, url, filter, filter_data \\ [])
+  @spec store_to_url(t(), String.t(), String.t(), keyword()) :: t()
+  def store_to_url(conn, url, filter, filter_data \\ [])
+
+  def store_to_url(%__MODULE__{last_error: e} = conn, _url, _filter, _filter_data)
+      when not is_nil(e),
+      do: conn
+
+  def store_to_url(%__MODULE__{doc_oid: doc_oid} = conn, url, filter, filter_data)
       when is_binary(doc_oid) do
     conn =
       qi(
@@ -430,11 +441,17 @@ defmodule URP.Bridge do
     end
 
     conn
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc "Close the loaded document, releasing soffice resources."
-  @spec close_document!(t()) :: t()
-  def close_document!(%__MODULE__{doc_oid: doc_oid} = conn) when is_binary(doc_oid) do
+  @spec close_document(t()) :: t()
+  def close_document(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+  def close_document(%__MODULE__{doc_oid: nil} = conn), do: conn
+
+  def close_document(%__MODULE__{doc_oid: doc_oid} = conn) when is_binary(doc_oid) do
     conn =
       conn
       |> qi(
@@ -447,6 +464,9 @@ defmodule URP.Bridge do
       |> call(@close_document)
 
     %{conn | doc_oid: nil}
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -455,8 +475,10 @@ defmodule URP.Bridge do
   Reads `ooSetupVersionAboutBox` from the configuration API via 5 UNO
   round trips. Stashes the result in `conn.private.version`.
   """
-  @spec version!(t()) :: t()
-  def version!(%__MODULE__{sock: sock} = conn) do
+  @spec version(t()) :: t()
+  def version(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+
+  def version(%__MODULE__{sock: sock} = conn) do
     # Resolve the configuration provider singleton
     reply =
       call!(
@@ -505,6 +527,9 @@ defmodule URP.Bridge do
         raise "getByName(ooSetupVersionAboutBox) failed: #{P.parse_exception(reply)}"
 
     put_private(conn, :version, version)
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -513,8 +538,10 @@ defmodule URP.Bridge do
   Calls `XMultiComponentFactory.getAvailableServiceNames()`.
   Stashes the result in `conn.private.services`.
   """
-  @spec services!(t()) :: t()
-  def services!(%__MODULE__{sock: sock} = conn) do
+  @spec services(t()) :: t()
+  def services(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+
+  def services(%__MODULE__{sock: sock} = conn) do
     reply =
       call!(
         sock,
@@ -529,6 +556,9 @@ defmodule URP.Bridge do
         raise "getAvailableServiceNames failed: #{P.parse_exception(reply)}"
 
     put_private(conn, :services, services)
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -537,8 +567,10 @@ defmodule URP.Bridge do
   Creates a `FilterFactory` instance and calls `getElementNames()` via `XNameAccess`.
   Stashes the result in `conn.private.filters`.
   """
-  @spec filters!(t()) :: t()
-  def filters!(%__MODULE__{sock: sock} = conn) do
+  @spec filters(t()) :: t()
+  def filters(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+
+  def filters(%__MODULE__{sock: sock} = conn) do
     # 1. Create FilterFactory
     reply =
       call!(
@@ -579,6 +611,9 @@ defmodule URP.Bridge do
         raise "getElementNames(FilterFactory) failed: #{P.parse_exception(reply)}"
 
     put_private(conn, :filters, filters)
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -587,8 +622,10 @@ defmodule URP.Bridge do
   Creates a `TypeDetection` instance and calls `getElementNames()` via `XNameAccess`.
   Stashes the result in `conn.private.types`.
   """
-  @spec types!(t()) :: t()
-  def types!(%__MODULE__{sock: sock} = conn) do
+  @spec types(t()) :: t()
+  def types(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+
+  def types(%__MODULE__{sock: sock} = conn) do
     # 1. Create TypeDetection
     reply =
       call!(
@@ -629,6 +666,9 @@ defmodule URP.Bridge do
         raise "getElementNames(TypeDetection) failed: #{P.parse_exception(reply)}"
 
     put_private(conn, :types, types)
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -637,8 +677,10 @@ defmodule URP.Bridge do
   Reads `ooLocale` from `/org.openoffice.Setup/L10N` via the configuration API.
   Stashes the result in `conn.private.locale`.
   """
-  @spec locale!(t()) :: t()
-  def locale!(%__MODULE__{sock: sock} = conn) do
+  @spec locale(t()) :: t()
+  def locale(%__MODULE__{last_error: e} = conn) when not is_nil(e), do: conn
+
+  def locale(%__MODULE__{sock: sock} = conn) do
     # 1. Resolve the configuration provider singleton
     reply =
       call!(
@@ -690,6 +732,9 @@ defmodule URP.Bridge do
         raise "getByName(ooLocale) failed: #{P.parse_exception(reply)}"
 
     put_private(conn, :locale, locale)
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -699,21 +744,29 @@ defmodule URP.Bridge do
   soffice calls `readBytes()` on our exported stream object.
   Stashes the document OID on `conn.doc_oid`.
   """
-  @spec load_document_stream!(t(), binary()) :: t()
-  def load_document_stream!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
+  @spec load_document_stream(t(), binary()) :: t()
+  def load_document_stream(%__MODULE__{last_error: e} = conn, _bytes) when not is_nil(e), do: conn
+
+  def load_document_stream(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     load_from_input_source!(conn, bytes)
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
   Load a document from a local file via XInputStream.
 
-  Like `load_document_stream!/2` but reads from a file on demand instead of
+  Like `load_document_stream/2` but reads from a file on demand instead of
   holding the entire document in memory. The file must be accessible to the
   Elixir node (not soffice).
   Stashes the document OID on `conn.doc_oid`.
   """
-  @spec load_document_file_stream!(t(), Path.t()) :: t()
-  def load_document_file_stream!(%__MODULE__{} = conn, path) when is_binary(path) do
+  @spec load_document_file_stream(t(), Path.t()) :: t()
+  def load_document_file_stream(%__MODULE__{last_error: e} = conn, _path) when not is_nil(e),
+    do: conn
+
+  def load_document_file_stream(%__MODULE__{} = conn, path) when is_binary(path) do
     %{size: size} = File.stat!(path)
     fd = File.open!(path, [:read, :binary, :raw])
 
@@ -722,18 +775,25 @@ defmodule URP.Bridge do
     after
       File.close(fd)
     end
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
   Load a document from an enumerable via XInputStream.
 
-  Like `load_document_stream!/2` but pulls chunks lazily from any `Enumerable`
+  Like `load_document_stream/2` but pulls chunks lazily from any `Enumerable`
   (e.g. `File.stream!/2`, an S3 download stream). The enumerable is iterated
   in a linked process; chunks are buffered and fed to soffice on demand.
   Stashes the document OID on `conn.doc_oid`.
   """
-  @spec load_document_enum_stream!(t(), Enumerable.t()) :: t()
-  def load_document_enum_stream!(%__MODULE__{} = conn, enumerable) do
+  @spec load_document_enum_stream(t(), Enumerable.t()) :: t()
+  def load_document_enum_stream(%__MODULE__{last_error: e} = conn, _enumerable)
+      when not is_nil(e),
+      do: conn
+
+  def load_document_enum_stream(%__MODULE__{} = conn, enumerable) do
     reader = URP.Stream.start_enum_reader(enumerable)
 
     try do
@@ -742,6 +802,9 @@ defmodule URP.Bridge do
       Process.unlink(reader)
       Process.exit(reader, :kill)
     end
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
@@ -753,10 +816,12 @@ defmodule URP.Bridge do
 
   Stashes the document OID on `conn.doc_oid` and the temp file URL on
   `conn.cleanup_url`. The caller should delete the temp file after conversion
-  via `delete_file!/2`.
+  via `delete_file/2`.
   """
-  @spec load_document_write!(t(), binary()) :: t()
-  def load_document_write!(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
+  @spec load_document_write(t(), binary()) :: t()
+  def load_document_write(%__MODULE__{last_error: e} = conn, _bytes) when not is_nil(e), do: conn
+
+  def load_document_write(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
     conn = seed_tid_cache(conn)
     {sfa_oid, conn} = ensure_sfa!(conn)
     id = :erlang.unique_integer([:positive])
@@ -773,36 +838,50 @@ defmodule URP.Bridge do
       )
       |> call(@write_bytes_prefix <> P.enc_str(bytes))
       |> call(@close_output)
-      |> load_document!(url)
+      |> load_document(url)
 
     %{conn | cleanup_url: url}
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
-  @spec delete_file!(t(), String.t()) :: t()
-  def delete_file!(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
+  @spec delete_file(t(), String.t()) :: t()
+  def delete_file(%__MODULE__{last_error: e} = conn, _url) when not is_nil(e), do: conn
+
+  def delete_file(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
     sfa_call(conn, sfa_oid, @func_sfa_kill, P.enc_str(url))
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      %{conn | last_error: Exception.message(e)}
   end
 
   @doc """
   Store a document to soffice's filesystem and read back the result.
 
-  Uses `store_to_url!` to write the converted output to a temp file on
-  soffice's filesystem, then reads it back in one shot via `read_file!/2`.
+  Uses `store_to_url/4` to write the converted output to a temp file on
+  soffice's filesystem, then reads it back in one shot via `read_file/2`.
   Replaces hundreds of round-trips with ~6. Reads `conn.doc_oid`.
   """
-  @spec store_document_write!(t(), keyword()) :: {binary(), t()}
-  def store_document_write!(%__MODULE__{doc_oid: doc_oid} = conn, opts) when is_binary(doc_oid) do
+  @spec store_document_write(t(), keyword()) :: {binary() | nil, t()}
+  def store_document_write(%__MODULE__{last_error: e} = conn, _opts) when not is_nil(e),
+    do: {nil, conn}
+
+  def store_document_write(%__MODULE__{doc_oid: doc_oid} = conn, opts) when is_binary(doc_oid) do
     filter = Keyword.fetch!(opts, :filter)
     filter_data = Keyword.get(opts, :filter_data, [])
     id = :erlang.unique_integer([:positive])
     url = "file:///tmp/urp_out_#{id}"
 
-    conn = store_to_url!(conn, url, filter, filter_data)
-    {bytes, conn} = read_file!(conn, url)
-    conn = delete_file!(conn, url)
+    conn = store_to_url(conn, url, filter, filter_data)
+    {bytes, conn} = read_file(conn, url)
+    conn = delete_file(conn, url)
 
     {bytes, conn}
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      {nil, %{conn | last_error: Exception.message(e)}}
   end
 
   @doc """
@@ -810,8 +889,10 @@ defmodule URP.Bridge do
 
   Opens the file, reads all bytes in one frame, closes the stream.
   """
-  @spec read_file!(t(), String.t()) :: {binary(), t()}
-  def read_file!(%__MODULE__{} = conn, url) do
+  @spec read_file(t(), String.t()) :: {binary() | nil, t()}
+  def read_file(%__MODULE__{last_error: e} = conn, _url) when not is_nil(e), do: {nil, conn}
+
+  def read_file(%__MODULE__{} = conn, url) do
     {sfa_oid, conn} = ensure_sfa!(conn)
 
     conn = sfa_call(conn, sfa_oid, @func_sfa_open_file_read, P.enc_str(url))
@@ -829,6 +910,9 @@ defmodule URP.Bridge do
     conn = call(conn, @close_input)
 
     {bytes, conn}
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      {nil, %{conn | last_error: Exception.message(e)}}
   end
 
   defp load_from_input_source!(conn, source) do
@@ -889,8 +973,13 @@ defmodule URP.Bridge do
     * `{:path, path}` — write to file as chunks arrive, returns `:ok`
     * `fun/1` — call with each chunk as it arrives, returns `:ok`
   """
-  @spec store_to_stream!(t(), keyword()) :: {binary() | :ok, t()}
-  def store_to_stream!(%__MODULE__{doc_oid: doc_oid} = conn, opts \\ [])
+  @spec store_to_stream(t(), keyword()) :: {binary() | :ok | nil, t()}
+  def store_to_stream(conn, opts \\ [])
+
+  def store_to_stream(%__MODULE__{last_error: e} = conn, _opts) when not is_nil(e),
+    do: {nil, conn}
+
+  def store_to_stream(%__MODULE__{doc_oid: doc_oid} = conn, opts)
       when is_binary(doc_oid) do
     filter = Keyword.fetch!(opts, :filter)
     filter_data = Keyword.get(opts, :filter_data, [])
@@ -931,6 +1020,9 @@ defmodule URP.Bridge do
 
     {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
     {result, conn}
+  rescue
+    e in [RuntimeError, MatchError, File.Error] ->
+      {nil, %{conn | last_error: Exception.message(e)}}
   end
 
   ## SimpleFileAccess — lazily created for write-based document loading
