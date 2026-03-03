@@ -16,11 +16,12 @@ defmodule URP.Bridge do
 
   ## Example
 
-      conn = URP.Bridge.open!("localhost", 2002)
-      conn = URP.Bridge.load_document!(conn, "file:///tmp/input.docx")
-      conn = URP.Bridge.store_to_url!(conn, "file:///tmp/output.pdf", "writer_pdf_Export")
-      conn = URP.Bridge.close_document!(conn)
-      URP.Bridge.close!(conn)
+      "localhost"
+      |> URP.Bridge.open!(2002)
+      |> URP.Bridge.load_document!("file:///tmp/input.docx")
+      |> URP.Bridge.store_to_url!("file:///tmp/output.pdf", "writer_pdf_Export")
+      |> URP.Bridge.close_document!()
+      |> URP.Bridge.close!()
 
   ## Streaming
 
@@ -28,8 +29,11 @@ defmodule URP.Bridge do
   `XInputStream`/`XOutputStream` interfaces to transfer document bytes
   over the URP socket, eliminating the need for a shared filesystem.
 
-      conn = URP.Bridge.open!("localhost", 2002)
-      conn = URP.Bridge.load_document_stream!(conn, File.read!("input.docx"))
+      conn =
+        "localhost"
+        |> URP.Bridge.open!(2002)
+        |> URP.Bridge.load_document_stream!(File.read!("input.docx"))
+
       {pdf, conn} = URP.Bridge.store_to_stream!(conn, filter: "writer_pdf_Export")
       URP.Bridge.close!(conn)
 
@@ -37,7 +41,11 @@ defmodule URP.Bridge do
 
   Diagnostic functions stash results in `conn.private`:
 
-      conn = URP.Bridge.version!(conn)
+      conn =
+        "localhost"
+        |> URP.Bridge.open!(2002)
+        |> URP.Bridge.version!()
+
       conn.private.version
       # => "25.8.1.1"
   """
