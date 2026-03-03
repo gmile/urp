@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+Internal refactor of Bridge and Pool internals. No public API changes.
+
+- **Plug-like error handling:** Bridge functions no longer raise — errors
+  accumulate on `conn.error` and short-circuit subsequent calls via guards.
+  This replaces 13+ rescue blocks with a single, predictable data-flow pattern.
+  Callers piping through Bridge get clean error propagation without try/rescue.
+- **Uniform return type:** All Bridge functions return `t()`. Functions that
+  previously returned tuples (`store_document_write`, `store_to_stream`,
+  `read_file`) now stash results in `conn.reply`, enabling consistent piping.
+- **Pool memory fix:** `reset_conversion_state` now clears `conn.reply`,
+  preventing large binaries from being held between conversions.
+- **Accurate type specs:** Bridge struct fields (`sock`, `desktop_oid`,
+  `ctx_oid`, `smgr_oid`) now correctly typed as `| nil`; `reply` is `term()`.
+- **CI: Debian soffice 26.2** with Docker layer caching — replaces Alpine
+  image, enables LO 26.2+ tests (markdown export).
+- Expanded test coverage: bang variants, Bridge-level `store_to_stream`,
+  temp file cleanup.
+
 ## [v0.8.0] - 2026-03-02
 
 - Add `URP.services/1` — list all registered UNO service names
