@@ -37,7 +37,6 @@ A default pool connects to `localhost:2002` automatically.
 # output: :binary to get bytes in memory
 {:ok, pdf} = URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export", output: :binary)
 
-# diagnostics
 {:ok, "26.2.0.3"} = URP.version()
 {:ok, filters}    = URP.filters()
 ```

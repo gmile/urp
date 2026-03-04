@@ -39,25 +39,25 @@ defmodule URP.Pool do
 
   @doc false
   @spec version(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
-  def version(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.version/1, :version)
+  def version(pool, opts \\ []), do: query(pool, opts, &Bridge.version/1, :version)
 
   @doc false
   @spec services(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
-  def services(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.services/1, :services)
+  def services(pool, opts \\ []), do: query(pool, opts, &Bridge.services/1, :services)
 
   @doc false
   @spec filters(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
-  def filters(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.filters/1, :filters)
+  def filters(pool, opts \\ []), do: query(pool, opts, &Bridge.filters/1, :filters)
 
   @doc false
   @spec types(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
-  def types(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.types/1, :types)
+  def types(pool, opts \\ []), do: query(pool, opts, &Bridge.types/1, :types)
 
   @doc false
   @spec locale(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
-  def locale(pool, opts \\ []), do: diagnose(pool, opts, &Bridge.locale/1, :locale)
+  def locale(pool, opts \\ []), do: query(pool, opts, &Bridge.locale/1, :locale)
 
-  defp diagnose(pool, opts, bridge_fun, key) do
+  defp query(pool, opts, bridge_fun, key) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     meta = %{operation: key, pool: pool}
 
