@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+- Add `:telemetry` events — every pool operation emits `[:urp, :call, :stop]`
+  with `queue_time`, `service_time`, and `total_time` measurements.
+  See `URP.Telemetry` for details.
+
 ## [v0.8.1] - 2026-03-03
 
 Internal refactor of Bridge and Pool internals. No public API changes.
