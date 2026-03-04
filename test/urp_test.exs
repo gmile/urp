@@ -353,6 +353,38 @@ defmodule URPTest do
     end
   end
 
+  describe "pool queuing" do
+    test "two concurrent callers queue on pool_size 1 and both succeed" do
+      docx1 = build_test_docx("Document One")
+      docx2 = build_test_docx("Document Two")
+
+      task1 =
+        Task.async(fn ->
+          result = URP.convert({:binary, docx1}, filter: "Text", output: :binary)
+          {result, System.monotonic_time(:millisecond)}
+        end)
+
+      task2 =
+        Task.async(fn ->
+          result = URP.convert({:binary, docx2}, filter: "Text", output: :binary)
+          {result, System.monotonic_time(:millisecond)}
+        end)
+
+      {{:ok, text1}, t1} = Task.await(task1, 15_000)
+      {{:ok, text2}, t2} = Task.await(task2, 15_000)
+
+      # Each task converted its own document
+      assert text1 =~ "Document One"
+      assert text2 =~ "Document Two"
+
+      # With pool_size 1, conversions are serial. The second task must wait
+      # for the first to finish and return the worker. If they ran in parallel
+      # they'd finish at roughly the same time; serial execution means the
+      # completion timestamps are at least one conversion apart.
+      assert abs(t2 - t1) >= 100
+    end
+  end
+
   describe "URP.Test stubs" do
     @describetag integration: false
 
@@ -415,7 +447,7 @@ defmodule URPTest do
     end
   end
 
-  defp build_test_docx do
+  defp build_test_docx(text \\ "Hello from URP smoke test") do
     content_types = """
     <?xml version="1.0" encoding="UTF-8"?>
     <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -439,7 +471,7 @@ defmodule URPTest do
     <?xml version="1.0" encoding="UTF-8"?>
     <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
       <w:body>
-        <w:p><w:r><w:t>Hello from URP smoke test</w:t></w:r></w:p>
+        <w:p><w:r><w:t>#{text}</w:t></w:r></w:p>
       </w:body>
     </w:document>
     """
