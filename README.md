@@ -100,10 +100,9 @@ config :urp, :default,
 
 > #### pool_size {: .warning}
 >
-> Keep `pool_size: 1` per soffice instance. Multiple concurrent connections
-> to the same soffice process share UNO singletons (Desktop, XSimpleFileAccess)
-> that are not safe under concurrent document operations. Scale by running
-> multiple soffice containers with separate named pools instead.
+> Each connection needs its own soffice instance. With `pool_size: 3`,
+> run 3 soffice containers — one per connection. Concurrent operations
+> on a single soffice process are not safe.
 
 ## Testing
 
@@ -122,6 +121,16 @@ end
 Stubs are per-process and propagate through `$callers` (Tasks, GenServers).
 See `URP.Test` for details.
 
+## Telemetry
+
+URP emits `:telemetry` events for observability. Every operation emits
+`[:urp, :call, :stop]` with queue, service, and total time measurements.
+See `URP.Telemetry` for event details, measurements, and metadata.
+
+```elixir
+:telemetry.attach("urp-logger", [:urp, :call, :stop], &MyApp.handle_urp_event/4, nil)
+```
+
 ## Performance
 
 See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks against Gotenberg
@@ -139,6 +148,7 @@ Mutating UNO APIs (editing, formatting, macros) are not implemented.
 | Module | Role |
 |---|---|
 | `URP` | Public API — convert, diagnostics, test stubs |
+| `URP.Telemetry` | Telemetry event documentation |
 | `URP.Bridge` | Mid-level — UNO operations (handshake, convert, diagnostics, streaming) |
 | `URP.Stream` | Bidirectional URP dispatch for XInputStream/XOutputStream |
 | `URP.Protocol` | Low-level — binary wire format (framing, encoding, reply parsing) |

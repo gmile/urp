@@ -59,8 +59,9 @@ defmodule URP.Pool do
 
   defp diagnose(pool, opts, bridge_fun, key) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
+    meta = %{operation: key, pool: pool}
 
-    do_checkout(pool, timeout, fn conn ->
+    do_checkout(pool, timeout, meta, fn conn ->
       conn = bridge_fun.(conn)
 
       if is_nil(conn.error) do
@@ -79,7 +80,9 @@ defmodule URP.Pool do
     {sink, opts} = Keyword.pop(opts, :sink)
     store_opts = Keyword.take(opts, [:filter, :filter_data])
 
-    do_checkout(pool, timeout, fn conn ->
+    meta = %{operation: :convert, pool: pool}
+
+    do_checkout(pool, timeout, meta, fn conn ->
       conn = load_input(conn, input)
       conn = Bridge.store_document_write(conn, store_opts)
       result = if conn.reply, do: apply_sink(conn.reply, sink)
@@ -113,12 +116,30 @@ defmodule URP.Pool do
     Bridge.load_document_enum_stream(conn, enumerable)
   end
 
-  defp do_checkout(pool, timeout, fun, attempt \\ 1) do
+  defp do_checkout(pool, timeout, meta, fun, attempt \\ 1) do
+    t0 = System.monotonic_time()
+
     result =
       NimblePool.checkout!(
         pool,
         :checkout,
-        fn _from, conn -> fun.(conn) end,
+        fn _from, conn ->
+          t1 = System.monotonic_time()
+          {result, checkin} = fun.(conn)
+          t2 = System.monotonic_time()
+
+          :telemetry.execute(
+            [:urp, :call, :stop],
+            %{
+              total_time: t2 - t0,
+              queue_time: t1 - t0,
+              service_time: t2 - t1
+            },
+            Map.put(meta, :result, result_tag(result))
+          )
+
+          {result, checkin}
+        end,
         timeout
       )
 
@@ -126,7 +147,7 @@ defmodule URP.Pool do
       {:error, message} when is_binary(message) and attempt < @max_retries ->
         if String.contains?(message, @bridge_disposed) do
           Process.sleep(@retry_interval_ms * attempt)
-          do_checkout(pool, timeout, fun, attempt + 1)
+          do_checkout(pool, timeout, meta, fun, attempt + 1)
         else
           result
         end
@@ -135,6 +156,9 @@ defmodule URP.Pool do
         result
     end
   end
+
+  defp result_tag({:error, _}), do: :error
+  defp result_tag(_), do: :ok
 
   ## NimblePool callbacks
 
