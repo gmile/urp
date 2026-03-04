@@ -28,7 +28,11 @@ A default pool connects to `localhost:2002` automatically.
 
 ```elixir
 # file path, {:binary, bytes}, or any Enumerable as input
-{:ok, pdf_path} = URP.convert("/path/to/input.docx", filter: "writer_pdf_Export")
+{:ok, pdf_path} =
+  URP.convert("/path/to/input.docx",
+    filter: "writer_pdf_Export",
+    filter_data: [Quality: 90, ReduceImageResolution: true, MaxImageResolution: 150]
+  )
 
 # output: :binary to get bytes in memory
 {:ok, pdf} = URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export", output: :binary)
