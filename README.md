@@ -34,8 +34,8 @@ A default pool connects to `localhost:2002` automatically.
     filter_data: [Quality: 90, ReduceImageResolution: true, MaxImageResolution: 150]
   )
 
-# output: :binary to get bytes in memory
-{:ok, pdf} = URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export", output: :binary)
+# docx to Markdown, output as binary
+{:ok, md} = URP.convert({:binary, docx_bytes}, filter: "Markdown", output: :binary)
 
 {:ok, "26.2.0.3"} = URP.version()
 {:ok, filters}    = URP.filters()
