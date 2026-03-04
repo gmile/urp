@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.9.0] - 2026-03-04
 
 - Add `:telemetry` events — every pool operation emits `[:urp, :call, :stop]`
   with `queue_time`, `service_time`, and `total_time` measurements.
