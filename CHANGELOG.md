@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.9.1] - 2026-03-06
 
 - **Fix 2 GiB memory spike during conversion:** `read_file/2` now calls
   `available()` to get the exact output size before `readBytes()`. Previously
