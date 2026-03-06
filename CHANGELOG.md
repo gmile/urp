@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+- **Fix 2 GiB memory spike during conversion:** `read_file/2` now calls
+  `available()` to get the exact output size before `readBytes()`. Previously
+  it passed `0x7FFFFFFF` (2 GiB), causing soffice to pre-allocate a 2 GiB
+  buffer on every conversion regardless of actual PDF size. Peak soffice RSS
+  drops from ~2.3 GB to ~300 MB.
+
 ## [v0.9.0] - 2026-03-04
 
 - Add `:telemetry` events — every pool operation emits `[:urp, :call, :stop]`
