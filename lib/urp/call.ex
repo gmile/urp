@@ -51,7 +51,7 @@ defmodule URP.Call do
   @func_os_write_bytes 3
   @func_os_close_output 5
 
-  @max_read_bytes 0x7FFFFFFF
+  @func_is_available 6
 
   # URP type cache — sequential allocation shared between request headers and QI bodies.
   #
@@ -191,9 +191,9 @@ defmodule URP.Call do
 
   @close_input_frame P.request(@func_is_close_input) <> P.null_ctx()
 
-  @read_all_bytes_frame P.request(@func_is_read_bytes,
-                          type: @type_is_sfa
-                        ) <> P.null_ctx() <> <<@max_read_bytes::32-signed>>
+  @available_frame P.request(@func_is_available, type: @type_is_sfa) <> P.null_ctx()
+
+  @read_bytes_prefix P.request(@func_is_read_bytes, type: @type_is_sfa) <> P.null_ctx()
 
   @get_version_frame P.request(@func_na_get_by_name,
                        type: @type_new_name_access
@@ -441,7 +441,10 @@ defmodule URP.Call do
   def close_output, do: @close_output_frame
 
   @doc false
-  def read_all_bytes, do: @read_all_bytes_frame
+  def available, do: @available_frame
+
+  @doc false
+  def read_bytes(size), do: @read_bytes_prefix <> <<size::32-signed>>
 
   @doc false
   def close_input, do: @close_input_frame

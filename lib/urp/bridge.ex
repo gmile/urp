@@ -417,7 +417,9 @@ defmodule URP.Bridge do
     conn =
       conn
       |> call(C.qi_sfa_input(conn.reply), :qi)
-      |> call(C.read_all_bytes(), :read_bytes)
+      |> call(C.available(), :int32)
+
+    conn = call(conn, C.read_bytes(conn.reply), :read_bytes)
 
     %{call(conn, C.close_input(), :void) | reply: conn.reply}
   end
@@ -566,6 +568,8 @@ defmodule URP.Bridge do
 
   defp parse_reply(conn, :strings),
     do: handle_parsed(conn, P.parse_string_sequence_reply(conn.reply))
+
+  defp parse_reply(conn, :int32), do: handle_parsed(conn, P.parse_int32_reply(conn.reply))
 
   defp parse_reply(conn, :read_bytes),
     do: handle_parsed(conn, P.parse_read_bytes_reply(conn.reply))
