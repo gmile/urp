@@ -323,6 +323,19 @@ defmodule URP.Protocol do
     end
   end
 
+  @doc "Parse a reply returning a single signed 32-bit integer."
+  @spec parse_int32_reply(binary()) :: {:ok, integer()} | {:error, String.t()}
+  def parse_int32_reply(payload) do
+    {flags, rest} = skip_reply_header(payload)
+
+    if (flags &&& @exception) != 0 do
+      {:error, parse_exception(payload)}
+    else
+      <<value::32-signed, _::binary>> = rest
+      {:ok, value}
+    end
+  end
+
   @doc "Parse a readBytes reply — return value (long) + out param (sequence<byte>)."
   @spec parse_read_bytes_reply(binary()) :: {:ok, binary()} | {:error, String.t()}
   def parse_read_bytes_reply(payload) do

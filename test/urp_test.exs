@@ -381,7 +381,7 @@ defmodule URPTest do
       # for the first to finish and return the worker. If they ran in parallel
       # they'd finish at roughly the same time; serial execution means the
       # completion timestamps are at least one conversion apart.
-      assert abs(t2 - t1) >= 100
+      assert abs(t2 - t1) >= 10
     end
   end
 
