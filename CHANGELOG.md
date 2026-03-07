@@ -22,6 +22,14 @@
 - **New `:recv_timeout` and `:max_frame_size` options for `URP.convert/2`:**
   per-conversion control over the TCP recv timeout (default 120 s) and maximum
   accepted frame size (default 512 MiB).
+- **New `:io` option for `URP.convert/2`:** choose between file-based (`:file`,
+  default) and streaming (`:stream`) I/O independently for input and output.
+  File I/O uses temp files on soffice's filesystem (~6 round-trips). Streaming
+  uses XInputStream/XOutputStream over URP (~40-50% slower but no temp disk).
+  Mixed modes supported: `io: {:file, :stream}` or `io: {:stream, :file}`.
+- **Fix TID cache loss across conversions:** the URP type cache accumulated
+  during each conversion is now persisted back to the connection struct,
+  preventing type desync on subsequent operations.
 
 ## [v0.9.1] - 2026-03-06
 
