@@ -14,7 +14,9 @@ defmodule URP do
       config :urp, :default,
         host: "soffice",
         port: 2002,
-        pool_size: 1
+        pool_size: 1,
+        backoff_initial: 500,  # ms, initial reconnection delay
+        backoff_max: 5_000     # ms, max reconnection delay
 
   See `convert/2` for usage examples and options.
 
