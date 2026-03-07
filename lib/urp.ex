@@ -51,12 +51,14 @@ defmodule URP do
 
   @type setting :: {String.t(), String.t(), boolean() | integer() | String.t()}
   @type output :: Path.t() | :binary | (binary() -> any())
+  @type io_mode :: :file | :stream | {:file | :stream, :file | :stream}
   @type opt ::
           {:output, output()}
           | {:pool, atom()}
           | {:filter, String.t()}
           | {:filter_data, keyword()}
           | {:settings, [setting()]}
+          | {:io, io_mode()}
           | {:timeout, non_neg_integer()}
           | {:recv_timeout, timeout()}
           | {:max_frame_size, pos_integer()}
@@ -238,6 +240,13 @@ defmodule URP do
       cache limits, graphic memory, etc. Values can be booleans, integers, or strings.
       See [officecfg schema](https://github.com/LibreOffice/core/tree/master/officecfg/registry/schema/org/openoffice/Office)
       for all available settings.
+    * `:io` — I/O transfer strategy (default `:file`):
+      * `:file` — transfer complete files via temp files on soffice's filesystem.
+        Fast (~6 URP round-trips), but requires temp disk space on soffice.
+      * `:stream` — stream document bytes over the URP socket via
+        XInputStream/XOutputStream. Many TCP round-trips, but no temp files
+        and constant memory usage. Prefer for large documents on RAM-constrained
+        containers.
     * `:output`  — where to write converted output:
       * path string — write to file, returns `{:ok, path}`
       * `:binary` — return bytes, returns `{:ok, bytes}`

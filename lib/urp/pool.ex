@@ -85,6 +85,8 @@ defmodule URP.Pool do
     {settings, opts} = Keyword.pop(opts, :settings, [])
     {max_frame_size, opts} = Keyword.pop(opts, :max_frame_size)
     {recv_timeout, opts} = Keyword.pop(opts, :recv_timeout)
+    {io_raw, opts} = Keyword.pop(opts, :io, :file)
+    {io_in, io_out} = normalize_io(io_raw)
     store_opts = Keyword.take(opts, [:filter, :filter_data])
 
     meta = %{operation: :convert, pool: pool}
@@ -96,27 +98,54 @@ defmodule URP.Pool do
       conn =
         conn
         |> Bridge.apply_settings(settings)
-        |> load_input(input)
-        |> Bridge.store_document_write(store_opts)
+        |> load_input(input, io_in)
+        |> store_output(store_opts, sink, io_out)
 
-      result = if conn.reply, do: apply_sink(conn.reply, sink)
+      result = conn.reply
       conn = Bridge.close_document(conn)
       conn = safe_cleanup(conn)
+
+      # Persist accumulated TID cache entries back to conn before clearing.
+      # soffice's type cache is per-connection and doesn't reset between
+      # operations — our side must keep up to avoid type desync.
+      tid_cache = Process.get(:urp_tid_cache, conn.tid_cache)
+      conn = %{conn | tid_cache: tid_cache}
       Process.delete(:urp_tid_cache)
 
-      if is_nil(conn.error) do
-        {wrap_result(result), {:ok, reset_conversion_state(conn)}}
-      else
-        {{:error, conn.error}, :closed}
+      # Stream-based input registers an XInputStream at a fixed OID cache slot.
+      # soffice's URP cache doesn't fully reset on reuse, producing truncated
+      # documents on subsequent stream loads. Discard the connection to force
+      # a fresh handshake. File-based I/O reuses connections normally.
+      reusable = io_in == :file and is_nil(conn.error)
+
+      cond do
+        reusable ->
+          {wrap_result(result), {:ok, reset_conversion_state(conn)}}
+
+        not is_nil(result) ->
+          {wrap_result(result), :closed}
+
+        true ->
+          {{:error, conn.error}, :closed}
       end
     end)
   end
 
-  defp load_input(conn, {:binary, bytes}) when is_binary(bytes) do
+  defp normalize_io(:file), do: {:file, :file}
+  defp normalize_io(:stream), do: {:stream, :stream}
+  defp normalize_io({in_mode, out_mode}), do: {in_mode, out_mode}
+
+  ## Input routing
+
+  defp load_input(conn, {:binary, bytes}, :file) when is_binary(bytes) do
     Bridge.load_document_write(conn, bytes)
   end
 
-  defp load_input(conn, path) when is_binary(path) do
+  defp load_input(conn, {:binary, bytes}, :stream) when is_binary(bytes) do
+    Bridge.load_document_stream(conn, bytes)
+  end
+
+  defp load_input(conn, path, :file) when is_binary(path) do
     case File.read(path) do
       {:ok, bytes} ->
         Bridge.load_document_write(conn, bytes)
@@ -126,8 +155,28 @@ defmodule URP.Pool do
     end
   end
 
-  defp load_input(conn, enumerable) do
+  defp load_input(conn, path, :stream) when is_binary(path) do
+    Bridge.load_document_file_stream(conn, path)
+  end
+
+  defp load_input(conn, enumerable, _io_mode) do
     Bridge.load_document_enum_stream(conn, enumerable)
+  end
+
+  ## Output routing
+
+  defp store_output(%{error: e} = conn, _store_opts, _sink, _io_mode) when not is_nil(e),
+    do: conn
+
+  defp store_output(conn, store_opts, sink, :file) do
+    conn = Bridge.store_document_write(conn, store_opts)
+    result = if conn.reply, do: apply_sink(conn.reply, sink)
+    %{conn | reply: result}
+  end
+
+  defp store_output(conn, store_opts, sink, :stream) do
+    stream_opts = if sink, do: [{:sink, sink} | store_opts], else: store_opts
+    Bridge.store_to_stream(conn, stream_opts)
   end
 
   defp do_checkout(pool, timeout, meta, fun, attempt \\ 1) do
