@@ -90,20 +90,16 @@ defmodule URP.Stream do
     payload = P.recv_frame(conn.sock, conn.recv_timeout, conn.max_frame_size)
 
     if P.is_reply?(payload) do
-      # Save input context on conn so the stream can be served during store/close phases
-      conn =
-        if seekable_cache do
-          %{
-            conn
-            | input_ctx: %{
-                source: source,
-                seekable_cache: seekable_cache,
-                input_cache: input_cache
-              }
+      # Save input context on conn so the stream can be served during store/close phases.
+      # Always set — soffice may re-read the input stream during store (e.g. format validation).
+      conn = %{
+        conn
+        | input_ctx: %{
+            source: source,
+            seekable_cache: seekable_cache,
+            input_cache: input_cache
           }
-        else
-          conn
-        end
+      }
 
       {payload, conn}
     else
