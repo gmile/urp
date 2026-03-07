@@ -9,6 +9,28 @@ defmodule URP.Call do
 
   The `qi_*` functions build complete queryInterface frames (header + null
   context + body type parameter).
+
+  ## Abbreviations
+
+  Module attributes use short prefixes borrowed from LibreOffice's own naming
+  conventions (IDL interfaces, `binaryurp/source/*.hxx`, `include/typelib/`):
+
+  | Prefix  | Stands for                | Example                         |
+  |---------|---------------------------|---------------------------------|
+  | `xi_`   | X-Interface (UNO IDL)     | `@xi_closeable`                 |
+  | `qi_`   | queryInterface            | `qi_loader/1`                   |
+  | `ctx`   | XComponentContext         | `@oid_ctx`, `@func_ctx_*`       |
+  | `mcf`   | XMultiComponentFactory    | `@func_mcf_create_with_context` |
+  | `msf`   | XMultiServiceFactory      | `@func_msf_create_with_args`    |
+  | `na`    | XNameAccess               | `@func_na_get_by_name`          |
+  | `nr`    | XNameReplace              | `@func_nr_replace_by_name`      |
+  | `cb`    | XChangesBatch             | `@func_cb_commit_changes`       |
+  | `sfa`   | XSimpleFileAccess         | `@func_sfa_open_file_read`      |
+  | `is`    | XInputStream              | `@func_is_read_bytes`           |
+  | `os`    | XOutputStream             | `@func_os_write_bytes`          |
+  | `ff`    | FilterFactory service     | `@qi_cache_ff_name_access`      |
+  | `td`    | TypeDetection service     | `@qi_cache_td_name_access`      |
+  | `tc`    | TypeClass (typelib enum)  | `@tc_boolean`, `@tc_string`     |
   """
 
   alias URP.Protocol, as: P
