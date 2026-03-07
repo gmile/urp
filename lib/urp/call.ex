@@ -623,7 +623,7 @@ defmodule URP.Call do
   ## OutputStream / InputStream
 
   @doc false
-  def write_bytes(bytes), do: [@write_bytes_prefix, P.enc_str(bytes)]
+  def write_bytes(bytes), do: [@write_bytes_prefix, P.enc_str_iodata(bytes)]
 
   @doc false
   def close_output, do: @close_output_frame

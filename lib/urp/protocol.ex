@@ -43,8 +43,8 @@ defmodule URP.Protocol do
   @doc "Send a single URP block: `<<size::32, count::32, payload>>`."
   @spec send_frame(:gen_tcp.socket(), iodata()) :: :ok
   def send_frame(sock, payload) do
-    data = IO.iodata_to_binary(payload)
-    :ok = :gen_tcp.send(sock, <<byte_size(data)::32, 1::32, data::binary>>)
+    size = IO.iodata_length(payload)
+    :ok = :gen_tcp.send(sock, [<<size::32, 1::32>>, payload])
   end
 
   @doc """
@@ -65,8 +65,30 @@ defmodule URP.Protocol do
       raise "URP: frame size #{size} exceeds #{max_frame_size} bytes (corrupt stream?)"
     end
 
+    recv_exact(sock, size, timeout)
+  end
+
+  # :gen_tcp.recv fails with :enomem for large sizes (~64 MB+).
+  # Read in chunks and reassemble.
+  @recv_chunk_size 4 * 1024 * 1024
+
+  defp recv_exact(sock, size, timeout) when size <= @recv_chunk_size do
     {:ok, payload} = :gen_tcp.recv(sock, size, timeout)
     payload
+  end
+
+  defp recv_exact(sock, size, timeout) do
+    recv_chunks(sock, size, timeout, [])
+  end
+
+  defp recv_chunks(_sock, 0, _timeout, acc) do
+    IO.iodata_to_binary(Enum.reverse(acc))
+  end
+
+  defp recv_chunks(sock, remaining, timeout, acc) do
+    chunk_size = min(remaining, @recv_chunk_size)
+    {:ok, chunk} = :gen_tcp.recv(sock, chunk_size, timeout)
+    recv_chunks(sock, remaining - chunk_size, timeout, [chunk | acc])
   end
 
   ## Request header builder
@@ -136,6 +158,11 @@ defmodule URP.Protocol do
   @spec enc_str(binary()) :: binary()
   def enc_str(s) when byte_size(s) < 0xFF, do: <<byte_size(s), s::binary>>
   def enc_str(s), do: <<0xFF, byte_size(s)::32, s::binary>>
+
+  @doc "Like `enc_str/1` but returns iodata to avoid copying large payloads."
+  @spec enc_str_iodata(binary()) :: iodata()
+  def enc_str_iodata(s) when byte_size(s) < 0xFF, do: [<<byte_size(s)>>, s]
+  def enc_str_iodata(s), do: [<<0xFF, byte_size(s)::32>>, s]
 
   @doc "Decode a compressed string, returning `{string, rest}`."
   @spec dec_str(binary()) :: {binary(), binary()}
