@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+- **New `:settings` option for `URP.convert/2`:** pass `{path, property, value}`
+  triplets to configure soffice via `ConfigurationUpdateAccess` before each
+  conversion. Settings sharing the same nodepath are batched into a single
+  update call. Useful for tuning cache limits, graphic memory, etc.
+- **Infinite reconnection with backoff:** the pool now retries soffice
+  connections forever with exponential backoff (`backoff_initial` / `backoff_max`)
+  instead of crashing. Emits `[:urp, :connection, :retry]` telemetry on each
+  retry attempt.
+- **Iodata frame builders:** `Call` and `Protocol` functions return iodata
+  (lists of binaries) instead of flattened binaries. The single `IO.iodata_to_binary`
+  call happens in `Protocol.send_frame/2`, eliminating redundant intermediate
+  allocations.
+- **Fix O(n²) `fill_buffer` in enum streams:** chunk accumulation now uses
+  iodata instead of repeated binary concatenation, flattening once when the
+  buffer is consumed.
+- **Frame size guard:** `recv_frame` rejects frames larger than 512 MiB
+  (configurable) before allocating, preventing OOM from corrupt wire data.
+- **New `:recv_timeout` and `:max_frame_size` options for `URP.convert/2`:**
+  per-conversion control over the TCP recv timeout (default 120 s) and maximum
+  accepted frame size (default 512 MiB).
+
 ## [v0.9.1] - 2026-03-06
 
 - **Fix 2 GiB memory spike during conversion:** `read_file/2` now calls
