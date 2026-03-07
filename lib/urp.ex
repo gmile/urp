@@ -244,9 +244,16 @@ defmodule URP do
       * `:file` — transfer complete files via temp files on soffice's filesystem.
         Fast (~6 URP round-trips), but requires temp disk space on soffice.
       * `:stream` — stream document bytes over the URP socket via
-        XInputStream/XOutputStream. Many TCP round-trips, but no temp files
-        and constant memory usage. Prefer for large documents on RAM-constrained
-        containers.
+        XInputStream/XOutputStream. Stream input is ~40-50% slower (many
+        seek/read round-trips for ZIP formats). Stream output adds <5%
+        overhead — soffice writes in fixed
+        [32 767-byte chunks](https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573),
+        so a 7 MB PDF is ~223 writeBytes calls.
+        No temp files and constant memory usage.
+      * `{:file, :stream}` or `{:stream, :file}` — mix strategies independently
+        for input and output. `{:file, :stream}` is a good defensive choice:
+        fast file-based input with chunked stream output (no large single
+        allocation on the BEAM).
     * `:output`  — where to write converted output:
       * path string — write to file, returns `{:ok, path}`
       * `:binary` — return bytes, returns `{:ok, bytes}`

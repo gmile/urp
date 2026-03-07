@@ -12,6 +12,26 @@
 #   FIXTURE  — filename in benchmarks/fixtures/ (default: benchmark.docx)
 #   FILTER   — export filter name (default: writer_pdf_Export)
 #   PORT     — soffice port (default: 2003, the Debian glibc instance)
+#
+# Results (M3 Max, Debian soffice 26.2.0.3):
+#
+#   2.6 MB docx → 7 MB PDF:
+#     file→file:     1.20 s (baseline)
+#     file→stream:   1.21 s (1.01x) — 223 writeBytes calls
+#     stream→stream: 1.69 s (1.41x)
+#     stream→file:   1.81 s (1.51x)
+#
+#   15 MB docx → 42 MB PDF:
+#     file→file:     7.67 s (baseline)
+#     file→stream:   8.00 s (1.04x) — 1310 writeBytes calls
+#
+# Stream output overhead is negligible (<5%) regardless of file size.
+# soffice writes in fixed 32767-byte chunks — a hardcoded literal in
+# SfxMedium::Transfer_Impl(), not configurable via officecfg or UNO:
+# https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573
+#
+# Stream input is the bottleneck (~40-50% slower) due to thousands of
+# XInputStream/XSeekable round-trips for ZIP-based format random access.
 
 fixture = System.get_env("FIXTURE", "benchmark.docx")
 filter = System.get_env("FILTER", "writer_pdf_Export")
