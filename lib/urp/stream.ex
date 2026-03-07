@@ -87,7 +87,7 @@ defmodule URP.Stream do
   end
 
   defp do_recv_input(conn, source, stream_oid, seekable_cache, last_type, input_cache) do
-    payload = P.recv_frame(conn.sock)
+    payload = P.recv_frame(conn.sock, conn.recv_timeout, conn.max_frame_size)
 
     if P.is_reply?(payload) do
       # Save input context on conn so the stream can be served during store/close phases
@@ -312,7 +312,7 @@ defmodule URP.Stream do
   end
 
   defp do_recv_output(conn, sink) do
-    payload = P.recv_frame(conn.sock)
+    payload = P.recv_frame(conn.sock, conn.recv_timeout, conn.max_frame_size)
 
     if P.is_reply?(payload) do
       {payload, finalize_sink(sink), conn}
@@ -486,12 +486,24 @@ defmodule URP.Stream do
     do: {buffer, reader}
 
   defp fill_buffer(buffer, reader, needed) do
+    # Accumulate as iodata to avoid O(n²) binary concatenation
+    fill_buffer_acc([buffer], byte_size(buffer), reader, needed)
+  end
+
+  defp fill_buffer_acc(acc, acc_size, reader, needed) do
     receive do
       {^reader, {:chunk, data}} ->
-        fill_buffer(buffer <> data, reader, needed)
+        acc = [acc, data]
+        acc_size = acc_size + byte_size(data)
+
+        if acc_size >= needed do
+          {IO.iodata_to_binary(acc), reader}
+        else
+          fill_buffer_acc(acc, acc_size, reader, needed)
+        end
 
       {^reader, :eof} ->
-        {buffer, :eof}
+        {IO.iodata_to_binary(acc), :eof}
     end
   end
 
