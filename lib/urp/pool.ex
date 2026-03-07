@@ -187,7 +187,7 @@ defmodule URP.Pool do
     {:async,
      fn ->
        conn = open_with_retry(host, port, backoff_initial, backoff_max)
-       :gen_tcp.controlling_process(conn.sock, pool_pid)
+       if conn.sock, do: :gen_tcp.controlling_process(conn.sock, pool_pid)
        conn
      end, config}
   end
@@ -195,25 +195,33 @@ defmodule URP.Pool do
   defp open_with_retry(host, port, backoff_initial, backoff_max, attempt \\ 1) do
     conn = Bridge.open(host, port)
 
-    if is_nil(conn.error) do
-      conn
-    else
-      delay = min(backoff_initial * Integer.pow(2, attempt - 1), backoff_max)
+    cond do
+      is_nil(conn.error) ->
+        conn
 
-      :telemetry.execute(
-        [:urp, :connection, :retry],
-        %{attempt: attempt, delay: delay},
-        %{host: host, port: port, reason: conn.error}
-      )
+      is_nil(conn.sock) ->
+        # TCP or handshake failed — soffice unreachable. Retry with backoff.
+        delay = min(backoff_initial * Integer.pow(2, attempt - 1), backoff_max)
 
-      Logger.warning(
-        "URP connection failed (attempt #{attempt}, retry in #{delay}ms): #{conn.error}",
-        host: host,
-        port: port
-      )
+        :telemetry.execute(
+          [:urp, :connection, :retry],
+          %{attempt: attempt, delay: delay},
+          %{host: host, port: port, reason: conn.error}
+        )
 
-      Process.sleep(delay)
-      open_with_retry(host, port, backoff_initial, backoff_max, attempt + 1)
+        Logger.warning(
+          "URP connection failed (attempt #{attempt}, retry in #{delay}ms): #{conn.error}",
+          host: host,
+          port: port
+        )
+
+        Process.sleep(delay)
+        open_with_retry(host, port, backoff_initial, backoff_max, attempt + 1)
+
+      true ->
+        # Connected but bootstrap failed — don't retry forever.
+        Bridge.close!(conn)
+        %{conn | sock: nil}
     end
   end
 

@@ -102,15 +102,22 @@ defmodule URP.Bridge do
   def open(host \\ "localhost", port \\ 2002) do
     case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false]) do
       {:ok, sock} ->
-        conn = %__MODULE__{sock: sock}
-        handshake!(conn)
-        conn = bootstrap(conn)
-        tid_cache = Process.get(:urp_tid_cache, %{})
-        %{conn | tid_cache: tid_cache}
+        init_connection(sock)
 
       {:error, reason} ->
         %__MODULE__{error: "connection failed: #{:inet.format_error(reason)}"}
     end
+  end
+
+  defp init_connection(sock) do
+    %__MODULE__{sock: sock}
+    |> handshake!()
+    |> bootstrap()
+    |> capture_tid_cache()
+  rescue
+    e ->
+      :gen_tcp.close(sock)
+      %__MODULE__{error: "handshake failed: #{Exception.message(e)}"}
   end
 
   @doc "Close the TCP connection."
@@ -516,7 +523,7 @@ defmodule URP.Bridge do
 
   # Both sides send requestChange simultaneously. We use the minimum signed
   # int32 nonce to guarantee we lose, letting soffice drive commitChange.
-  defp handshake!(%__MODULE__{sock: sock}) do
+  defp handshake!(%__MODULE__{sock: sock} = conn) do
     P.recv_frame(sock)
 
     P.send_frame(sock, C.request_change())
@@ -526,6 +533,8 @@ defmodule URP.Bridge do
     P.send_frame(sock, P.reply(<<1::32-signed>>))
     P.recv_frame(sock)
     P.send_frame(sock, P.reply())
+
+    conn
   end
 
   ## Bootstrap — ComponentContext → ServiceManager → Desktop
@@ -619,8 +628,17 @@ defmodule URP.Bridge do
     e -> %{conn | error: Exception.message(e)}
   end
 
-  # Bootstrap runs in the pool worker process, but conversions run in the
-  # checkout caller's process. Seed the TID cache so reply parsing works.
+  # TID cache transfer: protocol parsing during bootstrap populates TIDs in the
+  # process dictionary. capture_tid_cache saves them onto conn so they survive
+  # the process exit. seed_tid_cache restores them in the checkout caller's
+  # process so reply parsing works.
+  defp capture_tid_cache(conn) do
+    case Process.get(:urp_tid_cache) do
+      nil -> conn
+      cache -> %{conn | tid_cache: cache}
+    end
+  end
+
   defp seed_tid_cache(%__MODULE__{tid_cache: cache} = conn) when cache == %{}, do: conn
 
   defp seed_tid_cache(%__MODULE__{tid_cache: cache} = conn) do
