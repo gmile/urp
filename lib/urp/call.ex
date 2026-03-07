@@ -4,7 +4,8 @@ defmodule URP.Call do
 
   Each function constructs the wire-format payload for a specific UNO remote
   procedure call. `URP.Bridge` uses these builders instead of assembling
-  binary payloads inline.
+  binary payloads inline. All public functions return iodata (lists of
+  binaries); the single flattening happens in `URP.Protocol.send_frame/2`.
 
   The `qi_*` functions build complete queryInterface frames (header + null
   context + body type parameter).
@@ -263,101 +264,150 @@ defmodule URP.Call do
 
   @doc "Initial QI during bootstrap (registers XInterface type + TID)."
   def qi_initial(tid) do
-    P.request(@func_query_interface,
-      type: @type_new_interface,
-      oid: {@oid_component_context, @cache_bootstrap},
-      tid: {tid, @cache_bootstrap}
-    ) <> P.null_ctx() <> P.type_cached(@cache_bootstrap)
+    [
+      P.request(@func_query_interface,
+        type: @type_new_interface,
+        oid: {@oid_component_context, @cache_bootstrap},
+        tid: {tid, @cache_bootstrap}
+      ),
+      P.null_ctx(),
+      P.type_cached(@cache_bootstrap)
+    ]
   end
 
   @doc "QI for XComponentContext (bootstrap only — reuses type from previous message)."
   def qi_component_ctx(ctx_oid) do
-    P.request(@func_query_interface, oid: {ctx_oid, @oid_ctx}) <>
-      P.null_ctx() <> P.type_new(@xi_component_ctx, @qi_cache_component_ctx)
+    [
+      P.request(@func_query_interface, oid: {ctx_oid, @oid_ctx}),
+      P.null_ctx(),
+      P.type_new(@xi_component_ctx, @qi_cache_component_ctx)
+    ]
   end
 
   @doc false
   def qi_loader(desktop_oid) do
-    P.request(@func_query_interface, type: @type_interface, oid: {desktop_oid, @oid_desktop}) <>
-      P.null_ctx() <> P.type_new(@xi_component_loader, @qi_cache_loader)
+    [
+      P.request(@func_query_interface, type: @type_interface, oid: {desktop_oid, @oid_desktop}),
+      P.null_ctx(),
+      P.type_new(@xi_component_loader, @qi_cache_loader)
+    ]
   end
 
   @doc false
   def qi_storable(doc_oid) do
-    P.request(@func_query_interface, type: @type_interface, oid: {doc_oid, @oid_doc_storable}) <>
-      P.null_ctx() <> P.type_new(@xi_storable2, @qi_cache_storable)
+    [
+      P.request(@func_query_interface, type: @type_interface, oid: {doc_oid, @oid_doc_storable}),
+      P.null_ctx(),
+      P.type_new(@xi_storable2, @qi_cache_storable)
+    ]
   end
 
   @doc false
   def qi_closeable(doc_oid) do
-    P.request(@func_query_interface, type: @type_interface, oid: {doc_oid, @oid_doc_closeable}) <>
-      P.null_ctx() <> P.type_new(@xi_closeable, @qi_cache_closeable)
+    [
+      P.request(@func_query_interface, type: @type_interface, oid: {doc_oid, @oid_doc_closeable}),
+      P.null_ctx(),
+      P.type_new(@xi_closeable, @qi_cache_closeable)
+    ]
   end
 
   @doc false
   def qi_msf(config_provider_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {config_provider_oid, @oid_config_provider}
-    ) <> P.null_ctx() <> P.type_new(@xi_multi_service_factory, @qi_cache_msf)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {config_provider_oid, @oid_config_provider}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_multi_service_factory, @qi_cache_msf)
+    ]
   end
 
   @doc false
   def qi_name_access(config_access_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {config_access_oid, @oid_config_access}
-    ) <> P.null_ctx() <> P.type_new(@xi_name_access, @qi_cache_name_access)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {config_access_oid, @oid_config_access}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_name_access, @qi_cache_name_access)
+    ]
   end
 
   @doc false
   def qi_ff_name_access(ff_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {ff_oid, @oid_filter_factory}
-    ) <> P.null_ctx() <> P.type_new(@xi_name_access, @qi_cache_ff_name_access)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {ff_oid, @oid_filter_factory}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_name_access, @qi_cache_ff_name_access)
+    ]
   end
 
   @doc false
   def qi_td_name_access(td_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {td_oid, @oid_type_detection}
-    ) <> P.null_ctx() <> P.type_new(@xi_name_access, @qi_cache_td_name_access)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {td_oid, @oid_type_detection}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_name_access, @qi_cache_td_name_access)
+    ]
   end
 
   @doc false
   def qi_locale_msf(config_provider_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {config_provider_oid, @oid_config_provider}
-    ) <> P.null_ctx() <> P.type_new(@xi_multi_service_factory, @qi_cache_locale_msf)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {config_provider_oid, @oid_config_provider}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_multi_service_factory, @qi_cache_locale_msf)
+    ]
   end
 
   @doc false
   def qi_locale_na(config_access_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {config_access_oid, @oid_locale_config}
-    ) <> P.null_ctx() <> P.type_new(@xi_name_access, @qi_cache_locale_na)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {config_access_oid, @oid_locale_config}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_name_access, @qi_cache_locale_na)
+    ]
   end
 
   @doc false
   def qi_sfa(sfa_oid) do
-    P.request(@func_query_interface, type: @type_interface, oid: {sfa_oid, @oid_sfa}) <>
-      P.null_ctx() <> P.type_new(@xi_simple_file_access, @qi_cache_sfa)
+    [
+      P.request(@func_query_interface, type: @type_interface, oid: {sfa_oid, @oid_sfa}),
+      P.null_ctx(),
+      P.type_new(@xi_simple_file_access, @qi_cache_sfa)
+    ]
   end
 
   @doc false
   def qi_sfa_output(os_oid) do
-    P.request(@func_query_interface, type: @type_interface, oid: {os_oid, @oid_sfa_os}) <>
-      P.null_ctx() <> P.type_new(@xi_output_stream, @qi_cache_sfa_output)
+    [
+      P.request(@func_query_interface, type: @type_interface, oid: {os_oid, @oid_sfa_os}),
+      P.null_ctx(),
+      P.type_new(@xi_output_stream, @qi_cache_sfa_output)
+    ]
   end
 
   @doc false
   def qi_sfa_input(is_oid) do
-    P.request(@func_query_interface, type: @type_interface, oid: {is_oid, @oid_sfa_is}) <>
-      P.null_ctx() <> P.type_new(@xi_input_stream, @qi_cache_sfa_input)
+    [
+      P.request(@func_query_interface, type: @type_interface, oid: {is_oid, @oid_sfa_is}),
+      P.null_ctx(),
+      P.type_new(@xi_input_stream, @qi_cache_sfa_input)
+    ]
   end
 
   ## ComponentContext
@@ -367,60 +417,81 @@ defmodule URP.Call do
 
   @doc "XComponentContext.getValueByName — returns an Any(XInterface)."
   def get_value_by_name(ctx_oid, path) do
-    P.request(@func_ctx_get_value_by_name,
-      type: @type_component_ctx,
-      oid: {ctx_oid, @oid_ctx}
-    ) <> P.null_ctx() <> P.enc_str(path)
+    [
+      P.request(@func_ctx_get_value_by_name,
+        type: @type_component_ctx,
+        oid: {ctx_oid, @oid_ctx}
+      ),
+      P.null_ctx(),
+      P.enc_str(path)
+    ]
   end
 
   ## MultiComponentFactory
 
   @doc "XMultiComponentFactory.createInstanceWithContext (bootstrap — registers type)."
   def create_desktop(smgr_oid) do
-    P.request(@func_mcf_create_with_context,
-      type: @type_new_multi_comp_fac,
-      oid: {smgr_oid, @oid_smgr}
-    ) <> P.null_ctx() <> P.enc_str("com.sun.star.frame.Desktop") <> @ctx_ref
+    [
+      P.request(@func_mcf_create_with_context,
+        type: @type_new_multi_comp_fac,
+        oid: {smgr_oid, @oid_smgr}
+      ),
+      P.null_ctx(),
+      P.enc_str("com.sun.star.frame.Desktop"),
+      @ctx_ref
+    ]
   end
 
   @doc "XMultiComponentFactory.createInstanceWithContext (cached type)."
   def create_instance_with_context(smgr_oid, service_name) do
-    P.request(@func_mcf_create_with_context,
-      type: @type_multi_comp_fac,
-      oid: {smgr_oid, @oid_smgr}
-    ) <> P.null_ctx() <> P.enc_str(service_name) <> @ctx_ref
+    [
+      P.request(@func_mcf_create_with_context,
+        type: @type_multi_comp_fac,
+        oid: {smgr_oid, @oid_smgr}
+      ),
+      P.null_ctx(),
+      P.enc_str(service_name),
+      @ctx_ref
+    ]
   end
 
   @doc "XMultiComponentFactory.getAvailableServiceNames."
   def get_available_service_names(smgr_oid) do
-    P.request(@func_mcf_get_avail_services,
-      type: @type_multi_comp_fac,
-      oid: {smgr_oid, @oid_smgr}
-    ) <> P.null_ctx()
+    [
+      P.request(@func_mcf_get_avail_services,
+        type: @type_multi_comp_fac,
+        oid: {smgr_oid, @oid_smgr}
+      ),
+      P.null_ctx()
+    ]
   end
 
   ## ComponentLoader
 
   @doc "XComponentLoader.loadComponentFromURL."
   def load_component_from_url(url, props) when is_list(props) do
-    @load_url_prefix <>
-      P.enc_str(url) <>
-      P.enc_str("_blank") <>
-      @frame_search_default <>
-      <<length(props)>> <>
-      IO.iodata_to_binary(props)
+    [
+      @load_url_prefix,
+      P.enc_str(url),
+      P.enc_str("_blank"),
+      @frame_search_default,
+      <<length(props)>>,
+      props
+    ]
   end
 
   ## Storable2
 
   @doc "XStorable2.storeToURL."
   def store_to_url(url, props) when is_list(props) do
-    prop_count = Enum.count(props, &(&1 != <<>>))
+    prop_count = Enum.count(props, &(&1 != []))
 
-    @store_to_url_prefix <>
-      P.enc_str(url) <>
-      <<prop_count>> <>
-      IO.iodata_to_binary(props)
+    [
+      @store_to_url_prefix,
+      P.enc_str(url),
+      <<prop_count>>,
+      props
+    ]
   end
 
   ## Configuration
@@ -441,15 +512,19 @@ defmodule URP.Call do
 
   @doc false
   def qi_settings_msf(config_provider_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {config_provider_oid, @oid_config_provider}
-    ) <> P.null_ctx() <> P.type_new(@xi_multi_service_factory, @qi_cache_settings_msf)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {config_provider_oid, @oid_config_provider}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_multi_service_factory, @qi_cache_settings_msf)
+    ]
   end
 
   @doc false
   def create_config_update_access(nodepath) do
-    IO.iodata_to_binary([
+    [
       P.request(@func_msf_create_with_args, type: @type_new_settings_msf),
       P.null_ctx(),
       P.enc_str("com.sun.star.configuration.ConfigurationUpdateAccess"),
@@ -459,36 +534,44 @@ defmodule URP.Call do
       P.enc_str("nodepath"),
       <<@tc_string>>,
       P.enc_str("/" <> nodepath)
-    ])
+    ]
   end
 
   @doc false
   def qi_name_replace(update_access_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {update_access_oid, @oid_settings_access}
-    ) <> P.null_ctx() <> P.type_new(@xi_name_replace, @qi_cache_name_replace)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {update_access_oid, @oid_settings_access}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_name_replace, @qi_cache_name_replace)
+    ]
   end
 
   @doc false
   def replace_by_name(name, value) do
     {tc, bytes} = encode_any_value(value)
 
-    IO.iodata_to_binary([
+    [
       P.request(@func_nr_replace_by_name, type: @type_new_name_replace),
       P.null_ctx(),
       P.enc_str(name),
       <<tc>>,
       bytes
-    ])
+    ]
   end
 
   @doc false
   def qi_changes_batch(update_access_oid) do
-    P.request(@func_query_interface,
-      type: @type_interface,
-      oid: {update_access_oid, @oid_settings_access}
-    ) <> P.null_ctx() <> P.type_new(@xi_changes_batch, @qi_cache_changes_batch)
+    [
+      P.request(@func_query_interface,
+        type: @type_interface,
+        oid: {update_access_oid, @oid_settings_access}
+      ),
+      P.null_ctx(),
+      P.type_new(@xi_changes_batch, @qi_cache_changes_batch)
+    ]
   end
 
   @doc false
@@ -498,12 +581,18 @@ defmodule URP.Call do
 
   @doc "XNameAccess.getElementNames for FilterFactory."
   def get_filter_element_names do
-    P.request(@func_na_get_element_names, type: @type_new_ff_name_access) <> P.null_ctx()
+    [
+      P.request(@func_na_get_element_names, type: @type_new_ff_name_access),
+      P.null_ctx()
+    ]
   end
 
   @doc "XNameAccess.getElementNames for TypeDetection."
   def get_type_element_names do
-    P.request(@func_na_get_element_names, type: @type_new_td_name_access) <> P.null_ctx()
+    [
+      P.request(@func_na_get_element_names, type: @type_new_td_name_access),
+      P.null_ctx()
+    ]
   end
 
   ## Closeable
@@ -514,7 +603,7 @@ defmodule URP.Call do
   ## OutputStream / InputStream
 
   @doc false
-  def write_bytes(bytes), do: @write_bytes_prefix <> P.enc_str(bytes)
+  def write_bytes(bytes), do: [@write_bytes_prefix, P.enc_str(bytes)]
 
   @doc false
   def close_output, do: @close_output_frame
@@ -523,7 +612,7 @@ defmodule URP.Call do
   def available, do: @available_frame
 
   @doc false
-  def read_bytes(size), do: @read_bytes_prefix <> <<size::32-signed>>
+  def read_bytes(size), do: [@read_bytes_prefix, <<size::32-signed>>]
 
   @doc false
   def close_input, do: @close_input_frame
@@ -532,20 +621,29 @@ defmodule URP.Call do
 
   @doc false
   def sfa_open_file_write(sfa_oid, url) do
-    P.request(@func_sfa_open_file_write, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
-      P.null_ctx() <> P.enc_str(url)
+    [
+      P.request(@func_sfa_open_file_write, type: @type_sfa, oid: {sfa_oid, @oid_sfa}),
+      P.null_ctx(),
+      P.enc_str(url)
+    ]
   end
 
   @doc false
   def sfa_open_file_read(sfa_oid, url) do
-    P.request(@func_sfa_open_file_read, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
-      P.null_ctx() <> P.enc_str(url)
+    [
+      P.request(@func_sfa_open_file_read, type: @type_sfa, oid: {sfa_oid, @oid_sfa}),
+      P.null_ctx(),
+      P.enc_str(url)
+    ]
   end
 
   @doc false
   def sfa_kill(sfa_oid, url) do
-    P.request(@func_sfa_kill, type: @type_sfa, oid: {sfa_oid, @oid_sfa}) <>
-      P.null_ctx() <> P.enc_str(url)
+    [
+      P.request(@func_sfa_kill, type: @type_sfa, oid: {sfa_oid, @oid_sfa}),
+      P.null_ctx(),
+      P.enc_str(url)
+    ]
   end
 
   ## Property builders
@@ -557,11 +655,11 @@ defmodule URP.Call do
   def filter_name_property(filter), do: P.property("FilterName", @tc_string, P.enc_str(filter))
 
   @doc "Build a FilterData property from a keyword list of export options."
-  def filter_data_property([]), do: <<>>
+  def filter_data_property([]), do: []
 
   def filter_data_property(filter_data) do
     inner =
-      for {name, value} <- filter_data, into: <<>> do
+      for {name, value} <- filter_data do
         {tc, bytes} = encode_any_value(value)
         P.property(to_string(name), tc, bytes)
       end
@@ -569,10 +667,12 @@ defmodule URP.Call do
     P.property(
       "FilterData",
       @tc_sequence ||| @tc_new,
-      <<@cache_filter_data_seq::16>> <>
-        P.enc_str("[]com.sun.star.beans.PropertyValue") <>
-        <<length(filter_data)>> <>
+      [
+        <<@cache_filter_data_seq::16>>,
+        P.enc_str("[]com.sun.star.beans.PropertyValue"),
+        <<length(filter_data)>>,
         inner
+      ]
     )
   end
 
@@ -581,9 +681,12 @@ defmodule URP.Call do
     P.property(
       "InputStream",
       @tc_interface ||| @tc_new,
-      <<@cache_export_input::16>> <>
-        P.enc_str(@xi_input_stream) <>
-        P.enc_str(stream_oid) <> <<@oid_export_input::16>>
+      [
+        <<@cache_export_input::16>>,
+        P.enc_str(@xi_input_stream),
+        P.enc_str(stream_oid),
+        <<@oid_export_input::16>>
+      ]
     )
   end
 
@@ -592,9 +695,12 @@ defmodule URP.Call do
     P.property(
       "OutputStream",
       @tc_interface ||| @tc_new,
-      <<@cache_export_output::16>> <>
-        P.enc_str(@xi_output_stream) <>
-        P.enc_str(stream_oid) <> <<@oid_export_output::16>>
+      [
+        <<@cache_export_output::16>>,
+        P.enc_str(@xi_output_stream),
+        P.enc_str(stream_oid),
+        <<@oid_export_output::16>>
+      ]
     )
   end
 

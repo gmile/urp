@@ -148,17 +148,17 @@ defmodule URP.Protocol do
   def type_cached(cache_idx), do: <<@tc_interface, cache_idx::16>>
 
   @doc "Register a new interface type in the peer's cache."
-  @spec type_new(String.t(), non_neg_integer()) :: binary()
+  @spec type_new(String.t(), non_neg_integer()) :: iodata()
   def type_new(name, cache_idx) do
-    <<@tc_interface ||| @tc_new, cache_idx::16>> <> enc_str(name)
+    [<<@tc_interface ||| @tc_new, cache_idx::16>>, enc_str(name)]
   end
 
   ## UNO PropertyValue struct — Name(string) + Handle(int32) + Value(any) + State(int32)
 
   @doc "Encode a UNO PropertyValue struct."
-  @spec property(String.t(), non_neg_integer(), binary()) :: binary()
+  @spec property(String.t(), non_neg_integer(), iodata()) :: iodata()
   def property(name, type_class, value_bytes) do
-    enc_str(name) <> <<0::32, type_class>> <> value_bytes <> <<0::32>>
+    [enc_str(name), <<0::32, type_class>>, value_bytes, <<0::32>>]
   end
 
   ## Incoming frame classification
