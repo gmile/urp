@@ -92,6 +92,7 @@ defmodule URP.Pool do
     meta = %{operation: :convert, pool: pool}
 
     do_checkout(pool, timeout, meta, fn conn ->
+      conn = %{conn | reply: nil}
       conn = if max_frame_size, do: %{conn | max_frame_size: max_frame_size}, else: conn
       conn = if recv_timeout, do: %{conn | recv_timeout: recv_timeout}, else: conn
 
@@ -117,12 +118,15 @@ defmodule URP.Pool do
       # documents on subsequent stream loads. Discard the connection to force
       # a fresh handshake. File-based I/O reuses connections normally.
       reusable = io_in == :file and is_nil(conn.error)
+      has_result = is_binary(result) or result == :ok
 
       cond do
         reusable ->
           {wrap_result(result), {:ok, reset_conversion_state(conn)}}
 
-        not is_nil(result) ->
+        has_result ->
+          # Conversion succeeded but close/cleanup failed (e.g. soffice drops
+          # the connection after stream→stream). Return the result, discard conn.
           {wrap_result(result), :closed}
 
         true ->
