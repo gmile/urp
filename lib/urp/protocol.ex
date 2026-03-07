@@ -35,6 +35,9 @@ defmodule URP.Protocol do
 
   @recv_timeout 120_000
 
+  # Safety cap for incoming frame size — prevents OOM from corrupt streams
+  @max_frame_size 512 * 1024 * 1024
+
   ## Frame I/O
 
   @doc "Send a single URP block: `<<size::32, count::32, payload>>`."
@@ -50,12 +53,16 @@ defmodule URP.Protocol do
   Raises if the block contains more than one message (the C++ writer always
   sends count=1, but the spec allows count>1).
   """
-  @spec recv_frame(:gen_tcp.socket(), timeout()) :: binary()
-  def recv_frame(sock, timeout \\ @recv_timeout) do
+  @spec recv_frame(:gen_tcp.socket(), timeout(), pos_integer()) :: binary()
+  def recv_frame(sock, timeout \\ @recv_timeout, max_frame_size \\ @max_frame_size) do
     {:ok, <<size::32, count::32>>} = :gen_tcp.recv(sock, 8, timeout)
 
     if count != 1 do
       raise "URP: received block with count=#{count}, expected 1 (multi-message blocks not supported)"
+    end
+
+    if size > max_frame_size do
+      raise "URP: frame size #{size} exceeds #{max_frame_size} bytes (corrupt stream?)"
     end
 
     {:ok, payload} = :gen_tcp.recv(sock, size, timeout)

@@ -83,11 +83,16 @@ defmodule URP.Pool do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     {sink, opts} = Keyword.pop(opts, :sink)
     {settings, opts} = Keyword.pop(opts, :settings, [])
+    {max_frame_size, opts} = Keyword.pop(opts, :max_frame_size)
+    {recv_timeout, opts} = Keyword.pop(opts, :recv_timeout)
     store_opts = Keyword.take(opts, [:filter, :filter_data])
 
     meta = %{operation: :convert, pool: pool}
 
     do_checkout(pool, timeout, meta, fn conn ->
+      conn = if max_frame_size, do: %{conn | max_frame_size: max_frame_size}, else: conn
+      conn = if recv_timeout, do: %{conn | recv_timeout: recv_timeout}, else: conn
+
       conn =
         conn
         |> Bridge.apply_settings(settings)

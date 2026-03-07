@@ -58,6 +58,8 @@ defmodule URP do
           | {:filter_data, keyword()}
           | {:settings, [setting()]}
           | {:timeout, non_neg_integer()}
+          | {:recv_timeout, timeout()}
+          | {:max_frame_size, pos_integer()}
 
   @doc """
   Query the soffice version string over URP.

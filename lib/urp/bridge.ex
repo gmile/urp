@@ -68,6 +68,8 @@ defmodule URP.Bridge do
           input_ctx: map() | nil,
           reply_tid: binary() | nil,
           reader_type: non_neg_integer() | nil,
+          recv_timeout: timeout(),
+          max_frame_size: pos_integer(),
           reply: term(),
           error: String.t() | nil,
           tid_cache: map(),
@@ -87,6 +89,8 @@ defmodule URP.Bridge do
     :reader_type,
     :reply,
     :error,
+    recv_timeout: 120_000,
+    max_frame_size: 512 * 1024 * 1024,
     tid_cache: %{},
     private: %{}
   ]
@@ -652,7 +656,7 @@ defmodule URP.Bridge do
   defp recv_reply(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   defp recv_reply(%__MODULE__{} = conn) do
-    payload = P.recv_frame(conn.sock)
+    payload = P.recv_frame(conn.sock, conn.recv_timeout, conn.max_frame_size)
 
     if P.is_reply?(payload) do
       %{conn | reply: payload}
