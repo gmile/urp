@@ -506,12 +506,10 @@ defmodule URP.Call do
 
   @doc "XStorable2.storeToURL."
   def store_to_url(url, props) when is_list(props) do
-    prop_count = Enum.count(props, &(&1 != []))
-
     [
       @store_to_url_prefix,
       P.enc_str(url),
-      <<prop_count>>,
+      <<length(props)>>,
       props
     ]
   end
@@ -677,9 +675,7 @@ defmodule URP.Call do
   def filter_name_property(filter), do: P.property("FilterName", @tc_string, P.enc_str(filter))
 
   @doc "Build a FilterData property from a keyword list of export options."
-  def filter_data_property([]), do: []
-
-  def filter_data_property(filter_data) do
+  def filter_data_property(filter_data) when filter_data != [] do
     inner =
       for {name, value} <- filter_data do
         {tc, bytes} = encode_any_value(value)

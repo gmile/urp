@@ -157,11 +157,9 @@ defmodule URP.Bridge do
 
   def store_to_url(%__MODULE__{doc_oid: doc_oid} = conn, url, filter, filter_data)
       when is_binary(doc_oid) do
-    props = [C.filter_name_property(filter), C.filter_data_property(filter_data)]
-
     conn
     |> call(C.qi_storable(doc_oid), :qi)
-    |> call(C.store_to_url(url, props), :void)
+    |> call(C.store_to_url(url, store_props(filter, filter_data)), :void)
   end
 
   @doc "Close the loaded document, releasing soffice resources."
@@ -528,11 +526,7 @@ defmodule URP.Bridge do
 
     stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
 
-    props = [
-      C.filter_name_property(filter),
-      C.filter_data_property(filter_data),
-      C.output_stream_property(stream_oid)
-    ]
+    props = store_props(filter, filter_data, [C.output_stream_property(stream_oid)])
 
     conn =
       conn
@@ -594,6 +588,14 @@ defmodule URP.Bridge do
     conn = %{conn | smgr_oid: conn.reply}
     conn = call(conn, C.create_desktop(conn.smgr_oid), :interface)
     %{conn | desktop_oid: conn.reply}
+  end
+
+  ## Property list helpers
+
+  defp store_props(filter, filter_data, extra \\ []) do
+    props = [C.filter_name_property(filter)]
+    props = if filter_data != [], do: props ++ [C.filter_data_property(filter_data)], else: props
+    props ++ extra
   end
 
   ## Send + receive + parse
