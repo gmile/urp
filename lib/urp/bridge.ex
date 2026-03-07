@@ -280,6 +280,51 @@ defmodule URP.Bridge do
   end
 
   @doc """
+  Apply soffice configuration settings via
+  [ConfigurationUpdateAccess](https://api.libreoffice.org/docs/idl/ref/servicecom_1_1sun_1_1star_1_1configuration_1_1ConfigurationUpdateAccess.html).
+
+  Each setting is a `{path, property, value}` triplet where `path` is the
+  registry node (e.g. `"org.openoffice.Office.Common/Cache/GraphicManager"`),
+  `property` is the property name, and `value` is a boolean, integer, or string.
+
+  Settings sharing the same `path` are batched into a single ConfigurationUpdateAccess
+  call for efficiency.
+  """
+  @spec apply_settings(t(), list()) :: t()
+  def apply_settings(%__MODULE__{error: e} = conn, _settings) when not is_nil(e), do: conn
+  def apply_settings(conn, []), do: conn
+
+  def apply_settings(%__MODULE__{} = conn, settings) do
+    settings
+    |> Enum.group_by(fn {path, _prop, _val} -> path end)
+    |> Enum.reduce(conn, fn {nodepath, props}, conn ->
+      apply_setting_group(conn, nodepath, props)
+    end)
+  end
+
+  defp apply_setting_group(%__MODULE__{error: e} = conn, _, _) when not is_nil(e), do: conn
+
+  defp apply_setting_group(conn, nodepath, props) do
+    conn =
+      conn
+      |> call(C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
+      |> then(&call(&1, C.qi_settings_msf(&1.reply), :qi))
+      |> then(&call(&1, C.create_config_update_access(nodepath), :interface))
+
+    update_oid = conn.reply
+
+    conn
+    |> call(C.qi_name_replace(update_oid), :qi)
+    |> then(fn conn ->
+      Enum.reduce(props, conn, fn {_path, name, value}, conn ->
+        call(conn, C.replace_by_name(name, value), :void)
+      end)
+    end)
+    |> call(C.qi_changes_batch(update_oid), :qi)
+    |> call(C.commit_changes(), :void)
+  end
+
+  @doc """
   Load a document from in-memory bytes via XInputStream.
 
   No shared filesystem needed — bytes are streamed over the URP socket.

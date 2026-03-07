@@ -82,13 +82,18 @@ defmodule URP.Pool do
   def convert(pool, input, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     {sink, opts} = Keyword.pop(opts, :sink)
+    {settings, opts} = Keyword.pop(opts, :settings, [])
     store_opts = Keyword.take(opts, [:filter, :filter_data])
 
     meta = %{operation: :convert, pool: pool}
 
     do_checkout(pool, timeout, meta, fn conn ->
-      conn = load_input(conn, input)
-      conn = Bridge.store_document_write(conn, store_opts)
+      conn =
+        conn
+        |> Bridge.apply_settings(settings)
+        |> load_input(input)
+        |> Bridge.store_document_write(store_opts)
+
       result = if conn.reply, do: apply_sink(conn.reply, sink)
       conn = Bridge.close_document(conn)
       conn = safe_cleanup(conn)

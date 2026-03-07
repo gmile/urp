@@ -49,12 +49,14 @@ defmodule URP do
   See `URP.Test` for details.
   """
 
+  @type setting :: {String.t(), String.t(), boolean() | integer() | String.t()}
   @type output :: Path.t() | :binary | (binary() -> any())
   @type opt ::
           {:output, output()}
           | {:pool, atom()}
           | {:filter, String.t()}
           | {:filter_data, keyword()}
+          | {:settings, [setting()]}
           | {:timeout, non_neg_integer()}
 
   @doc """
@@ -229,6 +231,11 @@ defmodule URP do
       Values can be booleans, integers, or strings.
       For PDF filters, see [PDF export options](https://wiki.documentfoundation.org/API/Tutorials/PDF_export)
       (e.g. `[UseLosslessCompression: true, ExportFormFields: false]`).
+    * `:settings` — list of `{path, property, value}` triplets to set on soffice
+      before conversion via `ConfigurationUpdateAccess`. Useful for tuning
+      cache limits, graphic memory, etc. Values can be booleans, integers, or strings.
+      See [officecfg schema](https://github.com/LibreOffice/core/tree/master/officecfg/registry/schema/org/openoffice/Office)
+      for all available settings.
     * `:output`  — where to write converted output:
       * path string — write to file, returns `{:ok, path}`
       * `:binary` — return bytes, returns `{:ok, bytes}`
@@ -252,6 +259,15 @@ defmodule URP do
   Enumerable (e.g. streaming a large file):
 
       {:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
+
+  With soffice settings (e.g. raise graphic memory cache for image-heavy docs):
+
+      {:ok, pdf} = URP.convert("charts.pptx",
+        filter: "impress_pdf_Export",
+        settings: [
+          {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicMemoryLimit", 500_000_000}
+        ]
+      )
 
   The `:filter` option is required:
 

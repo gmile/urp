@@ -27,6 +27,8 @@ defmodule URP.Call do
   @xi_multi_service_factory "com.sun.star.lang.XMultiServiceFactory"
   @xi_name_access "com.sun.star.container.XNameAccess"
   @xi_simple_file_access "com.sun.star.ucb.XSimpleFileAccess"
+  @xi_name_replace "com.sun.star.container.XNameReplace"
+  @xi_changes_batch "com.sun.star.util.XChangesBatch"
 
   # Special function IDs — binaryurp/source/specialfunctionids.hxx
   @func_query_interface 0
@@ -52,6 +54,10 @@ defmodule URP.Call do
   @func_os_close_output 5
 
   @func_is_available 6
+  # XNameReplace: XInterface(0-2) + XElementAccess(3-4) + XNameAccess(5-7) + replaceByName(8)
+  @func_nr_replace_by_name 8
+  # XChangesBatch: XInterface(0-2) + commitChanges(3)
+  @func_cb_commit_changes 3
 
   # URP type cache — sequential allocation shared between request headers and QI bodies.
   #
@@ -86,6 +92,12 @@ defmodule URP.Call do
   #  27  | XMultiServiceFactory               | locale createInstanceWithArgs header
   #  28  | XNameAccess                        | locale config QI body
   #  29  | XNameAccess                        | locale getByName header
+  #  30  | XMultiServiceFactory               | settings config QI body
+  #  31  | XMultiServiceFactory               | settings createInstanceWithArgs header
+  #  32  | XNameReplace                       | settings QI body
+  #  33  | XNameReplace                       | settings replaceByName header
+  #  34  | XChangesBatch                      | settings QI body
+  #  35  | XChangesBatch                      | settings commitChanges header
 
   # Request header type tuples
   @type_interface {:cached, 1}
@@ -107,6 +119,9 @@ defmodule URP.Call do
   @type_new_td_name_access {:new, @xi_name_access, 25}
   @type_new_locale_msf {:new, @xi_multi_service_factory, 27}
   @type_new_locale_na {:new, @xi_name_access, 29}
+  @type_new_settings_msf {:new, @xi_multi_service_factory, 31}
+  @type_new_name_replace {:new, @xi_name_replace, 33}
+  @type_new_changes_batch {:new, @xi_changes_batch, 35}
 
   # Query Interface (QI) body type cache indices
   @qi_cache_component_ctx 2
@@ -122,6 +137,9 @@ defmodule URP.Call do
   @qi_cache_td_name_access 24
   @qi_cache_locale_msf 26
   @qi_cache_locale_na 28
+  @qi_cache_settings_msf 30
+  @qi_cache_name_replace 32
+  @qi_cache_changes_batch 34
 
   # Inline type cache indices for property value encoding
   @cache_export_input 10
@@ -152,6 +170,7 @@ defmodule URP.Call do
   @oid_filter_factory 14
   @oid_type_detection 15
   @oid_locale_config 16
+  @oid_settings_access 17
 
   # createInstanceWithContext body suffix: null OID + component context cache
   @ctx_ref <<0x00, @oid_ctx::16>>
@@ -224,6 +243,9 @@ defmodule URP.Call do
   @get_locale_frame P.request(@func_na_get_by_name,
                       type: @type_new_locale_na
                     ) <> P.null_ctx() <> P.enc_str("ooLocale")
+
+  @commit_changes_frame P.request(@func_cb_commit_changes, type: @type_new_changes_batch) <>
+                          P.null_ctx()
 
   @load_url_prefix P.request(@func_loader_load, type: @type_new_loader) <> P.null_ctx()
 
@@ -414,6 +436,63 @@ defmodule URP.Call do
 
   @doc false
   def get_locale, do: @get_locale_frame
+
+  ## Settings (ConfigurationUpdateAccess)
+
+  @doc false
+  def qi_settings_msf(config_provider_oid) do
+    P.request(@func_query_interface,
+      type: @type_interface,
+      oid: {config_provider_oid, @oid_config_provider}
+    ) <> P.null_ctx() <> P.type_new(@xi_multi_service_factory, @qi_cache_settings_msf)
+  end
+
+  @doc false
+  def create_config_update_access(nodepath) do
+    IO.iodata_to_binary([
+      P.request(@func_msf_create_with_args, type: @type_new_settings_msf),
+      P.null_ctx(),
+      P.enc_str("com.sun.star.configuration.ConfigurationUpdateAccess"),
+      <<1>>,
+      <<@tc_struct ||| @tc_new, @cache_named_value::16>>,
+      P.enc_str("com.sun.star.beans.NamedValue"),
+      P.enc_str("nodepath"),
+      <<@tc_string>>,
+      P.enc_str("/" <> nodepath)
+    ])
+  end
+
+  @doc false
+  def qi_name_replace(update_access_oid) do
+    P.request(@func_query_interface,
+      type: @type_interface,
+      oid: {update_access_oid, @oid_settings_access}
+    ) <> P.null_ctx() <> P.type_new(@xi_name_replace, @qi_cache_name_replace)
+  end
+
+  @doc false
+  def replace_by_name(name, value) do
+    {tc, bytes} = encode_any_value(value)
+
+    IO.iodata_to_binary([
+      P.request(@func_nr_replace_by_name, type: @type_new_name_replace),
+      P.null_ctx(),
+      P.enc_str(name),
+      <<tc>>,
+      bytes
+    ])
+  end
+
+  @doc false
+  def qi_changes_batch(update_access_oid) do
+    P.request(@func_query_interface,
+      type: @type_interface,
+      oid: {update_access_oid, @oid_settings_access}
+    ) <> P.null_ctx() <> P.type_new(@xi_changes_batch, @qi_cache_changes_batch)
+  end
+
+  @doc false
+  def commit_changes, do: @commit_changes_frame
 
   ## NameAccess
 

@@ -178,6 +178,38 @@ defmodule URPTest do
     end
   end
 
+  describe "settings" do
+    test "conversion succeeds with a setting applied" do
+      assert {:ok, pdf} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: @pdf,
+                 output: :binary,
+                 settings: [
+                   {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicMemoryLimit",
+                    500_000_000}
+                 ]
+               )
+
+      assert "%PDF-" <> _ = pdf
+    end
+
+    test "multiple settings on the same nodepath" do
+      assert {:ok, pdf} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: @pdf,
+                 output: :binary,
+                 settings: [
+                   {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicMemoryLimit",
+                    500_000_000},
+                   {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicAllowedIdleTime",
+                    20}
+                 ]
+               )
+
+      assert "%PDF-" <> _ = pdf
+    end
+  end
+
   describe "temp file cleanup" do
     test "no urp_in temp files linger after conversion" do
       assert {:ok, _pdf} =
