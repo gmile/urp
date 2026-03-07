@@ -30,6 +30,15 @@
 - **Fix TID cache loss across conversions:** the URP type cache accumulated
   during each conversion is now persisted back to the connection struct,
   preventing type desync on subsequent operations.
+- **Fix large file conversion (>64 MB output):** `gen_tcp.recv` returns
+  `:enomem` for single reads above ~64 MB. `recv_frame` now reads in 4 MB
+  chunks and reassembles. Also eliminates redundant binary copies in
+  `send_frame` (iodata passthrough) and `write_bytes` (new `enc_str_iodata/1`).
+- **Fix stale `conn.reply` leaking as conversion result:** `conn.reply`
+  retained values from bootstrap or diagnostic queries. Early conversion
+  failures (e.g. file not found) could return stale data as a successful
+  result. Convert now clears `conn.reply` on checkout and uses strict
+  type-checked result matching.
 
 ## [v0.9.1] - 2026-03-06
 
