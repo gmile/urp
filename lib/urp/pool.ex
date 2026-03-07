@@ -5,15 +5,19 @@ defmodule URP.Pool do
 
   alias URP.Bridge
 
+  require Logger
+
   @default_timeout 120_000
+  @default_backoff_initial 500
+  @default_backoff_max 5_000
 
   # soffice's URP bridge transitions to STATE_TERMINATED when a connection
   # closes, revoking stubs from the UNO environment. If we reconnect before
   # that cleanup finishes, the new bridge may throw DisposedException
   # ("Binary URP bridge already disposed"). The C++ callers handle this
   # reactively — catch DisposedException and retry — and so do we.
-  @max_retries 5
-  @retry_interval_ms 50
+  @disposed_max_retries 5
+  @disposed_retry_interval_ms 50
   @bridge_disposed "bridge already disposed"
 
   @doc false
@@ -144,9 +148,9 @@ defmodule URP.Pool do
       )
 
     case result do
-      {:error, message} when is_binary(message) and attempt < @max_retries ->
+      {:error, message} when is_binary(message) and attempt < @disposed_max_retries ->
         if String.contains?(message, @bridge_disposed) do
-          Process.sleep(@retry_interval_ms * attempt)
+          Process.sleep(@disposed_retry_interval_ms * attempt)
           do_checkout(pool, timeout, meta, fun, attempt + 1)
         else
           result
@@ -171,23 +175,45 @@ defmodule URP.Pool do
   def init_worker(config) do
     host = Map.get(config, :host, "localhost")
     port = Map.get(config, :port, 2002)
-    conn = open_with_retry(host, port)
-    {:ok, conn, config}
+    backoff_initial = Map.get(config, :backoff_initial, @default_backoff_initial)
+    backoff_max = Map.get(config, :backoff_max, @default_backoff_max)
+
+    # Use {:async, ...} so start_link returns immediately even if soffice is
+    # down and open_with_retry loops for a while. We must transfer socket
+    # ownership to the NimblePool process — the Task that runs this function
+    # exits after returning, which would close the socket otherwise.
+    pool_pid = self()
+
+    {:async,
+     fn ->
+       conn = open_with_retry(host, port, backoff_initial, backoff_max)
+       :gen_tcp.controlling_process(conn.sock, pool_pid)
+       conn
+     end, config}
   end
 
-  defp open_with_retry(host, port, attempt \\ 1) do
+  defp open_with_retry(host, port, backoff_initial, backoff_max, attempt \\ 1) do
     conn = Bridge.open(host, port)
 
-    cond do
-      is_nil(conn.error) ->
-        conn
+    if is_nil(conn.error) do
+      conn
+    else
+      delay = min(backoff_initial * Integer.pow(2, attempt - 1), backoff_max)
 
-      attempt < @max_retries ->
-        Process.sleep(@retry_interval_ms * attempt)
-        open_with_retry(host, port, attempt + 1)
+      :telemetry.execute(
+        [:urp, :connection, :retry],
+        %{attempt: attempt, delay: delay},
+        %{host: host, port: port, reason: conn.error}
+      )
 
-      true ->
-        raise "URP: #{conn.error} (after #{attempt} attempts)"
+      Logger.warning(
+        "URP connection failed (attempt #{attempt}, retry in #{delay}ms): #{conn.error}",
+        host: host,
+        port: port
+      )
+
+      Process.sleep(delay)
+      open_with_retry(host, port, backoff_initial, backoff_max, attempt + 1)
     end
   end
 

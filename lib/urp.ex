@@ -383,12 +383,13 @@ defmodule URP do
 
         case Keyword.fetch(pools, name) do
           {:ok, config} ->
-            opts = [
-              name: pid_name,
-              host: Keyword.get(config, :host, "localhost"),
-              port: Keyword.get(config, :port, 2002),
-              pool_size: Keyword.get(config, :pool_size, 1)
-            ]
+            opts =
+              [
+                name: pid_name,
+                host: Keyword.get(config, :host, "localhost"),
+                port: Keyword.get(config, :port, 2002),
+                pool_size: Keyword.get(config, :pool_size, 1)
+              ] ++ Keyword.take(config, [:backoff_initial, :backoff_max])
 
             case DynamicSupervisor.start_child(URP.PoolSupervisor, {URP.Pool, opts}) do
               {:ok, _pid} -> pid_name

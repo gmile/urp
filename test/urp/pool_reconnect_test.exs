@@ -11,6 +11,7 @@ defmodule URP.PoolReconnectTest do
 
   setup do
     Application.ensure_all_started(:telemetry)
+    Application.ensure_all_started(:nimble_pool)
 
     :telemetry.attach(
       @handler_id,
