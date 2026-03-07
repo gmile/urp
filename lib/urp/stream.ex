@@ -435,8 +435,9 @@ defmodule URP.Stream do
 
   defp available({:enum, buffer, :eof}), do: byte_size(buffer)
 
-  # Unknown remaining size — return a large value so soffice keeps reading
-  defp available({:enum, _buffer, _reader}), do: 1_000_000
+  # Unknown remaining size — return a conservative estimate so soffice
+  # keeps reading without over-allocating (it may use this to size buffers).
+  defp available({:enum, buffer, _reader}), do: max(byte_size(buffer), 65_536)
 
   ## XSeekable source helpers
 
