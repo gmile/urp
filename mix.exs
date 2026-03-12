@@ -11,6 +11,7 @@ defmodule URP.MixProject do
       description:
         "Pure Elixir client for the UNO Remote Protocol — convert documents via LibreOffice over TCP",
       package: package(),
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       docs: docs(),
@@ -21,6 +22,9 @@ defmodule URP.MixProject do
       ]
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   defp docs do
     [
