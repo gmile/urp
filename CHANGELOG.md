@@ -49,7 +49,7 @@
 
 - **Iodata frame builders:** `Call` and `Protocol` return iodata instead of
   flattened binaries. The single `IO.iodata_to_binary` call happens in
-  `Protocol.send_frame/2`, eliminating redundant intermediate allocations.
+  Protocol `send_frame/2`, eliminating redundant intermediate allocations.
 - Bridge error paths use `reply: nil` instead of `reply: ""` for consistency.
 
 ## [v0.9.1] - 2026-03-06
@@ -92,7 +92,7 @@ Internal refactor of Bridge and Pool internals. No public API changes.
 - Add `URP.filters/1` — list all export filter names (discover available filters at runtime)
 - Add `URP.types/1` — list all document type names
 - Add `URP.locale/1` — query soffice locale setting
-- Add `Protocol.parse_string_sequence_reply/1` for `sequence<string>` replies
+- Add Protocol `parse_string_sequence_reply/1` for `sequence<string>` replies
 - Add Diagnostics section to module docs with examples
 
 ## [v0.7.0] - 2026-03-02
@@ -134,7 +134,7 @@ Internal refactor of Bridge and Pool internals. No public API changes.
 - **Breaking:** output destination is now `:output` option (path, `:binary`, or `fun/1`) instead of `:sink`
 - **Breaking:** default output writes to temp file (returns `{:ok, path}`) instead of accumulating bytes in memory
 - Add enumerable input support — pass any `Enumerable` (e.g. `File.stream!/2`, S3 download streams) to `URP.convert/2`
-- Add `URP.Stream.start_enum_reader/1` and `URP.Bridge.load_document_enum_stream!/2` for lazy enumerable streaming
+- Add lazy enumerable streaming (enum reader + Bridge stream loader)
 
 ## [v0.4.0] - 2026-02-28
 
