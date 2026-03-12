@@ -39,6 +39,33 @@ The gap grows because Gotenberg's Go/HTTP overhead (multipart parsing,
 queue management, response framing) scales with document size, while
 URP talks to soffice directly over a TCP socket.
 
+## I/O strategies
+
+URP supports two I/O transfer strategies via the `:io` option, benchmarked
+with `benchmarks/io_bench.exs`:
+
+```sh
+mix run benchmarks/io_bench.exs
+```
+
+**File I/O** (`:file`, default) writes temp files on soffice's filesystem
+and transfers them over URP in ~6 round-trips. **Stream I/O** (`:stream`)
+pipes bytes over the URP socket via XInputStream/XOutputStream — no temp
+disk, but more round-trips.
+
+Stream input is the bottleneck (~40-50% slower) because ZIP-based formats
+(docx, xlsx, pptx) require thousands of XInputStream/XSeekable random-access
+round-trips. Stream output adds negligible overhead — soffice writes in
+fixed [32 767-byte chunks](https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573),
+so the round-trip count is predictable.
+
+| Strategy | Input | Output | Best for |
+|----------|-------|--------|----------|
+| `io: :file` | fast | fast | Default — best throughput |
+| `io: {:file, :stream}` | fast | chunked | Large outputs without single big allocation |
+| `io: {:stream, :file}` | slow | fast | No temp disk for input |
+| `io: :stream` | slow | chunked | No temp disk at all |
+
 ## Container image
 
 See `benchmarks/Dockerfile.soffice-debian`. Minimal Debian trixie-slim
