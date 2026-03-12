@@ -9,12 +9,7 @@ defmodule URP.Application do
 
     children = [
       {NimblePool,
-       worker:
-         {URP.Pool,
-          %{
-            host: Keyword.get(config, :host, "localhost"),
-            port: Keyword.get(config, :port, 2002)
-          }},
+       worker: {URP.Pool, config},
        pool_size: Keyword.get(config, :pool_size, 1),
        lazy: true,
        name: URP.Pool.Default},

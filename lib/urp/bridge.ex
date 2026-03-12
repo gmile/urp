@@ -34,9 +34,9 @@ defmodule URP.Bridge do
         |> URP.Bridge.open(2002)
         |> URP.Bridge.load_document_stream(File.read!("input.docx"))
         |> URP.Bridge.store_to_stream(filter: "writer_pdf_Export")
-        |> tap(&URP.Bridge.close!/1)
 
       pdf = conn.reply
+      URP.Bridge.close!(conn)
 
   ## Private storage
 
@@ -473,9 +473,11 @@ defmodule URP.Bridge do
       |> call(C.qi_sfa_input(conn.reply), :qi)
       |> call(C.available(), :int32)
 
-    conn = call(conn, C.read_bytes(conn.reply), :read_bytes)
+    size = conn.reply
+    conn = call(conn, C.read_bytes(size), :read_bytes)
+    bytes = conn.reply
 
-    %{call(conn, C.close_input(), :void) | reply: conn.reply}
+    %{call(conn, C.close_input(), :void) | reply: bytes}
   end
 
   defp load_from_input_source(conn, source) do
@@ -557,9 +559,11 @@ defmodule URP.Bridge do
         :interface
       )
 
+    sfa_oid = conn.reply
+
     conn
     |> stash(:sfa_oid)
-    |> call(C.qi_sfa(conn.reply), :qi)
+    |> call(C.qi_sfa(sfa_oid), :qi)
   end
 
   ## Handshake
@@ -637,12 +641,12 @@ defmodule URP.Bridge do
   defp parse_reply(conn, :void) do
     case P.parse_exception(conn.reply) do
       nil -> conn
-      message -> %{conn | error: message, reply: ""}
+      message -> %{conn | error: message, reply: nil}
     end
   end
 
   defp handle_parsed(conn, {:ok, value}), do: %{conn | reply: value}
-  defp handle_parsed(conn, {:error, msg}), do: %{conn | error: msg, reply: ""}
+  defp handle_parsed(conn, {:error, msg}), do: %{conn | error: msg, reply: nil}
 
   defp send_frame(%__MODULE__{error: e} = conn, _frame) when not is_nil(e), do: conn
 

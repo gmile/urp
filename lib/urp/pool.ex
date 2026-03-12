@@ -27,7 +27,7 @@ defmodule URP.Pool do
     {pool_size, opts} = Keyword.pop(opts, :pool_size, 1)
 
     NimblePool.start_link(
-      worker: {__MODULE__, Map.new(opts)},
+      worker: {__MODULE__, opts},
       pool_size: pool_size,
       name: name
     )
@@ -69,9 +69,9 @@ defmodule URP.Pool do
       conn = bridge_fun.(conn)
 
       if is_nil(conn.error) do
-        {{:ok, conn.private[key]}, {:ok, conn}}
+        {{:ok, conn.private[key]}, {:ok, reset_conversion_state(conn)}}
       else
-        {{:error, conn.error}, {:ok, %{conn | error: nil}}}
+        {{:error, conn.error}, {:ok, reset_conversion_state(conn)}}
       end
     end)
   end
@@ -92,6 +92,8 @@ defmodule URP.Pool do
     meta = %{operation: :convert, pool: pool}
 
     do_checkout(pool, timeout, meta, fn conn ->
+      # Clear stale reply from bootstrap (desktop OID) on the first conversion.
+      # Subsequent conversions are already clean via reset_conversion_state.
       conn = %{conn | reply: nil}
       conn = if max_frame_size, do: %{conn | max_frame_size: max_frame_size}, else: conn
       conn = if recv_timeout, do: %{conn | recv_timeout: recv_timeout}, else: conn
@@ -236,10 +238,10 @@ defmodule URP.Pool do
 
   @impl NimblePool
   def init_worker(config) do
-    host = Map.get(config, :host, "localhost")
-    port = Map.get(config, :port, 2002)
-    backoff_initial = Map.get(config, :backoff_initial, @default_backoff_initial)
-    backoff_max = Map.get(config, :backoff_max, @default_backoff_max)
+    host = Keyword.get(config, :host, "localhost")
+    port = Keyword.get(config, :port, 2002)
+    backoff_initial = Keyword.get(config, :backoff_initial, @default_backoff_initial)
+    backoff_max = Keyword.get(config, :backoff_max, @default_backoff_max)
 
     # Use {:async, ...} so start_link returns immediately even if soffice is
     # down and open_with_retry loops for a while. We must transfer socket
@@ -336,7 +338,8 @@ defmodule URP.Pool do
         reply_tid: nil,
         reader_type: nil,
         reply: nil,
-        error: nil
+        error: nil,
+        private: %{}
     }
   end
 
