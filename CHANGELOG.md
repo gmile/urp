@@ -2,43 +2,55 @@
 
 ## [Unreleased]
 
-- **New `:settings` option for `URP.convert/2`:** pass `{path, property, value}`
+### Added
+
+- **`:settings` option for `URP.convert/2`:** pass `{path, property, value}`
   triplets to configure soffice via `ConfigurationUpdateAccess` before each
   conversion. Settings sharing the same nodepath are batched into a single
   update call. Useful for tuning cache limits, graphic memory, etc.
-- **Infinite reconnection with backoff:** the pool now retries soffice
-  connections forever with exponential backoff (`backoff_initial` / `backoff_max`)
-  instead of crashing. Emits `[:urp, :connection, :retry]` telemetry on each
-  retry attempt.
-- **Iodata frame builders:** `Call` and `Protocol` functions return iodata
-  (lists of binaries) instead of flattened binaries. The single `IO.iodata_to_binary`
-  call happens in `Protocol.send_frame/2`, eliminating redundant intermediate
-  allocations.
-- **Fix O(n²) `fill_buffer` in enum streams:** chunk accumulation now uses
-  iodata instead of repeated binary concatenation, flattening once when the
-  buffer is consumed.
-- **Frame size guard:** `recv_frame` rejects frames larger than 512 MiB
-  (configurable) before allocating, preventing OOM from corrupt wire data.
-- **New `:recv_timeout` and `:max_frame_size` options for `URP.convert/2`:**
-  per-conversion control over the TCP recv timeout (default 120 s) and maximum
-  accepted frame size (default 512 MiB).
-- **New `:io` option for `URP.convert/2`:** choose between file-based (`:file`,
+- **`:io` option for `URP.convert/2`:** choose between file-based (`:file`,
   default) and streaming (`:stream`) I/O independently for input and output.
   File I/O uses temp files on soffice's filesystem (~6 round-trips). Streaming
   uses XInputStream/XOutputStream over URP (~40-50% slower but no temp disk).
   Mixed modes supported: `io: {:file, :stream}` or `io: {:stream, :file}`.
-- **Fix TID cache loss across conversions:** the URP type cache accumulated
-  during each conversion is now persisted back to the connection struct,
-  preventing type desync on subsequent operations.
-- **Fix large file conversion (>64 MB output):** `gen_tcp.recv` returns
-  `:enomem` for single reads above ~64 MB. `recv_frame` now reads in 4 MB
-  chunks and reassembles. Also eliminates redundant binary copies in
-  `send_frame` (iodata passthrough) and `write_bytes` (new `enc_str_iodata/1`).
-- **Fix stale `conn.reply` leaking as conversion result:** `conn.reply`
-  retained values from bootstrap or diagnostic queries. Early conversion
-  failures (e.g. file not found) could return stale data as a successful
-  result. Convert now clears `conn.reply` on checkout and uses strict
-  type-checked result matching.
+- **`:recv_timeout` and `:max_frame_size` options for `URP.convert/2`:**
+  per-conversion control over the TCP recv timeout (default 120 s) and maximum
+  accepted frame size (default 512 MiB).
+- **Infinite reconnection with backoff:** the pool retries soffice connections
+  forever with exponential backoff (`backoff_initial` / `backoff_max`) instead
+  of crashing. Emits `[:urp, :connection, :retry]` telemetry on each attempt.
+- **Frame size guard:** `recv_frame` rejects frames larger than 512 MiB
+  (configurable) before allocating, preventing OOM from corrupt wire data.
+
+### Fixed
+
+- **Pool query checkin leak:** diagnostic queries (`version`, `services`, etc.)
+  did not reset `conn.private`, `conn.reply`, or `conn.doc_oid` on checkin,
+  leaking state across pool reuses. All pool operations now go through
+  `reset_conversion_state/1`.
+- **Default pool ignored backoff config:** `backoff_initial` and `backoff_max`
+  from `config :urp, :default` were silently dropped. Application now forwards
+  the full config map to the pool.
+- **Large file conversion (>64 MB output):** `gen_tcp.recv` returns `:enomem`
+  for single reads above ~64 MB. `recv_frame` now reads in 4 MB chunks and
+  reassembles. Also eliminates redundant binary copies in `send_frame` (iodata
+  passthrough) and `write_bytes` (`enc_str_iodata/1`).
+- **Stale `conn.reply` leaking as conversion result:** `conn.reply` retained
+  values from bootstrap or diagnostic queries. Early conversion failures (e.g.
+  file not found) could return stale data as a successful result. Convert now
+  clears `conn.reply` on checkout with strict type-checked result matching.
+- **TID cache loss across conversions:** the URP type cache accumulated during
+  each conversion is now persisted back to the connection struct, preventing
+  type desync on subsequent operations.
+- **O(n²) `fill_buffer` in enum streams:** chunk accumulation now uses iodata
+  instead of repeated binary concatenation, flattening once when consumed.
+
+### Changed
+
+- **Iodata frame builders:** `Call` and `Protocol` return iodata instead of
+  flattened binaries. The single `IO.iodata_to_binary` call happens in
+  `Protocol.send_frame/2`, eliminating redundant intermediate allocations.
+- Bridge error paths use `reply: nil` instead of `reply: ""` for consistency.
 
 ## [v0.9.1] - 2026-03-06
 
