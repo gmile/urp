@@ -11,13 +11,13 @@
       devShells = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          beamPackages = pkgs.beam.packages.erlang_28;
+          beamPackages = pkgs.beam.packages.erlang_29;
         in
         {
           default = pkgs.mkShell {
             packages = [
               beamPackages.erlang
-              beamPackages.elixir_1_19
+              beamPackages.elixir_1_20
               pkgs.git
               pkgs.uv
             ];

@@ -27,7 +27,6 @@ defmodule URP.Stream do
       XOutputStream: writeBytes=3, flush=4, closeOutput=5
   """
 
-  alias URP.Bridge
   alias URP.Protocol, as: P
 
   import Bitwise
@@ -38,6 +37,7 @@ defmodule URP.Stream do
            | {:file, pid(), non_neg_integer()}
            | {:enum, binary(), pid() | :eof}
   @type sink :: nil | {:path, Path.t()} | (binary() -> any())
+  @type connection :: map()
 
   @tc_void 0
   @tc_new 0x80
@@ -67,8 +67,8 @@ defmodule URP.Stream do
   Dispatches calls until we receive the reply to our pending request.
   Returns `{reply_payload, updated_conn}`.
   """
-  @spec recv_handling_input(Bridge.t(), input_source() | source(), String.t() | nil) ::
-          {binary(), Bridge.t()}
+  @spec recv_handling_input(connection(), input_source() | source(), String.t() | nil) ::
+          {binary(), connection()}
   def recv_handling_input(conn, data, stream_oid \\ nil)
 
   def recv_handling_input(conn, data, stream_oid) when is_binary(data) do
@@ -126,10 +126,10 @@ defmodule URP.Stream do
   outside the main stream recv loop. Returns `:not_input` if the request
   doesn't match the active input stream context.
   """
-  @spec try_handle_input(Bridge.t(), binary()) :: {:handled, Bridge.t()} | :not_input
-  def try_handle_input(%Bridge{input_ctx: nil}, _payload), do: :not_input
+  @spec try_handle_input(connection(), binary()) :: {:handled, connection()} | :not_input
+  def try_handle_input(%{input_ctx: nil}, _payload), do: :not_input
 
-  def try_handle_input(%Bridge{input_ctx: ctx} = conn, payload) do
+  def try_handle_input(%{input_ctx: ctx} = conn, payload) do
     %{func_id: func_id, body: body, type_cache: type_cache, tid: new_tid} =
       P.parse_request(payload)
 
@@ -286,7 +286,7 @@ defmodule URP.Stream do
     * `{:path, path}` — write chunks to file as they arrive, returns `{reply, :ok, conn}`
     * `fun/1` — call with each chunk, returns `{reply, :ok, conn}`
   """
-  @spec recv_handling_output(Bridge.t(), sink()) :: {binary(), binary() | :ok, Bridge.t()}
+  @spec recv_handling_output(connection(), sink()) :: {binary(), binary() | :ok, connection()}
   def recv_handling_output(conn, sink \\ nil)
 
   def recv_handling_output(conn, nil) do
@@ -399,7 +399,7 @@ defmodule URP.Stream do
   defp read_chunk({:enum, buffer, reader}, n) do
     {buffer, reader} = fill_buffer(buffer, reader, n)
     to_read = min(n, byte_size(buffer))
-    <<chunk::binary-size(to_read), rest::binary>> = buffer
+    <<chunk::binary-size(^to_read), rest::binary>> = buffer
     {chunk, {:enum, rest, reader}}
   end
 
@@ -418,7 +418,7 @@ defmodule URP.Stream do
   defp skip_chunk({:enum, buffer, reader}, n) do
     {buffer, reader} = fill_buffer(buffer, reader, n)
     skip = min(n, byte_size(buffer))
-    <<_::binary-size(skip), rest::binary>> = buffer
+    <<_::binary-size(^skip), rest::binary>> = buffer
     {:enum, rest, reader}
   end
 

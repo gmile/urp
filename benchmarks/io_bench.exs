@@ -14,7 +14,7 @@
 # Environment:
 #   FIXTURES — comma-separated filenames in benchmarks/fixtures/ (default: all)
 #   FILTER   — export filter name (default: writer_pdf_Export)
-#   PORT     — soffice port (default: 2003, the Debian glibc instance)
+#   PORT     — soffice port (default: 2002, the Debian glibc instance)
 #
 # Stream output overhead is negligible (<5%) regardless of file size.
 # soffice writes in fixed 32767-byte chunks — a hardcoded literal in
@@ -27,7 +27,7 @@
 default_fixtures = "benchmark.docx,benchmark-15mb.docx,benchmark-50mb.docx"
 fixtures = System.get_env("FIXTURES", default_fixtures) |> String.split(",", trim: true)
 filter = System.get_env("FILTER", "writer_pdf_Export")
-port = System.get_env("PORT", "2003") |> String.to_integer()
+port = System.get_env("PORT", "2002") |> String.to_integer()
 
 Application.ensure_all_started(:telemetry)
 

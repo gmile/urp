@@ -1,4 +1,4 @@
-# Minimal Debian soffice with LO from trixie-backports (same version as Gotenberg).
+# Minimal Debian soffice with LibreOffice 26.2+ from trixie-backports.
 # Only free fonts — Liberation (Arial/Times metric-compatible) and Carlito (Calibri).
 FROM debian:trixie-slim
 
@@ -16,5 +16,4 @@ ENV PORT=2002
 
 EXPOSE ${PORT}
 
-CMD soffice --headless --norestore \
-    --accept="socket,host=${HOST},port=${PORT},tcpNoDelay=1;urp;"
+CMD ["sh", "-c", "exec soffice --headless --norestore --accept=\"socket,host=${HOST},port=${PORT},tcpNoDelay=1;urp;\""]

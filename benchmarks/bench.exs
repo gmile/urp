@@ -18,7 +18,7 @@ gotenberg_url = "http://localhost:3002/forms/libreoffice/convert"
 IO.puts("Fixture: #{fixture} (#{div(byte_size(docx_bytes), 1024)} KB)\n")
 
 # Gotenberg-equivalent FilterData — matches DefaultOptions() from
-# https://github.com/gotenberg/gotenberg/blob/v8.27.0/pkg/modules/libreoffice/api/api.go
+# https://github.com/gotenberg/gotenberg/blob/v8.32.0/pkg/modules/libreoffice/api/api.go
 gotenberg_filter_data = [
   ExportFormFields: true,
   AllowDuplicateFieldNames: false,
@@ -52,26 +52,26 @@ Application.ensure_all_started(:telemetry)
 {:ok, _} = Finch.start_link(name: Req.Finch)
 form_data = [files: {docx_bytes, filename: fixture, content_type: "application/octet-stream"}]
 
-# ── Debian pool (port 2003) ──
+# ── Alpine pool (port 2003) ──
 
-{:ok, _} = URP.Pool.start_link(name: :debian, host: "localhost", port: 2003, pool_size: 1)
+{:ok, _} = URP.Pool.start_link(name: :alpine, host: "localhost", port: 2003, pool_size: 1)
 
 # ── Warmup all services ──
 
 {:ok, _} = URP.convert({:binary, docx_bytes}, urp_opts)
-{:ok, _} = URP.Pool.convert(:debian, {:binary, docx_bytes}, urp_opts)
+{:ok, _} = URP.Pool.convert(:alpine, {:binary, docx_bytes}, urp_opts)
 Req.post!(gotenberg_url, form_multipart: form_data)
 
 # ── Benchmark ──
 
 Benchee.run(
   %{
-    "URP → Alpine musl" => fn ->
+    "URP → Debian glibc" => fn ->
       {:ok, pdf} = URP.convert({:binary, docx_bytes}, urp_opts)
       pdf
     end,
-    "URP → Debian glibc" => fn ->
-      {:ok, pdf} = URP.Pool.convert(:debian, {:binary, docx_bytes}, urp_opts)
+    "URP → Alpine musl" => fn ->
+      {:ok, pdf} = URP.Pool.convert(:alpine, {:binary, docx_bytes}, urp_opts)
       pdf
     end,
     "Gotenberg (HTTP)" => fn ->

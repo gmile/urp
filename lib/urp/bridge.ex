@@ -608,9 +608,6 @@ defmodule URP.Bridge do
 
   ## Send + receive + parse
 
-  # Error-guard: short-circuit if an earlier step failed.
-  defp call(%__MODULE__{error: e} = conn, _frame) when not is_nil(e), do: conn
-
   defp call(%__MODULE__{} = conn, frame) do
     conn
     |> send_frame(frame)

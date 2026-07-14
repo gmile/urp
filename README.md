@@ -10,7 +10,7 @@ no Python, no wrappers, no sidecars.
 ## Installation
 
 ```elixir
-{:urp, "~> 0.8"}
+{:urp, "~> 0.10"}
 ```
 
 ## Prerequisites
@@ -67,6 +67,14 @@ Stub conversions in tests — no running soffice needed. See `URP.Test`.
 ```elixir
 URP.Test.stub(fn _input, _opts -> {:ok, "/tmp/fake.pdf"} end)
 assert {:ok, _} = MyApp.generate_invoice(order)
+```
+
+When soffice is unavailable, tests tagged `:integration` are excluded automatically.
+Run the complete suite, including the LibreOffice 26.2+ coverage, with:
+
+```sh
+docker compose --file benchmarks/docker-compose.yml up --detach --wait soffice
+mix test --include lo26
 ```
 
 ### Telemetry
