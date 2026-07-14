@@ -11,7 +11,9 @@ docker compose --file benchmarks/docker-compose.yml up --detach --wait
 mix run benchmarks/bench.exs
 ```
 
-Both URP and Gotenberg run LibreOffice 26.2.0 on Debian (glibc).
+The results below were recorded on July 14, 2026, on Apple M3 Max with
+Elixir 1.20.2 and Erlang/OTP 29.0.3. URP's Debian container ran
+LibreOffice 26.2.4.2; Gotenberg 8.32.0 bundled LibreOffice 26.2.2.2.
 The fixture uses Liberation fonts only — regenerate with
 `uv run --with python-docx --with Pillow --with numpy benchmarks/generate_fixture.py`
 (pass `--size 15` for the large variant).
@@ -22,22 +24,39 @@ The fixture uses Liberation fonts only — regenerate with
 
 ```
 Name                         ips        average  deviation         median         99th %
-URP                         1.05         0.95 s     ±7.60%         0.94 s         1.20 s
-Gotenberg                   0.81         1.23 s     ±7.47%         1.19 s         1.42 s
+URP                         1.37         0.73 s     ±4.74%         0.72 s         0.82 s
+Gotenberg                   0.84         1.19 s     ±5.46%         1.16 s         1.37 s
 ```
 
 **15.5 MB input → 62 MB PDF:**
 
 ```
 Name                         ips        average  deviation         median         99th %
-URP                        0.145         6.87 s     ±7.44%         6.73 s         7.44 s
-Gotenberg                  0.087        11.45 s     ±1.21%        11.45 s        11.54 s
+URP                        0.196         5.10 s     ±2.12%         5.05 s         5.22 s
+Gotenberg                  0.135         7.39 s     ±0.88%         7.36 s         7.46 s
 ```
 
-**27% faster** for small documents, **67% faster** for large ones.
-The gap grows because Gotenberg's Go/HTTP overhead (multipart parsing,
-queue management, response framing) scales with document size, while
-URP talks to soffice directly over a TCP socket.
+URP had **39% lower average latency** for the small document and **31%
+lower average latency** for the large document. The absolute advantage
+grew from 0.46 s to 2.29 s. These measurements compare the complete
+stacks, including their slightly different LibreOffice patch versions;
+they do not isolate dependency or runtime upgrades individually.
+
+### Process overhead sanity check
+
+`benchmarks/convert.exs` compares the persistent URP connection with a
+cold `soffice --convert-to` process and Gotenberg using the 33 KB
+`sample3.docx` fixture. Across five timed iterations, the averages were:
+
+| Method | Average | Range |
+|--------|---------|-------|
+| URP | 46 ms | 43–49 ms |
+| Gotenberg | 153 ms | 146–160 ms |
+| LibreOffice CLI | 280 ms | 267–302 ms |
+
+This is a process-overhead check, not an apples-to-apples transport
+benchmark: URP reuses a live office process, while the CLI measurement
+starts a new process for every conversion.
 
 ## I/O strategies
 
@@ -53,10 +72,25 @@ and transfers them over URP in ~6 round-trips. **Stream I/O** (`:stream`)
 pipes bytes over the URP socket via XInputStream/XOutputStream — no temp
 disk, but more round-trips.
 
-Stream input is the bottleneck (~40-50% slower) because ZIP-based formats
-(docx, xlsx, pptx) require thousands of XInputStream/XSeekable random-access
-round-trips. Stream output adds negligible overhead — soffice writes in
-fixed [32 767-byte chunks](https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573),
+Current results on Elixir 1.20.2 / OTP 29.0.3:
+
+| Strategy | 2.7 MB | 16.2 MB | 35.0 MB |
+|----------|--------|---------|---------|
+| File → file | 1.13 s | 7.66 s | 39.17 s |
+| File → stream | 1.19 s | 8.06 s | 37.19 s |
+| Stream → file | 1.72 s | 11.59 s | 41.53 s |
+| Stream → stream | 1.64 s | 9.06 s | 46.02 s |
+
+Stream input remains the bottleneck because ZIP-based formats (docx,
+xlsx, pptx) require thousands of XInputStream/XSeekable random-access
+round-trips, but its measured penalty now ranges from roughly 12% to 52%
+depending on document size and output mode. Stream output remains within
+about 5% of file output. The 35 MB fixture completes only one iteration
+per scenario with the default 10-second Benchee window, so treat those
+figures as directional rather than statistically stable.
+
+Soffice writes stream output in fixed
+[32 767-byte chunks](https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573),
 so the round-trip count is predictable.
 
 | Strategy | Input | Output | Best for |
@@ -109,22 +143,22 @@ and can be mitigated with
 It bundles OpenJDK 11, 130+ Noto font packages, and 450 packages
 total.
 
-As of March 2026, Alpine ships LO 25.8.x (Still) while Debian
+As of July 2026, Alpine ships LO 25.8.x (Still) while Debian
 trixie-backports has 26.2.x (Fresh). Carlito is missing from the
 stock Alpine image (`apk add font-carlito` to fix).
 
 | Setup | 2.6 MB | 15.5 MB | LO version | Image size |
 |-------|--------|---------|------------|------------|
-| URP → Debian glibc | 0.94 s | 6.73 s | 26.2.0 | ~564 MB |
-| URP → Alpine musl | 1.20 s | 11.11 s | 25.8.1 | ~1.78 GB |
-| Gotenberg (Debian glibc) | 1.19 s | 11.45 s | 26.2.0 | ~1.86 GB |
+| URP → Debian glibc | 0.72 s | 5.05 s | 26.2.4.2 | ~564 MB |
+| URP → Alpine musl | 1.18 s | 7.94 s | 25.8.1.1 | ~1.78 GB |
+| Gotenberg (Debian glibc) | 1.16 s | 7.36 s | 26.2.2.2 | ~1.68 GB |
 
 <details>
 <summary>Reproducing the strace analysis</summary>
 
 ```sh
 docker compose --file benchmarks/docker-compose.yml up --detach --wait
-SOFFICE=benchmarks-soffice-1
+SOFFICE=benchmarks-soffice-alpine-1
 docker exec $SOFFICE apk add --no-cache strace
 docker exec $SOFFICE pgrep -f soffice.bin  # note the PID
 

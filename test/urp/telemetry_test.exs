@@ -56,5 +56,4 @@ defmodule URP.TelemetryTest do
     assert_receive {:telemetry_event, [:urp, :call, :stop], _measurements, metadata}
     assert metadata.result == :error
   end
-
 end

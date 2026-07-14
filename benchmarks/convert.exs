@@ -1,13 +1,13 @@
 # Simple benchmark: URP vs CLI shell-out vs Gotenberg
 #
-# All three use LibreOffice 25.8.1 for apples-to-apples comparison.
+# Record each service's LibreOffice version when comparing benchmark results.
 #
 # Prerequisites:
 #   1. soffice container on port 2002 (URP)
 #   2. soffice-cli container with /fixtures mount (CLI — separate instance to avoid lock)
-#   3. gotenberg:8.23.1 on GOTENBERG_PORT (HTTP API)
+#   3. Gotenberg service from docker-compose.yml on GOTENBERG_PORT (HTTP API)
 #
-#   cd benchmarks && docker compose up -d
+#   docker compose --file benchmarks/docker-compose.yml up --detach --wait
 #
 # Run:
 #   nix develop --command mix run benchmarks/convert.exs

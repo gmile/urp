@@ -166,7 +166,6 @@ defmodule URPTest do
 
       assert "%PDF-" <> _ = pdf
     end
-
   end
 
   describe "settings" do
@@ -333,7 +332,6 @@ defmodule URPTest do
       Bridge.delete_file(conn, conn.cleanup_url)
       Bridge.close!(conn)
     end
-
   end
 
   describe "pool queuing" do
@@ -344,13 +342,13 @@ defmodule URPTest do
       task1 =
         Task.async(fn ->
           result = URP.convert({:binary, docx1}, filter: "Text", output: :binary)
-          {result, System.monotonic_time(:millisecond)}
+          {result, System.monotonic_time(:microsecond)}
         end)
 
       task2 =
         Task.async(fn ->
           result = URP.convert({:binary, docx2}, filter: "Text", output: :binary)
-          {result, System.monotonic_time(:millisecond)}
+          {result, System.monotonic_time(:microsecond)}
         end)
 
       {{:ok, text1}, t1} = Task.await(task1, 15_000)
@@ -361,10 +359,9 @@ defmodule URPTest do
       assert text2 =~ "Document Two"
 
       # With pool_size 1, conversions are serial. The second task must wait
-      # for the first to finish and return the worker. If they ran in parallel
-      # they'd finish at roughly the same time; serial execution means the
-      # completion timestamps are at least one conversion apart.
-      assert abs(t2 - t1) >= 10
+      # for the first to finish and return the worker, so their completion
+      # timestamps should be measurably separated even on fast machines.
+      assert abs(t2 - t1) >= 1_000
     end
   end
 
@@ -429,7 +426,6 @@ defmodule URPTest do
       nil -> 0
     end
   end
-
 end
 
 defmodule URP.DocTest do

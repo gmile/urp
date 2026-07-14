@@ -6,42 +6,27 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build soffice image
-        uses: docker/build-push-action@v6
-        with:
-          context: benchmarks
-          file: benchmarks/Dockerfile.soffice-debian
-          tags: soffice:latest
-          load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Start soffice
-        run: |
-          docker run --detach --name soffice \
-            --publish 2002:2002 \
-            --volume /tmp:/tmp \
-            soffice
-          timeout 30 bash -c 'until nc -z localhost 2002; do sleep 1; done'
+      - uses: cachix/install-nix-action@v31
 
       - uses: erlef/setup-beam@v1
         id: beam
         with:
-          elixir-version: 1.19.5
-          otp-version: 28.3
+          elixir-version: 1.20.2
+          otp-version: 29.0.3
 
       - name: Restore dependencies cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             deps
@@ -50,7 +35,7 @@ jobs:
           restore-keys: ${{ runner.os }}-mix-
 
       - name: Restore PLT cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: priv/plts
           key: ${{ runner.os }}-plt-otp${{ steps.beam.outputs.otp-version }}-${{ hashFiles('**/mix.lock') }}-${{ github.sha }}
@@ -67,8 +52,46 @@ jobs:
       - name: Check formatting
         run: mix format --check-formatted
 
-      - name: Run tests
-        run: mix test --include lo26
+      - name: Check unused dependencies
+        run: mix deps.unlock --check-unused
+
+      - name: Check dependency cycles
+        run: mix xref graph --format cycles --fail-above 0
+
+      - name: Run unit tests without soffice
+        run: mix test
+
+      - name: Build documentation
+        run: mix docs --warnings-as-errors
+
+      - name: Audit Hex dependencies
+        run: mix hex.audit
+
+      - name: Check Nix flake
+        run: nix flake check
 
       - name: Run dialyzer
         run: mix dialyzer
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build soffice image
+        uses: docker/build-push-action@v7
+        with:
+          context: benchmarks
+          file: benchmarks/Dockerfile.soffice-debian
+          tags: soffice:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start soffice
+        run: |
+          docker run --detach --name soffice \
+            --publish 2002:2002 \
+            --volume /tmp:/tmp \
+            soffice
+          timeout 30 bash -c 'until nc -z localhost 2002; do sleep 1; done'
+
+      - name: Run integration tests
+        run: mix test --include lo26

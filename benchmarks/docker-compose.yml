@@ -5,12 +5,29 @@
 #   nix develop --command mix run benchmarks/bench.exs
 #
 # Services:
-#   soffice         — Alpine (musl), URP on port 2002
-#   soffice-debian  — Debian (glibc), URP on port 2003, LO from trixie-backports
+#   soffice         — Debian (glibc), URP on port 2002, LO 26.2+ from trixie-backports
+#   soffice-cli     — idle Debian container for cold CLI shell-out comparisons
+#   soffice-alpine  — Alpine (musl), URP on port 2003, comparison service
 #   gotenberg       — Gotenberg full stack (Debian glibc), HTTP on port 3002
 
 services:
   soffice:
+    build:
+      context: .
+      dockerfile: Dockerfile.soffice-debian
+    ports:
+      - "2002:2002"
+
+  soffice-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile.soffice-debian
+    container_name: soffice-cli
+    command: ["sleep", "infinity"]
+    volumes:
+      - ./fixtures:/fixtures:ro
+
+  soffice-alpine:
     image: libreofficedocker/alpine:3.23
     command:
       - soffice
@@ -18,16 +35,9 @@ services:
       - --norestore
       - --accept=socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;
     ports:
-      - "2002:2002"
-
-  soffice-debian:
-    build:
-      context: .
-      dockerfile: Dockerfile.soffice-debian
-    ports:
       - "2003:2002"
 
   gotenberg:
-    image: gotenberg/gotenberg:8.27.0
+    image: gotenberg/gotenberg:8.32.0
     ports:
       - "3002:3000"
