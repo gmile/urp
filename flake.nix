@@ -12,6 +12,8 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           beamPackages = pkgs.beam.packages.erlang_29;
+          # CI/release tasks are headless; avoid the full wx and systemd closure.
+          ciBeamPackages = pkgs.beamMinimal29Packages;
         in
         {
           default = pkgs.mkShell {
@@ -22,6 +24,15 @@
               beamPackages.rebar3
               pkgs.git
               pkgs.uv
+            ];
+          };
+
+          ci = pkgs.mkShell {
+            packages = [
+              ciBeamPackages.erlang
+              ciBeamPackages.elixir_1_20
+              ciBeamPackages.hex
+              ciBeamPackages.rebar3
             ];
           };
         }

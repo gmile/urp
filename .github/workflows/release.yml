@@ -30,19 +30,21 @@ jobs:
         with:
           path: deps
           key: ${{ runner.os }}-mix-deps-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-deps-
 
       - name: Install dependencies
-        run: nix develop --command mix deps.get --check-locked
+        run: nix develop .#ci --command mix deps.get --check-locked
 
       - name: Verify tag, package version, and changelog
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
           test "${GITHUB_REF_NAME}" = "v${version}"
           grep --fixed-strings --quiet "## [v${version}]" CHANGELOG.md
-          nix develop --command mix hex.build
+          nix develop .#ci --command mix hex.build
 
       - name: Publish to Hex
-        run: nix develop --command mix hex.publish --yes
+        run: nix develop .#ci --command mix hex.publish --yes
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
 
