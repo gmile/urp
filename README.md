@@ -56,9 +56,13 @@ config :urp, :default,
 
 > #### pool_size {: .warning}
 >
-> Each connection needs its own soffice instance. With `pool_size: 3`,
-> run 3 soffice containers — one per connection. Concurrent operations
-> on a single soffice process are not safe.
+> A single URP connection handles one operation at a time. LibreOffice accepts
+> multiple connections to one soffice process, but they share process-wide
+> state and generally do not improve conversion throughput. Keep `pool_size: 1`
+> unless you have tested your workload. For predictable parallelism and fault
+> isolation, use separate soffice processes with distinct profiles. The current
+> pool sends every worker to the configured host and port; distributing workers
+> across containers requires separate named pools or an external TCP balancer.
 
 ### Testing
 
@@ -69,18 +73,20 @@ URP.Test.stub(fn _input, _opts -> {:ok, "/tmp/fake.pdf"} end)
 assert {:ok, _} = MyApp.generate_invoice(order)
 ```
 
-When soffice is unavailable, tests tagged `:integration` are excluded automatically.
-Run the complete suite, including the LibreOffice 26.2+ coverage, with:
+`mix test` always runs the deterministic unit suite without probing local ports.
+Run the complete suite, including the LibreOffice 26.2+ coverage, explicitly with:
 
 ```sh
 docker compose --file benchmarks/docker-compose.yml up --detach --wait soffice
-mix test --include lo26
+URP_INTEGRATION=1 nix develop --command mix test --include lo26
 ```
 
 ### Telemetry
 
-Every operation emits `[:urp, :call, :stop]` with queue, service, and
-total time measurements. See `URP.Telemetry`.
+Every operation emits a `[:urp, :call, :start]` event followed by either
+`[:urp, :call, :stop]` or `[:urp, :call, :exception]`. Stop events include
+queue, service, backoff, and total time. Connection retries emit
+`[:urp, :connection, :retry]`. See `URP.Telemetry`.
 
 ## Performance
 
@@ -96,7 +102,9 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks and container image recommen
 
 ```sh
 ./release.sh patch   # or minor, major
-git push origin main --tags
+git push origin main
+# Wait for main CI, then:
+git push origin "v$(cat VERSION)"
 ```
 
 ## License

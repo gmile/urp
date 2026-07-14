@@ -76,4 +76,43 @@ defmodule URP.PoolReconnectTest do
     assert_receive {:telemetry_event, [:urp, :connection, :retry], %{attempt: 3, delay: 30}, _},
                    5_000
   end
+
+  test "checkout timeout returns an error and emits start plus exception" do
+    port = unused_port!()
+    pool_name = :checkout_timeout_test
+    handler_id = "#{@handler_id}-call-span"
+
+    :telemetry.attach_many(
+      handler_id,
+      [[:urp, :call, :start], [:urp, :call, :exception]],
+      &__MODULE__.handle_event/4,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    _pool =
+      start_supervised!(
+        {URP.Pool,
+         name: pool_name,
+         host: "localhost",
+         port: port,
+         pool_size: 1,
+         backoff_initial: 10,
+         backoff_max: 30}
+      )
+
+    assert {:error, message} = URP.Pool.version(pool_name, timeout: 20)
+    assert message =~ "pool checkout failed"
+
+    assert_receive {:telemetry_event, [:urp, :call, :start], %{system_time: system_time},
+                    metadata}
+
+    assert is_integer(system_time)
+    assert metadata.operation == :version
+
+    assert_receive {:telemetry_event, [:urp, :call, :exception], %{duration: duration}, metadata}
+    assert duration > 0
+    assert metadata.kind == :exit
+  end
 end

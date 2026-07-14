@@ -7,8 +7,10 @@ defmodule URP.Bridge do
   storing to URL, and closing.
 
   Each connection performs a handshake and bootstraps a Desktop reference
-  on `open/2`. A connection handles one conversion at a time (soffice is
-  single-threaded). Close the connection with `close!/1` when done.
+  on `open/2`. A connection handles one conversion at a time. LibreOffice can
+  accept multiple connections, but they share process-wide state and much of
+  the document core is serialized internally. Close the connection with
+  `close!/1` when done.
 
   All functions take and return `conn`, following the Plug pattern. Document
   OIDs and conversion state are stashed on the conn struct — no separate
@@ -73,6 +75,7 @@ defmodule URP.Bridge do
           reply: term(),
           error: String.t() | nil,
           tid_cache: map(),
+          oid_cache: map(),
           private: map()
         }
 
@@ -92,6 +95,7 @@ defmodule URP.Bridge do
     recv_timeout: 120_000,
     max_frame_size: 512 * 1024 * 1024,
     tid_cache: %{},
+    oid_cache: %{},
     private: %{}
   ]
 
@@ -100,11 +104,24 @@ defmodule URP.Bridge do
 
   # Configuration provider singleton path (used by version and locale)
   @config_provider_path "/singletons/com.sun.star.configuration.theDefaultProvider"
+  @cleanup_timeout 1_000
+  @default_connect_timeout 5_000
+  @default_send_timeout 120_000
 
   @doc "Connect to soffice, perform URP handshake, and bootstrap a Desktop reference."
-  @spec open(String.t(), non_neg_integer()) :: t()
-  def open(host \\ "localhost", port \\ 2002) do
-    case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false]) do
+  @spec open(String.t(), non_neg_integer(), keyword()) :: t()
+  def open(host \\ "localhost", port \\ 2002, opts \\ []) do
+    connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
+    send_timeout = Keyword.get(opts, :send_timeout, @default_send_timeout)
+
+    socket_opts = [
+      :binary,
+      active: false,
+      send_timeout: send_timeout,
+      send_timeout_close: true
+    ]
+
+    case :gen_tcp.connect(String.to_charlist(host), port, socket_opts, connect_timeout) do
       {:ok, sock} ->
         init_connection(sock)
 
@@ -114,10 +131,13 @@ defmodule URP.Bridge do
   end
 
   defp init_connection(sock) do
+    Process.put(:urp_tid_cache, %{})
+    Process.put(:urp_oid_cache, %{})
+
     %__MODULE__{sock: sock}
     |> handshake!()
     |> bootstrap()
-    |> capture_tid_cache()
+    |> capture_protocol_caches()
   rescue
     e ->
       :gen_tcp.close(sock)
@@ -180,6 +200,71 @@ defmodule URP.Bridge do
     %{conn | doc_oid: nil}
   end
 
+  @doc false
+  @spec cleanup(t()) :: t()
+  def cleanup(%__MODULE__{} = conn) do
+    original_reply = conn.reply
+    original_timeout = conn.recv_timeout
+    conn = %{conn | recv_timeout: min(original_timeout, @cleanup_timeout)}
+
+    conn =
+      if conn.sock && conn.doc_oid do
+        attempt_cleanup(conn, &close_document/1)
+      else
+        %{conn | doc_oid: nil}
+      end
+
+    cleanup_url = conn.cleanup_url
+
+    conn =
+      if conn.sock && cleanup_url do
+        attempt_cleanup(conn, &delete_file(&1, cleanup_url))
+      else
+        conn
+      end
+
+    conn = release_input(conn)
+
+    %{
+      conn
+      | doc_oid: nil,
+        cleanup_url: nil,
+        input_ctx: nil,
+        reply: original_reply,
+        recv_timeout: original_timeout
+    }
+  end
+
+  @doc false
+  @spec release_input(t()) :: t()
+  def release_input(%__MODULE__{input_ctx: nil} = conn), do: conn
+
+  def release_input(%__MODULE__{input_ctx: %{source: source}} = conn) do
+    release_result =
+      case source do
+        {:file, fd, _size} -> File.close(fd)
+        {:enum, _buffer, reader} -> URP.Stream.stop_enum_reader(reader)
+        {:enum, _buffer, reader, _timeout} -> URP.Stream.stop_enum_reader(reader)
+        _other -> :ok
+      end
+
+    conn = %{conn | input_ctx: nil}
+
+    case {conn.error, release_result} do
+      {nil, {:error, reason}} ->
+        %{conn | error: "could not release input stream: #{:file.format_error(reason)}"}
+
+      _ ->
+        conn
+    end
+  end
+
+  defp attempt_cleanup(conn, fun) do
+    primary_error = conn.error
+    cleaned = fun.(%{conn | error: nil, reply: nil})
+    %{cleaned | error: primary_error || cleaned.error}
+  end
+
   @doc """
   Query the soffice version string over URP.
 
@@ -190,12 +275,11 @@ defmodule URP.Bridge do
   def version(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def version(%__MODULE__{} = conn) do
-    conn = call(conn, C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
-    conn = call(conn, C.qi_msf(conn.reply), :qi)
-    conn = call(conn, C.create_config_access(), :interface)
-
     conn
-    |> call(C.qi_name_access(conn.reply), :qi)
+    |> call(C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
+    |> call_reply(&C.qi_msf/1, :qi)
+    |> call(C.create_config_access(), :interface)
+    |> call_reply(&C.qi_name_access/1, :qi)
     |> call(C.get_version(), :string)
     |> stash_private(:version)
   end
@@ -233,7 +317,7 @@ defmodule URP.Bridge do
       )
 
     conn
-    |> call(C.qi_ff_name_access(conn.reply), :qi)
+    |> call_reply(&C.qi_ff_name_access/1, :qi)
     |> call(C.get_filter_element_names(), :strings)
     |> stash_private(:filters)
   end
@@ -256,7 +340,7 @@ defmodule URP.Bridge do
       )
 
     conn
-    |> call(C.qi_td_name_access(conn.reply), :qi)
+    |> call_reply(&C.qi_td_name_access/1, :qi)
     |> call(C.get_type_element_names(), :strings)
     |> stash_private(:types)
   end
@@ -271,12 +355,11 @@ defmodule URP.Bridge do
   def locale(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
 
   def locale(%__MODULE__{} = conn) do
-    conn = call(conn, C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
-    conn = call(conn, C.qi_locale_msf(conn.reply), :qi)
-    conn = call(conn, C.create_locale_config_access(), :interface)
-
     conn
-    |> call(C.qi_locale_na(conn.reply), :qi)
+    |> call(C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
+    |> call_reply(&C.qi_locale_msf/1, :qi)
+    |> call(C.create_locale_config_access(), :interface)
+    |> call_reply(&C.qi_locale_na/1, :qi)
     |> call(C.get_locale(), :string)
     |> stash_private(:locale)
   end
@@ -313,17 +396,21 @@ defmodule URP.Bridge do
       |> then(&call(&1, C.qi_settings_msf(&1.reply), :qi))
       |> then(&call(&1, C.create_config_update_access(nodepath), :interface))
 
-    update_oid = conn.reply
+    if conn.error do
+      conn
+    else
+      update_oid = conn.reply
 
-    conn
-    |> call(C.qi_name_replace(update_oid), :qi)
-    |> then(fn conn ->
-      Enum.reduce(props, conn, fn {_path, name, value}, conn ->
-        call(conn, C.replace_by_name(name, value), :void)
+      conn
+      |> call(C.qi_name_replace(update_oid), :qi)
+      |> then(fn conn ->
+        Enum.reduce(props, conn, fn {_path, name, value}, conn ->
+          call(conn, C.replace_by_name(name, value), :void)
+        end)
       end)
-    end)
-    |> call(C.qi_changes_batch(update_oid), :qi)
-    |> call(C.commit_changes(), :void)
+      |> call(C.qi_changes_batch(update_oid), :qi)
+      |> call(C.commit_changes(), :void)
+    end
   end
 
   @doc """
@@ -355,11 +442,8 @@ defmodule URP.Bridge do
   def load_document_file_stream(%__MODULE__{} = conn, path) when is_binary(path) do
     with {:ok, %{size: size}} <- File.stat(path),
          {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
-      try do
-        load_from_input_source(conn, {:file, fd, size})
-      after
-        File.close(fd)
-      end
+      conn = load_from_input_source(conn, {:file, fd, size})
+      if conn.error, do: release_input(conn), else: conn
     else
       {:error, reason} ->
         %{conn | error: "#{path}: #{:file.format_error(reason)}"}
@@ -370,8 +454,8 @@ defmodule URP.Bridge do
   Load a document from an enumerable via XInputStream.
 
   Like `load_document_stream/2` but pulls chunks lazily from any `Enumerable`
-  (e.g. `File.stream!/2`, an S3 download stream). The enumerable is iterated
-  in a linked process; chunks are buffered and fed to soffice on demand.
+  (e.g. `File.stream!/2`, an S3 download stream). A demand-driven reader keeps
+  at most the requested data buffered and feeds soffice on demand.
   Stashes the document OID on `conn.doc_oid`.
   """
   @spec load_document_enum_stream(t(), Enumerable.t()) :: t()
@@ -381,13 +465,8 @@ defmodule URP.Bridge do
 
   def load_document_enum_stream(%__MODULE__{} = conn, enumerable) do
     reader = URP.Stream.start_enum_reader(enumerable)
-
-    try do
-      load_from_input_source(conn, {:enum, <<>>, reader})
-    after
-      Process.unlink(reader)
-      Process.exit(reader, :kill)
-    end
+    conn = load_from_input_source(conn, {:enum, <<>>, reader, conn.recv_timeout})
+    if conn.error, do: release_input(conn), else: conn
   end
 
   @doc """
@@ -405,21 +484,17 @@ defmodule URP.Bridge do
   def load_document_write(%__MODULE__{error: e} = conn, _bytes) when not is_nil(e), do: conn
 
   def load_document_write(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
-    conn = seed_tid_cache(conn)
+    conn = seed_protocol_caches(conn)
     conn = ensure_sfa(conn)
-    id = :erlang.unique_integer([:positive])
-    url = "file:///tmp/urp_in_#{id}"
+    url = temp_url("urp_in")
 
-    conn = call(conn, C.sfa_open_file_write(conn.sfa_oid, url), :interface)
-
-    conn =
-      conn
-      |> call(C.qi_sfa_output(conn.reply), :qi)
-      |> call(C.write_bytes(bytes), :void)
-      |> call(C.close_output(), :void)
-      |> load_document(url)
-
-    %{conn | cleanup_url: url}
+    conn
+    |> call(C.sfa_open_file_write(conn.sfa_oid, url), :interface)
+    |> call_reply(&C.qi_sfa_output/1, :qi)
+    |> call(C.write_bytes(bytes), :void)
+    |> call(C.close_output(), :void)
+    |> load_document(url)
+    |> then(&%{&1 | cleanup_url: url})
   end
 
   @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
@@ -428,6 +503,12 @@ defmodule URP.Bridge do
 
   def delete_file(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
     call(conn, C.sfa_kill(sfa_oid, url), :void)
+  end
+
+  defp delete_file_preserving_error(conn, url) do
+    reply = conn.reply
+    conn = attempt_cleanup(conn, &delete_file(&1, url))
+    %{conn | reply: reply}
   end
 
   @doc """
@@ -444,15 +525,14 @@ defmodule URP.Bridge do
   def store_document_write(%__MODULE__{doc_oid: doc_oid} = conn, opts) when is_binary(doc_oid) do
     filter = Keyword.fetch!(opts, :filter)
     filter_data = Keyword.get(opts, :filter_data, [])
-    id = :erlang.unique_integer([:positive])
-    url = "file:///tmp/urp_out_#{id}"
+    url = temp_url("urp_out")
 
     conn =
       conn
       |> store_to_url(url, filter, filter_data)
       |> read_file(url)
 
-    %{delete_file(conn, url) | reply: conn.reply}
+    delete_file_preserving_error(conn, url)
   end
 
   @doc """
@@ -466,23 +546,26 @@ defmodule URP.Bridge do
 
   def read_file(%__MODULE__{} = conn, url) do
     conn = ensure_sfa(conn)
-    conn = call(conn, C.sfa_open_file_read(conn.sfa_oid, url), :interface)
 
     conn =
       conn
-      |> call(C.qi_sfa_input(conn.reply), :qi)
+      |> call(C.sfa_open_file_read(conn.sfa_oid, url), :interface)
+      |> call_reply(&C.qi_sfa_input/1, :qi)
       |> call(C.available(), :int32)
+      |> call_reply(&C.read_bytes/1, :read_bytes)
 
-    size = conn.reply
-    conn = call(conn, C.read_bytes(size), :read_bytes)
-    bytes = conn.reply
-
-    %{call(conn, C.close_input(), :void) | reply: bytes}
+    if conn.error do
+      conn
+    else
+      bytes = conn.reply
+      %{call(conn, C.close_input(), :void) | reply: bytes}
+    end
   end
 
   defp load_from_input_source(conn, source) do
-    conn = seed_tid_cache(conn)
+    conn = seed_protocol_caches(conn)
     stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
+    conn = %{conn | input_ctx: %{source: source, seekable_cache: nil, input_cache: nil}}
 
     conn =
       conn
@@ -498,11 +581,15 @@ defmodule URP.Bridge do
       conn
     else
       # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
-      {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
+      try do
+        {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
 
-      case P.parse_interface_reply(reply) do
-        {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-        {:error, message} -> %{conn | error: message}
+        case P.parse_interface_reply(reply) do
+          {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
+          {:error, message} -> %{conn | error: message}
+        end
+      rescue
+        error -> %{conn | error: "input stream failed: #{Exception.message(error)}"}
       end
     end
   end
@@ -542,8 +629,26 @@ defmodule URP.Bridge do
     if conn.error do
       conn
     else
-      {_reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
-      %{conn | reply: result}
+      try do
+        {reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
+
+        case {P.parse_exception(reply), result} do
+          {message, _result} when is_binary(message) ->
+            remove_partial_sink(sink)
+            %{conn | error: message, reply: nil}
+
+          {nil, {:error, message}} ->
+            remove_partial_sink(sink)
+            %{conn | error: message, reply: nil}
+
+          {nil, result} ->
+            %{conn | reply: result}
+        end
+      rescue
+        error ->
+          remove_partial_sink(sink)
+          %{conn | error: "output stream failed: #{Exception.message(error)}", reply: nil}
+      end
     end
   end
 
@@ -559,11 +664,9 @@ defmodule URP.Bridge do
         :interface
       )
 
-    sfa_oid = conn.reply
-
     conn
     |> stash(:sfa_oid)
-    |> call(C.qi_sfa(sfa_oid), :qi)
+    |> call_reply(&C.qi_sfa/1, :qi)
   end
 
   ## Handshake
@@ -606,6 +709,18 @@ defmodule URP.Bridge do
     props ++ extra
   end
 
+  defp temp_url(prefix) do
+    id = :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
+    "file:///tmp/#{prefix}_#{id}"
+  end
+
+  defp remove_partial_sink({:path, path}) do
+    File.rm(path)
+    :ok
+  end
+
+  defp remove_partial_sink(_sink), do: :ok
+
   ## Send + receive + parse
 
   defp call(%__MODULE__{} = conn, frame) do
@@ -622,24 +737,45 @@ defmodule URP.Bridge do
     |> parse_reply(parser)
   end
 
+  defp call_reply(%__MODULE__{error: e} = conn, _builder, _parser) when not is_nil(e), do: conn
+
+  defp call_reply(%__MODULE__{} = conn, builder, parser),
+    do: call(conn, builder.(conn.reply), parser)
+
   defp parse_reply(%__MODULE__{error: e} = conn, _parser) when not is_nil(e), do: conn
-  defp parse_reply(conn, :qi), do: handle_parsed(conn, P.parse_qi_reply(conn.reply))
-  defp parse_reply(conn, :interface), do: handle_parsed(conn, P.parse_interface_reply(conn.reply))
-  defp parse_reply(conn, :string), do: handle_parsed(conn, P.parse_any_string_reply(conn.reply))
+  defp parse_reply(conn, :qi), do: parse_safely(conn, :qi, &P.parse_qi_reply/1)
+
+  defp parse_reply(conn, :interface),
+    do: parse_safely(conn, :interface, &P.parse_interface_reply/1)
+
+  defp parse_reply(conn, :string),
+    do: parse_safely(conn, :string, &P.parse_any_string_reply/1)
 
   defp parse_reply(conn, :strings),
-    do: handle_parsed(conn, P.parse_string_sequence_reply(conn.reply))
+    do: parse_safely(conn, :strings, &P.parse_string_sequence_reply/1)
 
-  defp parse_reply(conn, :int32), do: handle_parsed(conn, P.parse_int32_reply(conn.reply))
+  defp parse_reply(conn, :int32), do: parse_safely(conn, :int32, &P.parse_int32_reply/1)
 
   defp parse_reply(conn, :read_bytes),
-    do: handle_parsed(conn, P.parse_read_bytes_reply(conn.reply))
+    do: parse_safely(conn, :read_bytes, &P.parse_read_bytes_reply/1)
 
   defp parse_reply(conn, :void) do
-    case P.parse_exception(conn.reply) do
-      nil -> conn
-      message -> %{conn | error: message, reply: nil}
+    try do
+      case P.parse_exception(conn.reply) do
+        nil -> conn
+        message -> %{conn | error: message, reply: nil}
+      end
+    rescue
+      error ->
+        %{conn | error: "malformed URP void reply: #{Exception.message(error)}", reply: nil}
     end
+  end
+
+  defp parse_safely(conn, parser, fun) do
+    handle_parsed(conn, fun.(conn.reply))
+  rescue
+    error ->
+      %{conn | error: "malformed URP #{parser} reply: #{Exception.message(error)}", reply: nil}
   end
 
   defp handle_parsed(conn, {:ok, value}), do: %{conn | reply: value}
@@ -680,22 +816,19 @@ defmodule URP.Bridge do
     e -> %{conn | error: Exception.message(e)}
   end
 
-  # TID cache transfer: protocol parsing during bootstrap populates TIDs in the
-  # process dictionary. capture_tid_cache saves them onto conn so they survive
-  # the process exit. seed_tid_cache restores them in the checkout caller's
-  # process so reply parsing works.
-  defp capture_tid_cache(conn) do
-    case Process.get(:urp_tid_cache) do
-      nil -> conn
-      cache -> %{conn | tid_cache: cache}
-    end
+  # Protocol parsing uses process-local read caches. Pool checkout scopes these
+  # values to one connection and persists the updated maps back onto the worker.
+  defp capture_protocol_caches(conn) do
+    %{
+      conn
+      | tid_cache: Process.get(:urp_tid_cache, conn.tid_cache),
+        oid_cache: Process.get(:urp_oid_cache, conn.oid_cache)
+    }
   end
 
-  defp seed_tid_cache(%__MODULE__{tid_cache: cache} = conn) when cache == %{}, do: conn
-
-  defp seed_tid_cache(%__MODULE__{tid_cache: cache} = conn) do
-    existing = Process.get(:urp_tid_cache, %{})
-    Process.put(:urp_tid_cache, Map.merge(cache, existing))
+  defp seed_protocol_caches(%__MODULE__{} = conn) do
+    if is_nil(Process.get(:urp_tid_cache)), do: Process.put(:urp_tid_cache, conn.tid_cache)
+    if is_nil(Process.get(:urp_oid_cache)), do: Process.put(:urp_oid_cache, conn.oid_cache)
     conn
   end
 

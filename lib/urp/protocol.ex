@@ -72,6 +72,8 @@ defmodule URP.Protocol do
   # Read in chunks and reassemble.
   @recv_chunk_size 4 * 1024 * 1024
 
+  defp recv_exact(_sock, 0, _timeout), do: <<>>
+
   defp recv_exact(sock, size, timeout) when size <= @recv_chunk_size do
     {:ok, payload} = :gen_tcp.recv(sock, size, timeout)
     payload
@@ -163,6 +165,11 @@ defmodule URP.Protocol do
   @spec enc_str_iodata(binary()) :: iodata()
   def enc_str_iodata(s) when byte_size(s) < 0xFF, do: [<<byte_size(s)>>, s]
   def enc_str_iodata(s), do: [<<0xFF, byte_size(s)::32>>, s]
+
+  @doc "Encode a URP compressed sequence count."
+  @spec enc_count(non_neg_integer()) :: binary()
+  def enc_count(count) when count < 0xFF, do: <<count>>
+  def enc_count(count), do: <<0xFF, count::32>>
 
   @doc "Decode a compressed string, returning `{string, rest}`."
   @spec dec_str(binary()) :: {binary(), binary()}
@@ -325,7 +332,7 @@ defmodule URP.Protocol do
 
         <<tc, _ci::16, rest::binary>> ->
           rest = if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
-          {:ok, elem(dec_str(rest), 0)}
+          decode_oid_reference(rest)
       end
     end
   end
@@ -338,8 +345,7 @@ defmodule URP.Protocol do
     if (flags &&& @exception) != 0 do
       {:error, parse_exception(payload)}
     else
-      {oid, _} = dec_str(rest)
-      if oid == "", do: {:error, "empty OID"}, else: {:ok, oid}
+      decode_oid_reference(rest)
     end
   end
 
@@ -425,7 +431,7 @@ defmodule URP.Protocol do
         {message, _} = dec_str(rest)
         message
       rescue
-        MatchError -> "UNO exception (could not parse message)"
+        _error -> "UNO exception (could not parse message)"
       end
     end
   end
@@ -452,6 +458,32 @@ defmodule URP.Protocol do
 
   defp dec_count(<<0xFF, count::32, rest::binary>>), do: {count, rest}
   defp dec_count(<<count, rest::binary>>), do: {count, rest}
+
+  defp decode_oid_reference(rest) do
+    {oid, rest} = dec_str(rest)
+    <<cache::16, _rest::binary>> = rest
+
+    cond do
+      oid != "" ->
+        if cache != 0xFFFF do
+          oid_cache = Process.get(:urp_oid_cache, %{})
+          Process.put(:urp_oid_cache, Map.put(oid_cache, cache, oid))
+        end
+
+        {:ok, oid}
+
+      cache != 0xFFFF ->
+        case Process.get(:urp_oid_cache, %{}) do
+          %{^cache => cached_oid} -> {:ok, cached_oid}
+          _cache -> {:error, "unknown cached OID index #{cache}"}
+        end
+
+      true ->
+        {:error, "empty OID"}
+    end
+  rescue
+    _error -> {:error, "malformed interface reference"}
+  end
 
   defp dec_strings(_rest, 0, acc), do: Enum.reverse(acc)
 

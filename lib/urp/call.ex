@@ -497,7 +497,7 @@ defmodule URP.Call do
       P.enc_str(url),
       P.enc_str("_blank"),
       @frame_search_default,
-      <<length(props)>>,
+      P.enc_count(length(props)),
       props
     ]
   end
@@ -509,7 +509,7 @@ defmodule URP.Call do
     [
       @store_to_url_prefix,
       P.enc_str(url),
-      <<length(props)>>,
+      P.enc_count(length(props)),
       props
     ]
   end
@@ -688,7 +688,7 @@ defmodule URP.Call do
       [
         <<@cache_filter_data_seq::16>>,
         P.enc_str("[]com.sun.star.beans.PropertyValue"),
-        <<length(filter_data)>>,
+        P.enc_count(length(filter_data)),
         inner
       ]
     )

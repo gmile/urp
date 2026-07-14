@@ -35,7 +35,7 @@ defmodule URP do
   For multiple soffice instances, configure named pools:
 
       config :urp, :pools,
-        spreadsheets: [host: "soffice-2", port: 2002, pool_size: 3]
+        spreadsheets: [host: "soffice-2", port: 2002, pool_size: 1]
 
       {:ok, pdf} = URP.convert({:binary, bytes}, filter: "calc_pdf_Export", pool: :spreadsheets)
 
@@ -224,7 +224,8 @@ defmodule URP do
 
   ## Input types
 
-    * `path` (binary) — local file path, loaded via file-backed streaming
+    * `path` (binary) — local file path. File mode reads it locally before
+      uploading it to soffice; use stream input for bounded local memory.
     * `{:binary, bytes}` — raw document bytes
     * enumerable — any `Enumerable` (e.g. `File.stream!/2`), streamed lazily
 
@@ -238,6 +239,8 @@ defmodule URP do
     * `:settings` — list of `{path, property, value}` triplets to set on soffice
       before conversion via `ConfigurationUpdateAccess`. Useful for tuning
       cache limits, graphic memory, etc. Values can be booleans, integers, or strings.
+      These settings modify the soffice process-wide profile and persist after
+      the conversion; do not vary them concurrently on a shared soffice process.
       See [officecfg schema](https://github.com/LibreOffice/core/tree/master/officecfg/registry/schema/org/openoffice/Office)
       for all available settings.
     * `:io` — I/O transfer strategy (default `:file`):
@@ -249,7 +252,8 @@ defmodule URP do
         overhead — soffice writes in fixed
         [32 767-byte chunks](https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573),
         so a 7 MB PDF is ~223 writeBytes calls.
-        No temp files and constant memory usage.
+        No temp files. Path and callback outputs use bounded memory; `:binary`
+        output necessarily accumulates the complete result in memory.
       * `{:file, :stream}` or `{:stream, :file}` — mix strategies independently
         for input and output. `{:file, :stream}` is a good defensive choice:
         fast file-based input with chunked stream output (no large single
@@ -333,17 +337,13 @@ defmodule URP do
   end
 
   defp do_convert(input, opts) do
+    validate_convert_opts!(opts)
+
     case URP.Test.__fetch_stub__() do
       {:ok, fun} ->
         fun.(input, opts)
 
       :error ->
-        if not Keyword.has_key?(opts, :filter) do
-          raise ArgumentError,
-                "URP.convert/2 requires the :filter option. " <>
-                  "Common filters: \"writer_pdf_Export\", \"calc_pdf_Export\", \"impress_pdf_Export\", \"Markdown\""
-        end
-
         {pool, opts} = resolve_pool(opts)
         {output, opts} = Keyword.pop(opts, :output)
 
@@ -361,6 +361,10 @@ defmodule URP do
 
             fun when is_function(fun, 1) ->
               Keyword.put(opts, :sink, fun)
+
+            other ->
+              raise ArgumentError,
+                    ":output must be a path, :binary, or a one-argument function; got: #{inspect(other)}"
           end
 
         case URP.Pool.convert(pool, input, pool_opts) do
@@ -370,6 +374,101 @@ defmodule URP do
           {:ok, _bytes} = ok when output == :binary -> ok
           {:error, _msg} = err -> err
         end
+    end
+  end
+
+  defp validate_convert_opts!(opts) do
+    if not Keyword.keyword?(opts) do
+      raise ArgumentError, "URP.convert/2 options must be a keyword list"
+    end
+
+    filter = Keyword.get(opts, :filter)
+
+    if not (is_binary(filter) and filter != "") do
+      raise ArgumentError,
+            "URP.convert/2 requires the :filter option. " <>
+              "Common filters: \"writer_pdf_Export\", \"calc_pdf_Export\", \"impress_pdf_Export\", \"Markdown\""
+    end
+
+    validate_io!(Keyword.get(opts, :io, :file))
+    validate_timeout!(:timeout, Keyword.get(opts, :timeout, 120_000))
+    validate_timeout!(:recv_timeout, Keyword.get(opts, :recv_timeout, 120_000))
+    validate_output!(Keyword.get(opts, :output))
+    validate_filter_data!(Keyword.get(opts, :filter_data, []))
+    validate_settings!(Keyword.get(opts, :settings, []))
+
+    case Keyword.get(opts, :max_frame_size, 1) do
+      value when is_integer(value) and value > 0 ->
+        :ok
+
+      value ->
+        raise ArgumentError, ":max_frame_size must be a positive integer; got: #{inspect(value)}"
+    end
+
+    case Keyword.get(opts, :pool) do
+      nil -> :ok
+      name when is_atom(name) -> :ok
+      name -> raise ArgumentError, ":pool must be a configured atom; got: #{inspect(name)}"
+    end
+  end
+
+  defp validate_io!(:file), do: :ok
+  defp validate_io!(:stream), do: :ok
+
+  defp validate_io!({input, output})
+       when input in [:file, :stream] and output in [:file, :stream], do: :ok
+
+  defp validate_io!(value) do
+    raise ArgumentError,
+          ":io must be :file, :stream, or {:file | :stream, :file | :stream}; got: #{inspect(value)}"
+  end
+
+  defp validate_timeout!(_name, :infinity), do: :ok
+  defp validate_timeout!(_name, value) when is_integer(value) and value >= 0, do: :ok
+
+  defp validate_timeout!(name, value) do
+    raise ArgumentError,
+          ":#{name} must be a non-negative integer or :infinity; got: #{inspect(value)}"
+  end
+
+  defp validate_output!(nil), do: :ok
+  defp validate_output!(:binary), do: :ok
+  defp validate_output!(path) when is_binary(path), do: :ok
+  defp validate_output!(fun) when is_function(fun, 1), do: :ok
+
+  defp validate_output!(value) do
+    raise ArgumentError,
+          ":output must be a path, :binary, or a one-argument function; got: #{inspect(value)}"
+  end
+
+  defp validate_filter_data!(filter_data) do
+    valid? =
+      Keyword.keyword?(filter_data) and
+        Enum.all?(filter_data, fn {_key, value} ->
+          is_boolean(value) or is_integer(value) or is_binary(value)
+        end)
+
+    if not valid? do
+      raise ArgumentError,
+            ":filter_data must be a keyword list with boolean, integer, or string values"
+    end
+  end
+
+  defp validate_settings!(settings) do
+    valid? =
+      is_list(settings) and
+        Enum.all?(settings, fn
+          {path, property, value} ->
+            is_binary(path) and is_binary(property) and
+              (is_boolean(value) or is_integer(value) or is_binary(value))
+
+          _other ->
+            false
+        end)
+
+    if not valid? do
+      raise ArgumentError,
+            ":settings must contain {path, property, value} triplets with supported values"
     end
   end
 
@@ -396,7 +495,7 @@ defmodule URP do
       end
 
     ext = Map.get(@filter_extensions, filter, ".bin")
-    id = :erlang.unique_integer([:positive])
+    id = :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
     Path.join(System.tmp_dir!(), "#{basename}_#{id}#{ext}")
   end
 
@@ -407,7 +506,24 @@ defmodule URP do
   end
 
   @doc false
+  def ensure_pool!(name) when not is_atom(name) do
+    raise ArgumentError, "pool name must be a configured atom; got: #{inspect(name)}"
+  end
+
   def ensure_pool!(name) do
+    pools = Application.get_env(:urp, :pools, [])
+
+    config =
+      case Keyword.fetch(pools, name) do
+        {:ok, config} ->
+          config
+
+        :error ->
+          raise ArgumentError,
+                "pool #{inspect(name)} is not configured. " <>
+                  "Add it to config :urp, :pools, #{name}: [host: \"...\", port: 2002]"
+      end
+
     pid_name = pool_process_name(name)
 
     case GenServer.whereis(pid_name) do
@@ -415,27 +531,24 @@ defmodule URP do
         pid_name
 
       nil ->
-        pools = Application.get_env(:urp, :pools, [])
+        opts =
+          [
+            name: pid_name,
+            host: Keyword.get(config, :host, "localhost"),
+            port: Keyword.get(config, :port, 2002),
+            pool_size: Keyword.get(config, :pool_size, 1)
+          ] ++
+            Keyword.take(config, [
+              :backoff_initial,
+              :backoff_max,
+              :connect_timeout,
+              :send_timeout
+            ])
 
-        case Keyword.fetch(pools, name) do
-          {:ok, config} ->
-            opts =
-              [
-                name: pid_name,
-                host: Keyword.get(config, :host, "localhost"),
-                port: Keyword.get(config, :port, 2002),
-                pool_size: Keyword.get(config, :pool_size, 1)
-              ] ++ Keyword.take(config, [:backoff_initial, :backoff_max])
-
-            case DynamicSupervisor.start_child(URP.PoolSupervisor, {URP.Pool, opts}) do
-              {:ok, _pid} -> pid_name
-              {:error, {:already_started, _pid}} -> pid_name
-            end
-
-          :error ->
-            raise ArgumentError,
-                  "pool #{inspect(name)} is not configured. " <>
-                    "Add it to config :urp, :pools, #{name}: [host: \"...\", port: 2002]"
+        case DynamicSupervisor.start_child(URP.PoolSupervisor, {URP.Pool, opts}) do
+          {:ok, _pid} -> pid_name
+          {:error, {:already_started, _pid}} -> pid_name
+          {:error, reason} -> raise "could not start pool #{inspect(name)}: #{inspect(reason)}"
         end
     end
   end

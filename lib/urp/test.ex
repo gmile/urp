@@ -38,8 +38,8 @@ defmodule URP.Test do
   ## Process allowances
 
   Stubs are scoped to the process that called `stub/1`. For processes
-  started with `Task` or `GenServer`, `$callers` propagation handles
-  this automatically. For other processes, use `allow/2`:
+  started with `Task`, `$callers` propagation handles this automatically.
+  GenServers and other independently started processes must use `allow/2`:
 
       test "async worker" do
         URP.Test.stub(fn _, _ -> {:ok, "pdf"} end)
@@ -81,8 +81,8 @@ defmodule URP.Test do
   @doc """
   Allow `allowed_pid` to use the stub registered by `owner_pid`.
 
-  Usually not needed — `$callers` propagation handles `Task` and `GenServer`
-  automatically. Use this for processes that don't propagate `$callers`.
+  Usually not needed for `Task`, which propagates `$callers`. Use this for
+  GenServers and other processes that don't propagate `$callers`.
   """
   @spec allow(pid(), pid() | (-> pid() | [pid()])) :: :ok
   def allow(owner_pid \\ self(), allowed_pid) do

@@ -8,12 +8,21 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
     apt-get install -y --no-install-recommends -t trixie-backports \
       libreoffice-core-nogui libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui && \
     apt-get install -y --no-install-recommends \
-      fonts-liberation fonts-crosextra-carlito && \
+      adduser fonts-liberation fonts-crosextra-carlito netcat-openbsd && \
+    adduser --uid 10001 --disabled-password --gecos "" soffice && \
+    mkdir -p /tmp/soffice-profile && \
+    chown soffice:soffice /tmp/soffice-profile && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV HOST=0.0.0.0
 ENV PORT=2002
+ENV HOME=/home/soffice
 
 EXPOSE ${PORT}
 
-CMD ["sh", "-c", "exec soffice --headless --norestore --accept=\"socket,host=${HOST},port=${PORT},tcpNoDelay=1;urp;\""]
+USER soffice
+
+HEALTHCHECK --start-period=10s --interval=2s --timeout=1s --retries=15 \
+  CMD nc -z 127.0.0.1 "$PORT" || exit 1
+
+CMD ["sh", "-c", "exec soffice --headless --norestore -env:UserInstallation=file:///tmp/soffice-profile --accept=\"socket,host=${HOST},port=${PORT},tcpNoDelay=1;urp;\""]

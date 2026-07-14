@@ -31,11 +31,14 @@ defmodule URP.Stream do
 
   import Bitwise
 
-  @type input_source :: binary() | {:file, pid(), non_neg_integer()} | {:enum, binary(), pid()}
+  @type input_source ::
+          binary()
+          | {:file, File.io_device(), non_neg_integer()}
+          | {:enum, binary(), pid(), timeout()}
   @typep source ::
            {:mem, binary(), non_neg_integer()}
-           | {:file, pid(), non_neg_integer()}
-           | {:enum, binary(), pid() | :eof}
+           | {:file, File.io_device(), non_neg_integer()}
+           | {:enum, binary(), pid() | :eof, timeout()}
   @type sink :: nil | {:path, Path.t()} | (binary() -> any())
   @type connection :: map()
 
@@ -210,7 +213,7 @@ defmodule URP.Stream do
   @ole2_magic <<0xD0, 0xCF, 0x11, 0xE0>>
   @magic_bytes_len max(byte_size(@zip_magic), byte_size(@ole2_magic))
 
-  defp seekable_source?({:enum, _, _}), do: false
+  defp seekable_source?({:enum, _, _, _}), do: false
 
   defp seekable_source?({:mem, data, _pos}) do
     match?(@zip_magic <> _, data) or match?(@ole2_magic <> _, data)
@@ -258,7 +261,8 @@ defmodule URP.Stream do
   end
 
   defp handle_input(6, _body, src) do
-    {P.reply(<<available(src)::32-signed>>), src}
+    count = available(src) |> max(0) |> min(2_147_483_647)
+    {P.reply(<<count::32-signed>>), src}
   end
 
   defp handle_input(7, _body, src), do: {P.reply(), src}
@@ -286,7 +290,8 @@ defmodule URP.Stream do
     * `{:path, path}` — write chunks to file as they arrive, returns `{reply, :ok, conn}`
     * `fun/1` — call with each chunk, returns `{reply, :ok, conn}`
   """
-  @spec recv_handling_output(connection(), sink()) :: {binary(), binary() | :ok, connection()}
+  @spec recv_handling_output(connection(), sink()) ::
+          {binary(), binary() | :ok | {:error, String.t()}, connection()}
   def recv_handling_output(conn, sink \\ nil)
 
   def recv_handling_output(conn, nil) do
@@ -294,12 +299,19 @@ defmodule URP.Stream do
   end
 
   def recv_handling_output(conn, {:path, path}) do
-    fd = File.open!(path, [:write, :binary, :raw])
+    case File.open(path, [:write, :binary, :raw]) do
+      {:ok, fd} ->
+        try do
+          do_recv_output(conn, {:file, fd})
+        after
+          File.close(fd)
+        end
 
-    try do
-      do_recv_output(conn, {:file, fd})
-    after
-      File.close(fd)
+      {:error, reason} ->
+        do_recv_output(
+          conn,
+          {:error, "could not open output #{path}: #{:file.format_error(reason)}"}
+        )
     end
   end
 
@@ -353,18 +365,27 @@ defmodule URP.Stream do
   defp write_sink({:mem, chunks}, data), do: {:mem, [data | chunks]}
 
   defp write_sink({:file, fd} = sink, data) do
-    IO.binwrite(fd, data)
-    sink
+    case :file.write(fd, data) do
+      :ok -> sink
+      {:error, reason} -> {:error, "could not write output: #{:file.format_error(reason)}"}
+    end
   end
 
   defp write_sink({:fun, fun} = sink, data) do
-    fun.(data)
-    sink
+    try do
+      fun.(data)
+      sink
+    rescue
+      error -> {:error, "output sink failed: #{Exception.message(error)}"}
+    end
   end
+
+  defp write_sink({:error, _message} = sink, _data), do: sink
 
   defp finalize_sink({:mem, chunks}), do: chunks |> Enum.reverse() |> IO.iodata_to_binary()
   defp finalize_sink({:file, _fd}), do: :ok
   defp finalize_sink({:fun, _fun}), do: :ok
+  defp finalize_sink({:error, message}), do: {:error, message}
 
   ## Source-polymorphic read helpers
   ##
@@ -396,11 +417,11 @@ defmodule URP.Stream do
   end
 
   # Enumerable-backed
-  defp read_chunk({:enum, buffer, reader}, n) do
-    {buffer, reader} = fill_buffer(buffer, reader, n)
+  defp read_chunk({:enum, buffer, reader, timeout}, n) do
+    {buffer, reader} = fill_buffer(buffer, reader, n, timeout)
     to_read = min(n, byte_size(buffer))
     <<chunk::binary-size(^to_read), rest::binary>> = buffer
-    {chunk, {:enum, rest, reader}}
+    {chunk, {:enum, rest, reader, timeout}}
   end
 
   defp skip_chunk({:mem, data, pos}, n) do
@@ -415,11 +436,11 @@ defmodule URP.Stream do
     {:file, fd, size}
   end
 
-  defp skip_chunk({:enum, buffer, reader}, n) do
-    {buffer, reader} = fill_buffer(buffer, reader, n)
+  defp skip_chunk({:enum, buffer, reader, timeout}, n) do
+    {buffer, reader} = fill_buffer(buffer, reader, n, timeout)
     skip = min(n, byte_size(buffer))
     <<_::binary-size(^skip), rest::binary>> = buffer
-    {:enum, rest, reader}
+    {:enum, rest, reader, timeout}
   end
 
   defp available({:mem, data, pos}), do: byte_size(data) - pos
@@ -429,11 +450,11 @@ defmodule URP.Stream do
     size - pos
   end
 
-  defp available({:enum, buffer, :eof}), do: byte_size(buffer)
+  defp available({:enum, buffer, :eof, _timeout}), do: byte_size(buffer)
 
   # Unknown remaining size — return a conservative estimate so soffice
   # keeps reading without over-allocating (it may use this to size buffers).
-  defp available({:enum, buffer, _reader}), do: max(byte_size(buffer), 65_536)
+  defp available({:enum, buffer, _reader, _timeout}), do: max(byte_size(buffer), 65_536)
 
   ## XSeekable source helpers
 
@@ -457,36 +478,124 @@ defmodule URP.Stream do
   defp get_length({:file, _fd, size}), do: size
 
   @doc """
-  Spawn a linked process that iterates `enumerable`, sending chunks to the caller.
+  Spawn a demand-driven reader for `enumerable`.
 
-  The reader sends `{pid, {:chunk, data}}` for each element and `{pid, :eof}`
-  when the enumerable is exhausted. The caller receives these in `fill_buffer/3`.
+  The enumerable advances only after a `{:next, caller}` request, preventing
+  producer data from accumulating unboundedly in the caller's mailbox.
   """
   @spec start_enum_reader(Enumerable.t()) :: pid()
   def start_enum_reader(enumerable) do
-    parent = self()
+    owner = self()
 
-    spawn_link(fn ->
-      Enum.each(enumerable, fn chunk ->
-        data = IO.iodata_to_binary(chunk)
-        send(parent, {self(), {:chunk, data}})
-      end)
-
-      send(parent, {self(), :eof})
+    spawn(fn ->
+      owner_ref = Process.monitor(owner)
+      enum_reader_loop({:new, enumerable}, owner, owner_ref)
     end)
   end
 
-  defp fill_buffer(buffer, :eof, _needed), do: {buffer, :eof}
+  @doc false
+  @spec stop_enum_reader(pid() | :eof) :: :ok
+  def stop_enum_reader(:eof), do: :ok
 
-  defp fill_buffer(buffer, reader, needed) when byte_size(buffer) >= needed,
-    do: {buffer, reader}
+  def stop_enum_reader(reader) when is_pid(reader) do
+    ref = Process.monitor(reader)
+    send(reader, :stop)
 
-  defp fill_buffer(buffer, reader, needed) do
-    # Accumulate as iodata to avoid O(n²) binary concatenation
-    fill_buffer_acc([buffer], byte_size(buffer), reader, needed)
+    receive do
+      {:DOWN, ^ref, :process, ^reader, _reason} -> :ok
+    after
+      1_000 ->
+        Process.exit(reader, :kill)
+
+        receive do
+          {:DOWN, ^ref, :process, ^reader, _reason} -> :ok
+        end
+    end
+
+    flush_reader_messages(reader)
+    :ok
   end
 
-  defp fill_buffer_acc(acc, acc_size, reader, needed) do
+  defp enum_reader_loop(state, owner, owner_ref) do
+    receive do
+      {:next, caller} ->
+        case enum_next(state) do
+          {:chunk, data, continuation} ->
+            send(caller, {self(), {:chunk, data}})
+            enum_reader_loop({:continuation, continuation}, owner, owner_ref)
+
+          :eof ->
+            send(caller, {self(), :eof})
+            enum_reader_loop(:eof, owner, owner_ref)
+
+          {:error, message} ->
+            send(caller, {self(), {:error, message}})
+        end
+
+      :stop ->
+        halt_enum(state)
+        :ok
+
+      {:DOWN, ^owner_ref, :process, ^owner, _reason} ->
+        halt_enum(state)
+        :ok
+    end
+  end
+
+  defp enum_next(:eof), do: :eof
+
+  defp enum_next({:new, enumerable}) do
+    reduce_one(fn command -> Enumerable.reduce(enumerable, command, &suspend_chunk/2) end)
+  end
+
+  defp enum_next({:continuation, continuation}) do
+    reduce_one(continuation)
+  end
+
+  defp reduce_one(reducer) do
+    case reducer.({:cont, nil}) do
+      {:suspended, data, continuation} -> {:chunk, data, continuation}
+      {:done, _acc} -> :eof
+      {:halted, _acc} -> :eof
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    kind, reason -> {:error, Exception.format(kind, reason, __STACKTRACE__)}
+  end
+
+  defp suspend_chunk(chunk, _acc), do: {:suspend, IO.iodata_to_binary(chunk)}
+
+  defp halt_enum({:continuation, continuation}) do
+    continuation.({:halt, nil})
+    :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp halt_enum(_state), do: :ok
+
+  defp flush_reader_messages(reader) do
+    receive do
+      {^reader, _message} -> flush_reader_messages(reader)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp fill_buffer(buffer, :eof, _needed, _timeout), do: {buffer, :eof}
+
+  defp fill_buffer(buffer, reader, needed, _timeout) when byte_size(buffer) >= needed,
+    do: {buffer, reader}
+
+  defp fill_buffer(buffer, reader, needed, timeout) do
+    # Accumulate as iodata to avoid O(n²) binary concatenation
+    fill_buffer_acc([buffer], byte_size(buffer), reader, needed, timeout)
+  end
+
+  defp fill_buffer_acc(acc, acc_size, reader, needed, timeout) do
+    send(reader, {:next, self()})
+
     receive do
       {^reader, {:chunk, data}} ->
         acc = [acc, data]
@@ -495,11 +604,17 @@ defmodule URP.Stream do
         if acc_size >= needed do
           {IO.iodata_to_binary(acc), reader}
         else
-          fill_buffer_acc(acc, acc_size, reader, needed)
+          fill_buffer_acc(acc, acc_size, reader, needed, timeout)
         end
 
       {^reader, :eof} ->
         {IO.iodata_to_binary(acc), :eof}
+
+      {^reader, {:error, message}} ->
+        raise "enumerable input failed: #{message}"
+    after
+      timeout ->
+        raise "enumerable input timed out after #{timeout}ms"
     end
   end
 
