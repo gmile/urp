@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.10.1] - 2026-07-14
+
+### Changed
+
+- Require Elixir 1.20 and validate the project and release flow on Erlang/OTP 29.
+- Refresh project dependencies, development tooling, GitHub Actions, and benchmark results.
+- Expand CI coverage to include dependency, cycle, documentation, Hex audit, Nix flake,
+  Dialyzer, unit, and LibreOffice 26.2 integration checks.
+
+### Fixed
+
+- Allow pure unit tests to run without a local LibreOffice process.
+- Remove the compile-time `URP.Bridge` ↔ `URP.Stream` module cycle.
+- Resolve Elixir 1.20 compiler warnings in stream bitstring matching and bridge dispatch.
+
 ## [v0.10.0] - 2026-03-12
 
 ### Added
