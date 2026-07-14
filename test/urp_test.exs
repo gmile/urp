@@ -202,17 +202,23 @@ defmodule URPTest do
 
   describe "temp file cleanup" do
     test "no urp_in temp files linger after conversion" do
+      before = MapSet.new(Path.wildcard("/tmp/urp_in_*"))
+
       assert {:ok, _pdf} =
                URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
 
-      assert Enum.empty?(Path.wildcard("/tmp/urp_in_*"))
+      after_conversion = MapSet.new(Path.wildcard("/tmp/urp_in_*"))
+      assert MapSet.difference(after_conversion, before) == MapSet.new()
     end
 
     test "no urp_out temp files linger after conversion" do
+      before = MapSet.new(Path.wildcard("/tmp/urp_out_*"))
+
       assert {:ok, _pdf} =
                URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
 
-      assert Enum.empty?(Path.wildcard("/tmp/urp_out_*"))
+      after_conversion = MapSet.new(Path.wildcard("/tmp/urp_out_*"))
+      assert MapSet.difference(after_conversion, before) == MapSet.new()
     end
   end
 
@@ -334,6 +340,70 @@ defmodule URPTest do
     end
   end
 
+  describe "stream I/O through the public API" do
+    test "file-backed stream input remains available through export" do
+      path = write_test_file!("docx", build_test_docx("Streamed file input"))
+      on_exit(fn -> File.rm(path) end)
+
+      assert {:ok, pdf} =
+               URP.convert(path,
+                 filter: @pdf,
+                 output: :binary,
+                 io: {:stream, :file}
+               )
+
+      assert "%PDF-" <> _ = pdf
+    end
+
+    test "consecutive enumerable inputs get independent stream connections" do
+      docx = build_test_docx("Enumerable input")
+
+      for _iteration <- 1..2 do
+        assert {:ok, pdf} =
+                 URP.convert(to_chunks(docx, 1_024),
+                   filter: @pdf,
+                   output: :binary
+                 )
+
+        assert "%PDF-" <> _ = pdf
+      end
+    end
+
+    test "stream output writes a complete path result" do
+      path = tmp_path("pdf")
+      on_exit(fn -> File.rm(path) end)
+
+      assert {:ok, ^path} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: @pdf,
+                 output: path,
+                 io: {:file, :stream}
+               )
+
+      assert "%PDF-" <> _ = File.read!(path)
+    end
+
+    test "stream output propagates sink and UNO export failures" do
+      assert {:error, message} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: @pdf,
+                 output: fn _chunk -> raise "sink exploded" end,
+                 io: {:file, :stream}
+               )
+
+      assert message =~ "sink exploded"
+
+      assert {:error, message} =
+               URP.convert({:binary, build_test_docx()},
+                 filter: "not-a-real-export-filter",
+                 output: :binary,
+                 io: {:file, :stream}
+               )
+
+      assert is_binary(message)
+    end
+  end
+
   describe "pool queuing" do
     test "two concurrent callers queue on pool_size 1 and both succeed" do
       docx1 = build_test_docx("Document One")
@@ -388,6 +458,26 @@ defmodule URPTest do
         end)
 
       assert {:ok, "parent stub"} = Task.await(task)
+    end
+
+    test "production option validation still runs when a stub is installed" do
+      URP.Test.stub(fn _input, _opts -> flunk("invalid calls must not reach the stub") end)
+
+      assert_raise ArgumentError, ~r/requires the :filter option/, fn ->
+        URP.convert({:binary, "bytes"})
+      end
+
+      assert_raise ArgumentError, ~r/:io must be/, fn ->
+        URP.convert({:binary, "bytes"}, filter: @pdf, io: :invalid)
+      end
+
+      assert_raise ArgumentError, ~r/:output must be/, fn ->
+        URP.convert({:binary, "bytes"}, filter: @pdf, output: {:invalid, :output})
+      end
+
+      assert_raise ArgumentError, ~r/:pool must be/, fn ->
+        URP.convert({:binary, "bytes"}, filter: @pdf, pool: "dynamic-name")
+      end
     end
   end
 

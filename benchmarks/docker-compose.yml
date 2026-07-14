@@ -16,16 +16,18 @@ services:
       context: .
       dockerfile: Dockerfile.soffice-debian
     ports:
-      - "2002:2002"
+      - "127.0.0.1:2002:2002"
 
   soffice-cli:
     build:
       context: .
       dockerfile: Dockerfile.soffice-debian
-    container_name: soffice-cli
     command: ["sleep", "infinity"]
+    healthcheck:
+      disable: true
     volumes:
-      - ./fixtures:/fixtures:ro
+      - ./fixtures:/benchmark-fixtures:ro
+      - ../test/fixtures:/test-fixtures:ro
 
   soffice-alpine:
     image: libreofficedocker/alpine:3.23
@@ -35,9 +37,9 @@ services:
       - --norestore
       - --accept=socket,host=0.0.0.0,port=2002,tcpNoDelay=1;urp;
     ports:
-      - "2003:2002"
+      - "127.0.0.1:2003:2002"
 
   gotenberg:
     image: gotenberg/gotenberg:8.32.0
     ports:
-      - "3002:3000"
+      - "127.0.0.1:3002:3000"

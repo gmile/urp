@@ -18,6 +18,8 @@
             packages = [
               beamPackages.erlang
               beamPackages.elixir_1_20
+              beamPackages.hex
+              beamPackages.rebar3
               pkgs.git
               pkgs.uv
             ];

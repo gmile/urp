@@ -71,7 +71,7 @@ defmodule URP.Pool do
       if is_nil(conn.error) do
         {{:ok, conn.private[key]}, {:ok, reset_conversion_state(conn)}}
       else
-        {{:error, conn.error}, {:ok, reset_conversion_state(conn)}}
+        {{:error, conn.error}, :closed}
       end
     end)
   end
@@ -90,8 +90,12 @@ defmodule URP.Pool do
     store_opts = Keyword.take(opts, [:filter, :filter_data])
 
     meta = %{operation: :convert, pool: pool}
+    stream_input? = io_in == :stream or enumerable_input?(input)
 
     do_checkout(pool, timeout, meta, fn conn ->
+      default_max_frame_size = conn.max_frame_size
+      default_recv_timeout = conn.recv_timeout
+
       # Clear stale reply from bootstrap (desktop OID) on the first conversion.
       # Subsequent conversions are already clean via reset_conversion_state.
       conn = %{conn | reply: nil}
@@ -105,21 +109,14 @@ defmodule URP.Pool do
         |> store_output(store_opts, sink, io_out)
 
       result = conn.reply
-      conn = Bridge.close_document(conn)
-      conn = safe_cleanup(conn)
-
-      # Persist accumulated TID cache entries back to conn before clearing.
-      # soffice's type cache is per-connection and doesn't reset between
-      # operations — our side must keep up to avoid type desync.
-      tid_cache = Process.get(:urp_tid_cache, conn.tid_cache)
-      conn = %{conn | tid_cache: tid_cache}
-      Process.delete(:urp_tid_cache)
+      conn = Bridge.cleanup(conn)
+      conn = %{conn | max_frame_size: default_max_frame_size, recv_timeout: default_recv_timeout}
 
       # Stream-based input registers an XInputStream at a fixed OID cache slot.
       # soffice's URP cache doesn't fully reset on reuse, producing truncated
       # documents on subsequent stream loads. Discard the connection to force
       # a fresh handshake. File-based I/O reuses connections normally.
-      reusable = io_in == :file and is_nil(conn.error)
+      reusable = not stream_input? and is_nil(conn.error)
       has_result = is_binary(result) or result == :ok
 
       cond do
@@ -139,7 +136,19 @@ defmodule URP.Pool do
 
   defp normalize_io(:file), do: {:file, :file}
   defp normalize_io(:stream), do: {:stream, :stream}
-  defp normalize_io({in_mode, out_mode}), do: {in_mode, out_mode}
+
+  defp normalize_io({in_mode, out_mode})
+       when in_mode in [:file, :stream] and out_mode in [:file, :stream],
+       do: {in_mode, out_mode}
+
+  defp normalize_io(other) do
+    raise ArgumentError,
+          ":io must be :file, :stream, or {:file | :stream, :file | :stream}; got: #{inspect(other)}"
+  end
+
+  defp enumerable_input?({:binary, bytes}) when is_binary(bytes), do: false
+  defp enumerable_input?(path) when is_binary(path), do: false
+  defp enumerable_input?(_input), do: true
 
   ## Input routing
 
@@ -176,8 +185,15 @@ defmodule URP.Pool do
 
   defp store_output(conn, store_opts, sink, :file) do
     conn = Bridge.store_document_write(conn, store_opts)
-    result = if conn.reply, do: apply_sink(conn.reply, sink)
-    %{conn | reply: result}
+
+    if conn.error do
+      conn
+    else
+      case apply_sink(conn.reply, sink) do
+        {:ok, result} -> %{conn | reply: result}
+        {:error, message} -> %{conn | error: message, reply: nil}
+      end
+    end
   end
 
   defp store_output(conn, store_opts, sink, :stream) do
@@ -187,44 +203,105 @@ defmodule URP.Pool do
 
   defp do_checkout(pool, timeout, meta, fun, attempt \\ 1) do
     t0 = System.monotonic_time()
+    :telemetry.execute([:urp, :call, :start], %{system_time: System.system_time()}, meta)
 
-    result =
+    try do
+      {result, queue_time, service_time, attempts} =
+        do_checkout_attempt(pool, timeout, fun, attempt, 0, 0)
+
+      total_time = System.monotonic_time() - t0
+
+      :telemetry.execute(
+        [:urp, :call, :stop],
+        %{
+          total_time: total_time,
+          queue_time: queue_time,
+          service_time: service_time,
+          backoff_time: max(total_time - queue_time - service_time, 0)
+        },
+        meta |> Map.put(:result, result_tag(result)) |> Map.put(:attempts, attempts)
+      )
+
+      result
+    catch
+      kind, reason ->
+        stacktrace = __STACKTRACE__
+
+        :telemetry.execute(
+          [:urp, :call, :exception],
+          %{duration: System.monotonic_time() - t0},
+          Map.merge(meta, %{kind: kind, reason: reason, stacktrace: stacktrace})
+        )
+
+        case kind do
+          :exit -> {:error, "pool checkout failed: #{Exception.format_exit(reason)}"}
+          _ -> :erlang.raise(kind, reason, stacktrace)
+        end
+    end
+  end
+
+  defp do_checkout_attempt(pool, timeout, fun, attempt, queue_acc, service_acc) do
+    attempt_started = System.monotonic_time()
+
+    {result, queue_time, service_time} =
       NimblePool.checkout!(
         pool,
         :checkout,
         fn _from, conn ->
-          t1 = System.monotonic_time()
-          {result, checkin} = fun.(conn)
-          t2 = System.monotonic_time()
+          checked_out = System.monotonic_time()
 
-          :telemetry.execute(
-            [:urp, :call, :stop],
-            %{
-              total_time: t2 - t0,
-              queue_time: t1 - t0,
-              service_time: t2 - t1
-            },
-            Map.put(meta, :result, result_tag(result))
-          )
+          {result, checkin} =
+            with_protocol_caches(conn, fn ->
+              fun.(conn)
+            end)
 
-          {result, checkin}
+          finished = System.monotonic_time()
+          {{result, checked_out - attempt_started, finished - checked_out}, checkin}
         end,
         timeout
       )
 
-    case result do
-      {:error, message} when is_binary(message) and attempt < @disposed_max_retries ->
-        if String.contains?(message, @bridge_disposed) do
-          Process.sleep(@disposed_retry_interval_ms * attempt)
-          do_checkout(pool, timeout, meta, fun, attempt + 1)
-        else
-          result
-        end
+    queue_acc = queue_acc + queue_time
+    service_acc = service_acc + service_time
 
-      _ ->
-        result
+    if disposed_error?(result) and attempt < @disposed_max_retries do
+      Process.sleep(@disposed_retry_interval_ms * attempt)
+      do_checkout_attempt(pool, timeout, fun, attempt + 1, queue_acc, service_acc)
+    else
+      {result, queue_acc, service_acc, attempt}
     end
   end
+
+  defp disposed_error?({:error, message}) when is_binary(message),
+    do: String.contains?(message, @bridge_disposed)
+
+  defp disposed_error?(_result), do: false
+
+  defp with_protocol_caches(conn, fun) do
+    missing = make_ref()
+    previous_tid = Process.get(:urp_tid_cache, missing)
+    previous_oid = Process.get(:urp_oid_cache, missing)
+    Process.put(:urp_tid_cache, conn.tid_cache)
+    Process.put(:urp_oid_cache, conn.oid_cache)
+
+    try do
+      {result, checkin} = fun.()
+      tid_cache = Process.get(:urp_tid_cache, %{})
+      oid_cache = Process.get(:urp_oid_cache, %{})
+      {result, persist_protocol_caches(checkin, tid_cache, oid_cache)}
+    after
+      restore_process_value(:urp_tid_cache, previous_tid, missing)
+      restore_process_value(:urp_oid_cache, previous_oid, missing)
+    end
+  end
+
+  defp persist_protocol_caches({:ok, conn}, tid_cache, oid_cache),
+    do: {:ok, %{conn | tid_cache: tid_cache, oid_cache: oid_cache}}
+
+  defp persist_protocol_caches(checkin, _tid_cache, _oid_cache), do: checkin
+
+  defp restore_process_value(key, missing, missing), do: Process.delete(key)
+  defp restore_process_value(key, value, _missing), do: Process.put(key, value)
 
   defp result_tag({:error, _}), do: :error
   defp result_tag(_), do: :ok
@@ -242,6 +319,7 @@ defmodule URP.Pool do
     port = Keyword.get(config, :port, 2002)
     backoff_initial = Keyword.get(config, :backoff_initial, @default_backoff_initial)
     backoff_max = Keyword.get(config, :backoff_max, @default_backoff_max)
+    bridge_opts = Keyword.take(config, [:connect_timeout, :send_timeout])
 
     # Use {:async, ...} so start_link returns immediately even if soffice is
     # down and open_with_retry loops for a while. We must transfer socket
@@ -251,14 +329,14 @@ defmodule URP.Pool do
 
     {:async,
      fn ->
-       conn = open_with_retry(host, port, backoff_initial, backoff_max)
+       conn = open_with_retry(host, port, backoff_initial, backoff_max, bridge_opts)
        if conn.sock, do: :gen_tcp.controlling_process(conn.sock, pool_pid)
        conn
      end, config}
   end
 
-  defp open_with_retry(host, port, backoff_initial, backoff_max, attempt \\ 1) do
-    conn = Bridge.open(host, port)
+  defp open_with_retry(host, port, backoff_initial, backoff_max, bridge_opts, attempt \\ 1) do
+    conn = Bridge.open(host, port, bridge_opts)
 
     cond do
       is_nil(conn.error) ->
@@ -266,7 +344,7 @@ defmodule URP.Pool do
 
       is_nil(conn.sock) ->
         # TCP or handshake failed — soffice unreachable. Retry with backoff.
-        delay = min(backoff_initial * Integer.pow(2, attempt - 1), backoff_max)
+        delay = backoff_delay(backoff_initial, backoff_max, attempt)
 
         :telemetry.execute(
           [:urp, :connection, :retry],
@@ -281,13 +359,18 @@ defmodule URP.Pool do
         )
 
         Process.sleep(delay)
-        open_with_retry(host, port, backoff_initial, backoff_max, attempt + 1)
+        open_with_retry(host, port, backoff_initial, backoff_max, bridge_opts, attempt + 1)
 
       true ->
         # Connected but bootstrap failed — don't retry forever.
         Bridge.close!(conn)
         %{conn | sock: nil}
     end
+  end
+
+  defp backoff_delay(initial, maximum, attempt) do
+    capped_attempt = min(attempt - 1, 30)
+    min(initial * Integer.pow(2, capped_attempt), maximum)
   end
 
   @impl NimblePool
@@ -314,20 +397,26 @@ defmodule URP.Pool do
     {:ok, pool_state}
   end
 
-  defp apply_sink(bytes, nil), do: bytes
+  defp apply_sink(bytes, nil), do: {:ok, bytes}
 
   defp apply_sink(bytes, {:path, path}) do
-    File.write!(path, bytes)
-    :ok
+    case File.write(path, bytes) do
+      :ok ->
+        {:ok, :ok}
+
+      {:error, reason} ->
+        {:error, "could not write output #{path}: #{:file.format_error(reason)}"}
+    end
   end
 
   defp apply_sink(bytes, fun) when is_function(fun, 1) do
-    fun.(bytes)
-    :ok
+    try do
+      fun.(bytes)
+      {:ok, :ok}
+    rescue
+      error -> {:error, "output sink failed: #{Exception.message(error)}"}
+    end
   end
-
-  defp safe_cleanup(%{cleanup_url: nil} = conn), do: conn
-  defp safe_cleanup(conn), do: Bridge.delete_file(conn, conn.cleanup_url)
 
   defp reset_conversion_state(conn) do
     %{

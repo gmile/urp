@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Emit complete telemetry spans with start, stop, and exception events.
+- Use the Nix flake as the Elixir/OTP source of truth in CI and release validation.
+- Make LibreOffice integration tests an explicit opt-in instead of probing an ambient port.
+- Clarify that multiple connections to one soffice process are supported but share state
+  and generally do not provide useful conversion parallelism.
+
+### Fixed
+
+- Return errors from non-bang APIs when pool checkout fails and discard broken diagnostic workers.
+- Scope URP TID and OID caches to individual connections and decode cached interface references.
+- Preserve streamed input resources through export and bound enumerable input with demand-driven flow.
+- Propagate stream export and output-sink failures instead of returning partial success.
+- Run best-effort document and remote-temp cleanup after failed conversions.
+- Restore per-call timeout and frame-size overrides before returning workers to the pool.
+- Validate public conversion options before dispatching test stubs or protocol work.
+- Harden release validation and make benchmarks reject failed or non-PDF results.
+
+### Security
+
+- Use unpredictable temporary names and run the benchmark LibreOffice image as a non-root user.
+- Bind documented benchmark service ports to loopback by default.
+
 ## [v0.10.1] - 2026-07-14
 
 ### Changed

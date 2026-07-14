@@ -1,19 +1,33 @@
-soffice_available? =
-  case :gen_tcp.connect(~c"localhost", 2002, [:binary], 1000) do
-    {:ok, sock} ->
-      :gen_tcp.close(sock)
-      true
+integration? = System.get_env("URP_INTEGRATION") in ["1", "true"]
 
-    {:error, _} ->
-      false
+excluded_tags =
+  if integration? do
+    {:ok, _apps} = Application.ensure_all_started(:urp)
+
+    version =
+      case URP.version(timeout: 10_000) do
+        {:ok, version} ->
+          version
+
+        {:error, message} ->
+          raise "URP_INTEGRATION is enabled but soffice is unavailable: #{message}"
+      end
+
+    lo26? =
+      case Regex.run(~r/^(\d+)\.(\d+)/, version) do
+        [_, major, minor] ->
+          {major, minor} = {String.to_integer(major), String.to_integer(minor)}
+          major > 26 or (major == 26 and minor >= 2)
+
+        _other ->
+          false
+      end
+
+    IO.puts("running integration tests against LibreOffice #{version}")
+    if lo26?, do: [], else: [:lo26]
+  else
+    IO.puts("URP_INTEGRATION is not enabled — excluding integration tests")
+    [:integration, :lo26]
   end
-
-# Tests tagged :lo26 require LibreOffice 26.2+. Excluded by default for
-# local development with older soffice. CI includes them (--include lo26).
-excluded_tags = if soffice_available?, do: [:lo26], else: [:integration, :lo26]
-
-unless soffice_available? do
-  IO.puts("soffice not reachable on localhost:2002 — excluding integration tests")
-end
 
 ExUnit.start(exclude: excluded_tags)

@@ -6,35 +6,43 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  validate:
+    name: Validate release commit
+    uses: ./.github/workflows/ci.yml
+
   publish:
     name: Publish to Hex
+    needs: validate
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: "1.20.2"
-          otp-version: "29.0.3"
+      - uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31
 
       - name: Restore dependencies cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          path: deps
+          key: ${{ runner.os }}-mix-deps-${{ hashFiles('mix.lock') }}
 
       - name: Install dependencies
-        run: mix deps.get
+        run: nix develop --command mix deps.get --check-locked
+
+      - name: Verify tag, package version, and changelog
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          grep --fixed-strings --quiet "## [v${version}]" CHANGELOG.md
+          nix develop --command mix hex.build
 
       - name: Publish to Hex
-        run: mix hex.publish --yes
+        run: nix develop --command mix hex.publish --yes
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
 

@@ -8,7 +8,7 @@ a popular LibreOffice-based conversion service.
 
 ```sh
 docker compose --file benchmarks/docker-compose.yml up --detach --wait
-mix run benchmarks/bench.exs
+nix develop --command mix run benchmarks/bench.exs
 ```
 
 The results below were recorded on July 14, 2026, on Apple M3 Max with
@@ -24,39 +24,44 @@ The fixture uses Liberation fonts only — regenerate with
 
 ```
 Name                         ips        average  deviation         median         99th %
-URP                         1.37         0.73 s     ±4.74%         0.72 s         0.82 s
-Gotenberg                   0.84         1.19 s     ±5.46%         1.16 s         1.37 s
+URP → Debian glibc         1.31         0.76 s    ±14.66%         0.72 s         1.09 s
+URP → Alpine musl          0.88         1.14 s     ±8.36%         1.16 s         1.21 s
+Gotenberg (HTTP)            0.85         1.18 s     ±5.55%         1.16 s         1.36 s
 ```
 
 **15.5 MB input → 62 MB PDF:**
 
 ```
 Name                         ips        average  deviation         median         99th %
-URP                        0.196         5.10 s     ±2.12%         5.05 s         5.22 s
-Gotenberg                  0.135         7.39 s     ±0.88%         7.36 s         7.46 s
+URP → Debian glibc        0.194         5.16 s     ±1.86%         5.18 s         5.24 s
+URP → Alpine musl         0.143         6.98 s    ±13.31%         6.74 s         8.01 s
+Gotenberg (HTTP)           0.137         7.30 s     ±2.32%         7.23 s         7.49 s
 ```
 
-URP had **39% lower average latency** for the small document and **31%
-lower average latency** for the large document. The absolute advantage
-grew from 0.46 s to 2.29 s. These measurements compare the complete
-stacks, including their slightly different LibreOffice patch versions;
-they do not isolate dependency or runtime upgrades individually.
+The Debian URP stack had **36% lower average latency** for the small
+document and **29% lower average latency** for the large document than
+Gotenberg. The absolute advantage grew from 0.42 s to 2.14 s. Alpine URP
+was much closer to Gotenberg and had noticeably higher variance on the
+large fixture. These measurements compare complete stacks with different
+LibreOffice builds, C libraries, and container packaging; they do not
+isolate dependency or runtime upgrades individually.
 
 ### Process overhead sanity check
 
 `benchmarks/convert.exs` compares the persistent URP connection with a
 cold `soffice --convert-to` process and Gotenberg using the 33 KB
-`sample3.docx` fixture. Across five timed iterations, the averages were:
+`sample3.docx` fixture. Across ten timed iterations, the results were:
 
-| Method | Average | Range |
-|--------|---------|-------|
-| URP | 46 ms | 43–49 ms |
-| Gotenberg | 153 ms | 146–160 ms |
-| LibreOffice CLI | 280 ms | 267–302 ms |
+| Method | Average | Median | Range |
+|--------|---------|--------|-------|
+| URP | 45 ms | 45 ms | 42–49 ms |
+| Gotenberg | 174 ms | 154 ms | 147–323 ms |
+| LibreOffice CLI | 285 ms | 286 ms | 276–302 ms |
 
 This is a process-overhead check, not an apples-to-apples transport
 benchmark: URP reuses a live office process, while the CLI measurement
-starts a new process for every conversion.
+starts a new process for every conversion. One Gotenberg request was a
+323 ms outlier; the median remained close to the previous run.
 
 ## I/O strategies
 
@@ -64,7 +69,7 @@ URP supports two I/O transfer strategies via the `:io` option, benchmarked
 with `benchmarks/io_bench.exs`:
 
 ```sh
-mix run benchmarks/io_bench.exs
+nix develop --command mix run benchmarks/io_bench.exs
 ```
 
 **File I/O** (`:file`, default) writes temp files on soffice's filesystem

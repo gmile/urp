@@ -177,6 +177,32 @@ defmodule URP.ProtocolTest do
     end
   end
 
+  describe "interface OID cache" do
+    setup do
+      previous = Process.get(:urp_oid_cache)
+      Process.delete(:urp_oid_cache)
+
+      on_exit(fn ->
+        if previous,
+          do: Process.put(:urp_oid_cache, previous),
+          else: Process.delete(:urp_oid_cache)
+      end)
+    end
+
+    test "stores and resolves cached interface references" do
+      assert P.parse_interface_reply(<<0x80>> <> P.enc_str("document-1") <> <<7::16>>) ==
+               {:ok, "document-1"}
+
+      assert P.parse_interface_reply(<<0x80>> <> P.enc_str("") <> <<7::16>>) ==
+               {:ok, "document-1"}
+    end
+
+    test "reports an unknown cached interface reference" do
+      assert P.parse_interface_reply(<<0x80>> <> P.enc_str("") <> <<9::16>>) ==
+               {:error, "unknown cached OID index 9"}
+    end
+  end
+
   describe "parse_string_sequence_reply/1" do
     test "parses empty sequence" do
       payload = <<0x80, 0>>
@@ -226,6 +252,18 @@ defmodule URP.ProtocolTest do
     test "decodes with trailing data" do
       encoded = P.enc_str("hello") <> "extra"
       assert {"hello", "extra"} = P.dec_str(encoded)
+    end
+  end
+
+  describe "enc_count/1" do
+    test "uses the compact form through 254" do
+      assert P.enc_count(0) == <<0>>
+      assert P.enc_count(254) == <<254>>
+    end
+
+    test "uses the extended form from 255" do
+      assert P.enc_count(255) == <<0xFF, 255::32>>
+      assert P.enc_count(65_536) == <<0xFF, 65_536::32>>
     end
   end
 
