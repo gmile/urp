@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.10.2] - 2026-07-14
+
 ### Changed
 
 - Emit complete telemetry spans with start, stop, and exception events.
