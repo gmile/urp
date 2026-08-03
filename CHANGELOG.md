@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.10.3] - 2026-08-03
+
 ### Fixed
 
 - Report the real error when a conversion fails at the socket level, instead of returning the
