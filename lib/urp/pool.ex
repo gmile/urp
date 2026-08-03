@@ -108,30 +108,48 @@ defmodule URP.Pool do
         |> load_input(input, io_in)
         |> store_output(store_opts, sink, io_out)
 
+      # Bridge.cleanup/1 only ever appends to conn.error, so this is the last
+      # point at which we can tell a failed conversion from a failed cleanup.
+      convert_error = conn.error
       result = conn.reply
       conn = Bridge.cleanup(conn)
       conn = %{conn | max_frame_size: default_max_frame_size, recv_timeout: default_recv_timeout}
 
-      # Stream-based input registers an XInputStream at a fixed OID cache slot.
-      # soffice's URP cache doesn't fully reset on reuse, producing truncated
-      # documents on subsequent stream loads. Discard the connection to force
-      # a fresh handshake. File-based I/O reuses connections normally.
-      reusable = not stream_input? and is_nil(conn.error)
-      has_result = is_binary(result) or result == :ok
-
-      cond do
-        reusable ->
-          {wrap_result(result), {:ok, reset_conversion_state(conn)}}
-
-        has_result ->
-          # Conversion succeeded but close/cleanup failed (e.g. soffice drops
-          # the connection after stream→stream). Return the result, discard conn.
-          {wrap_result(result), :closed}
-
-        true ->
-          {{:error, conn.error}, :closed}
+      case checkout_outcome(result, convert_error, conn.error, stream_input?) do
+        {value, :reuse} -> {value, {:ok, reset_conversion_state(conn)}}
+        {value, :discard} -> {value, :closed}
       end
     end)
+  end
+
+  @doc false
+  @spec checkout_outcome(term(), String.t() | nil, String.t() | nil, boolean()) ::
+          {:ok | {:ok, binary()} | {:error, String.t()}, :reuse | :discard}
+  def checkout_outcome(result, convert_error, error, stream_input?) do
+    # Stream-based input registers an XInputStream at a fixed OID cache slot.
+    # soffice's URP cache doesn't fully reset on reuse, producing truncated
+    # documents on subsequent stream loads. Discard the connection to force
+    # a fresh handshake. File-based I/O reuses connections normally.
+    reusable = not stream_input? and is_nil(error)
+
+    # A socket-level failure leaves conn.reply holding whatever the last call
+    # parsed — typically an interface OID — so the shape of the reply alone
+    # cannot tell output from leftovers. Only trust it if the conversion itself
+    # reported no error.
+    has_result = is_nil(convert_error) and (is_binary(result) or result == :ok)
+
+    cond do
+      reusable ->
+        {wrap_result(result), :reuse}
+
+      has_result ->
+        # Conversion succeeded but close/cleanup failed (e.g. soffice drops
+        # the connection after stream→stream). Return the result, discard conn.
+        {wrap_result(result), :discard}
+
+      true ->
+        {{:error, error}, :discard}
+    end
   end
 
   defp normalize_io(:file), do: {:file, :file}
