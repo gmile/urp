@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Report the real error when a conversion fails at the socket level, instead of returning the
+  stale interface OID left in the reply as if it were the converted output.
+
 ## [v0.10.2] - 2026-07-14
 
 ### Changed
