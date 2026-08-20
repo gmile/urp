@@ -73,7 +73,7 @@ defmodule URP.Bridge do
           recv_timeout: timeout(),
           max_frame_size: pos_integer(),
           reply: term(),
-          error: String.t() | nil,
+          error: String.t() | atom() | nil,
           tid_cache: map(),
           oid_cache: map(),
           private: map()
@@ -589,6 +589,7 @@ defmodule URP.Bridge do
           {:error, message} -> %{conn | error: message}
         end
       rescue
+        e in URP.SocketError -> %{conn | error: e.reason}
         error -> %{conn | error: "input stream failed: #{Exception.message(error)}"}
       end
     end
@@ -645,6 +646,10 @@ defmodule URP.Bridge do
             %{conn | reply: result}
         end
       rescue
+        e in URP.SocketError ->
+          remove_partial_sink(sink)
+          %{conn | error: e.reason, reply: nil}
+
         error ->
           remove_partial_sink(sink)
           %{conn | error: "output stream failed: #{Exception.message(error)}", reply: nil}
@@ -787,6 +792,7 @@ defmodule URP.Bridge do
     P.send_frame(conn.sock, frame)
     conn
   rescue
+    e in URP.SocketError -> %{conn | error: e.reason}
     e -> %{conn | error: Exception.message(e)}
   end
 
@@ -813,6 +819,7 @@ defmodule URP.Bridge do
       end
     end
   rescue
+    e in URP.SocketError -> %{conn | error: e.reason}
     e -> %{conn | error: Exception.message(e)}
   end
 

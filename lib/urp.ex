@@ -49,6 +49,12 @@ defmodule URP do
   See `URP.Test` for details.
   """
 
+  @typedoc """
+  Why a call failed: a `soffice` message, or the atom `:gen_tcp` reported when
+  the socket itself gave out (`:timeout`, `:closed`, a POSIX error).
+  """
+  @type error :: String.t() | atom()
+
   @type setting :: {String.t(), String.t(), boolean() | integer() | String.t()}
   @type output :: Path.t() | :binary | (binary() -> any())
   @type io_mode :: :file | :stream | {:file | :stream, :file | :stream}
@@ -79,7 +85,7 @@ defmodule URP do
     * `:pool`    — named pool to use (default: the auto-started pool)
     * `:timeout` — checkout timeout in ms (default `120_000`)
   """
-  @spec version(keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec version(keyword()) :: {:ok, String.t()} | {:error, error()}
   def version(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.version(pool, opts)
@@ -90,7 +96,7 @@ defmodule URP do
   def version!(opts \\ []) do
     case version(opts) do
       {:ok, v} -> v
-      {:error, message} -> raise message
+      {:error, reason} -> raise_reason(reason)
     end
   end
 
@@ -110,7 +116,7 @@ defmodule URP do
     * `:pool`    — named pool to use (default: the auto-started pool)
     * `:timeout` — checkout timeout in ms (default `120_000`)
   """
-  @spec services(keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  @spec services(keyword()) :: {:ok, [String.t()]} | {:error, error()}
   def services(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.services(pool, opts)
@@ -121,7 +127,7 @@ defmodule URP do
   def services!(opts \\ []) do
     case services(opts) do
       {:ok, v} -> v
-      {:error, message} -> raise message
+      {:error, reason} -> raise_reason(reason)
     end
   end
 
@@ -142,7 +148,7 @@ defmodule URP do
     * `:pool`    — named pool to use (default: the auto-started pool)
     * `:timeout` — checkout timeout in ms (default `120_000`)
   """
-  @spec filters(keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  @spec filters(keyword()) :: {:ok, [String.t()]} | {:error, error()}
   def filters(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.filters(pool, opts)
@@ -153,7 +159,7 @@ defmodule URP do
   def filters!(opts \\ []) do
     case filters(opts) do
       {:ok, v} -> v
-      {:error, message} -> raise message
+      {:error, reason} -> raise_reason(reason)
     end
   end
 
@@ -174,7 +180,7 @@ defmodule URP do
     * `:pool`    — named pool to use (default: the auto-started pool)
     * `:timeout` — checkout timeout in ms (default `120_000`)
   """
-  @spec types(keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  @spec types(keyword()) :: {:ok, [String.t()]} | {:error, error()}
   def types(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.types(pool, opts)
@@ -185,7 +191,7 @@ defmodule URP do
   def types!(opts \\ []) do
     case types(opts) do
       {:ok, v} -> v
-      {:error, message} -> raise message
+      {:error, reason} -> raise_reason(reason)
     end
   end
 
@@ -204,7 +210,7 @@ defmodule URP do
     * `:pool`    — named pool to use (default: the auto-started pool)
     * `:timeout` — checkout timeout in ms (default `120_000`)
   """
-  @spec locale(keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec locale(keyword()) :: {:ok, String.t()} | {:error, error()}
   def locale(opts \\ []) do
     {pool, opts} = resolve_pool(opts)
     URP.Pool.locale(pool, opts)
@@ -215,7 +221,7 @@ defmodule URP do
   def locale!(opts \\ []) do
     case locale(opts) do
       {:ok, v} -> v
-      {:error, message} -> raise message
+      {:error, reason} -> raise_reason(reason)
     end
   end
 
@@ -302,9 +308,24 @@ defmodule URP do
       :ok
       iex> URP.convert("/tmp/test.docx", filter: "writer_pdf_Export")
       {:ok, "/tmp/fake.pdf"}
+
+  ## Errors
+
+  A failure is `{:error, reason}`. `reason` is a message string when soffice
+  itself objected — a document it would not open, a filter it does not know —
+  and the atom `:gen_tcp` reported when the socket gave out: `:timeout` if
+  soffice stopped answering, `:closed` if it hung up, or a POSIX error. A caller
+  that has to tell "this document is bad" from "soffice is wedged" matches on
+  the shape:
+
+      case URP.convert(path, filter: "writer_pdf_Export", output: pdf) do
+        {:ok, ^pdf} -> :converted
+        {:error, reason} when is_atom(reason) -> {:unavailable, reason}
+        {:error, message} -> {:refused, message}
+      end
   """
   @spec convert(binary() | {:binary, binary()} | Enumerable.t(), [opt()]) ::
-          {:ok, Path.t()} | {:ok, binary()} | :ok | {:error, String.t()}
+          {:ok, Path.t()} | {:ok, binary()} | :ok | {:error, error()}
   def convert(input, opts \\ [])
 
   def convert(input, opts) when is_binary(input) and is_list(opts) do
@@ -332,7 +353,7 @@ defmodule URP do
     case convert(input, opts) do
       {:ok, v} -> v
       :ok -> :ok
-      {:error, message} -> raise message
+      {:error, reason} -> raise_reason(reason)
     end
   end
 
@@ -422,6 +443,11 @@ defmodule URP do
     raise ArgumentError,
           ":io must be :file, :stream, or {:file | :stream, :file | :stream}; got: #{inspect(value)}"
   end
+
+  # A socket failure re-raises as itself, so the reason survives into the message.
+  @spec raise_reason(error()) :: no_return()
+  defp raise_reason(reason) when is_binary(reason), do: raise(reason)
+  defp raise_reason(reason), do: raise(URP.SocketError, reason: reason)
 
   defp validate_timeout!(_name, :infinity), do: :ok
   defp validate_timeout!(_name, value) when is_integer(value) and value >= 0, do: :ok

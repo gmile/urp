@@ -64,6 +64,22 @@ config :urp, :default,
 > pool sends every worker to the configured host and port; distributing workers
 > across containers requires separate named pools or an external TCP balancer.
 
+### Errors
+
+A failure is `{:error, reason}`. A message string means soffice objected to the
+document or the filter; an atom means the socket gave out — `:timeout` when
+soffice stopped answering, `:closed` when it hung up, or a POSIX error. The two
+call for different handling: retrying a document soffice refused is pointless,
+and a wedged soffice is not the document's fault.
+
+```elixir
+case URP.convert(path, filter: "writer_pdf_Export", output: pdf) do
+  {:ok, ^pdf} -> :converted
+  {:error, reason} when is_atom(reason) -> {:unavailable, reason}
+  {:error, message} -> {:refused, message}
+end
+```
+
 ### Testing
 
 Stub conversions in tests — no running soffice needed. See `URP.Test`.

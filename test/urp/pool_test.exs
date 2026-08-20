@@ -37,6 +37,11 @@ defmodule URP.PoolTest do
                {{:error, "connection closed"}, :discard}
     end
 
+    test "passes a socket reason through as the atom it came in as" do
+      assert URP.Pool.checkout_outcome(nil, :timeout, :timeout, false) ==
+               {{:error, :timeout}, :discard}
+    end
+
     test "reports the error when a failed conversion left stale bytes in the reply" do
       assert URP.Pool.checkout_outcome(<<0x80, 0, 0, 0, 0>>, "timeout", "timeout", true) ==
                {{:error, "timeout"}, :discard}

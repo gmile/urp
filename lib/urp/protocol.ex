@@ -44,7 +44,11 @@ defmodule URP.Protocol do
   @spec send_frame(:gen_tcp.socket(), iodata()) :: :ok
   def send_frame(sock, payload) do
     size = IO.iodata_length(payload)
-    :ok = :gen_tcp.send(sock, [<<size::32, 1::32>>, payload])
+
+    case :gen_tcp.send(sock, [<<size::32, 1::32>>, payload]) do
+      :ok -> :ok
+      {:error, reason} -> raise URP.SocketError, reason: reason
+    end
   end
 
   @doc """
@@ -55,7 +59,7 @@ defmodule URP.Protocol do
   """
   @spec recv_frame(:gen_tcp.socket(), timeout(), pos_integer()) :: binary()
   def recv_frame(sock, timeout \\ @recv_timeout, max_frame_size \\ @max_frame_size) do
-    {:ok, <<size::32, count::32>>} = :gen_tcp.recv(sock, 8, timeout)
+    <<size::32, count::32>> = recv(sock, 8, timeout)
 
     if count != 1 do
       raise "URP: received block with count=#{count}, expected 1 (multi-message blocks not supported)"
@@ -75,8 +79,7 @@ defmodule URP.Protocol do
   defp recv_exact(_sock, 0, _timeout), do: <<>>
 
   defp recv_exact(sock, size, timeout) when size <= @recv_chunk_size do
-    {:ok, payload} = :gen_tcp.recv(sock, size, timeout)
-    payload
+    recv(sock, size, timeout)
   end
 
   defp recv_exact(sock, size, timeout) do
@@ -89,8 +92,17 @@ defmodule URP.Protocol do
 
   defp recv_chunks(sock, remaining, timeout, acc) do
     chunk_size = min(remaining, @recv_chunk_size)
-    {:ok, chunk} = :gen_tcp.recv(sock, chunk_size, timeout)
+    chunk = recv(sock, chunk_size, timeout)
     recv_chunks(sock, remaining - chunk_size, timeout, [chunk | acc])
+  end
+
+  # A socket failure carries the reason as an atom, so callers can tell a
+  # soffice that went quiet from one that refused the document.
+  defp recv(sock, size, timeout) do
+    case :gen_tcp.recv(sock, size, timeout) do
+      {:ok, payload} -> payload
+      {:error, reason} -> raise URP.SocketError, reason: reason
+    end
   end
 
   ## Request header builder

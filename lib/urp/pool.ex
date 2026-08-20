@@ -42,23 +42,23 @@ defmodule URP.Pool do
   end
 
   @doc false
-  @spec version(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec version(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, URP.error()}
   def version(pool, opts \\ []), do: query(pool, opts, &Bridge.version/1, :version)
 
   @doc false
-  @spec services(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  @spec services(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, URP.error()}
   def services(pool, opts \\ []), do: query(pool, opts, &Bridge.services/1, :services)
 
   @doc false
-  @spec filters(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  @spec filters(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, URP.error()}
   def filters(pool, opts \\ []), do: query(pool, opts, &Bridge.filters/1, :filters)
 
   @doc false
-  @spec types(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
+  @spec types(NimblePool.pool(), keyword()) :: {:ok, [String.t()]} | {:error, URP.error()}
   def types(pool, opts \\ []), do: query(pool, opts, &Bridge.types/1, :types)
 
   @doc false
-  @spec locale(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec locale(NimblePool.pool(), keyword()) :: {:ok, String.t()} | {:error, URP.error()}
   def locale(pool, opts \\ []), do: query(pool, opts, &Bridge.locale/1, :locale)
 
   defp query(pool, opts, bridge_fun, key) do
@@ -78,7 +78,7 @@ defmodule URP.Pool do
 
   @doc false
   @spec convert(NimblePool.pool(), binary() | {:binary, binary()} | Enumerable.t(), keyword()) ::
-          {:ok, binary()} | :ok | {:error, String.t()}
+          {:ok, binary()} | :ok | {:error, URP.error()}
   def convert(pool, input, opts \\ []) do
     {timeout, opts} = Keyword.pop(opts, :timeout, @default_timeout)
     {sink, opts} = Keyword.pop(opts, :sink)
@@ -123,8 +123,8 @@ defmodule URP.Pool do
   end
 
   @doc false
-  @spec checkout_outcome(term(), String.t() | nil, String.t() | nil, boolean()) ::
-          {:ok | {:ok, binary()} | {:error, String.t()}, :reuse | :discard}
+  @spec checkout_outcome(term(), URP.error() | nil, URP.error() | nil, boolean()) ::
+          {:ok | {:ok, binary()} | {:error, URP.error()}, :reuse | :discard}
   def checkout_outcome(result, convert_error, error, stream_input?) do
     # Stream-based input registers an XInputStream at a fixed OID cache slot.
     # soffice's URP cache doesn't fully reset on reuse, producing truncated
