@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [v0.11.0] - 2026-08-20
+
+### Changed
+
+- **Breaking:** report socket failures as atoms. A call that fails at the socket now returns
+  `{:error, :timeout}`, `{:error, :closed}` or `{:error, <posix>}` where it previously returned
+  a message string built from a `MatchError`, so callers can tell a `soffice` that stopped
+  answering from a document it refused. Errors from `soffice` itself are still message strings;
+  code that assumed every reason was a binary has to handle both.
+
+### Fixed
+
+- Raise `URP.SocketError` from `URP.Protocol` when a `:gen_tcp` send or recv fails, instead of
+  failing a match and reporting the resulting `MatchError` message as the error.
+
 ## [v0.10.3] - 2026-08-03
 
 ### Fixed
