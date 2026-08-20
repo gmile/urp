@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-## [v0.11.0] - 2026-08-20
-
 ### Changed
 
 - **Breaking:** report socket failures as atoms. A call that fails at the socket now returns
