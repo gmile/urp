@@ -328,16 +328,14 @@ defmodule URP.Pool do
 
   @impl NimblePool
   def init_pool(config) do
-    {:ok, config}
+    {:ok, Keyword.put(config, :taken, [])}
   end
 
   @impl NimblePool
-  def init_worker(config) do
-    host = Keyword.get(config, :host, "localhost")
-    port = Keyword.get(config, :port, 2002)
-    backoff_initial = Keyword.get(config, :backoff_initial, @default_backoff_initial)
-    backoff_max = Keyword.get(config, :backoff_max, @default_backoff_max)
-    bridge_opts = Keyword.take(config, [:connect_timeout, :send_timeout])
+  def init_worker(pool_state) do
+    taken = Keyword.get(pool_state, :taken, [])
+    reserved = pick_address(resolve(Keyword.get(pool_state, :host, "localhost")), taken)
+    pool_state = Keyword.put(pool_state, :taken, [reserved | taken])
 
     # Use {:async, ...} so start_link returns immediately even if soffice is
     # down and open_with_retry loops for a while. We must transfer socket
@@ -347,14 +345,37 @@ defmodule URP.Pool do
 
     {:async,
      fn ->
-       conn = open_with_retry(host, port, backoff_initial, backoff_max, bridge_opts)
+       conn = open_with_retry(pool_state, reserved)
        if conn.sock, do: :gen_tcp.controlling_process(conn.sock, pool_pid)
-       conn
-     end, config}
+       {reserved, conn}
+     end, pool_state}
   end
 
-  defp open_with_retry(host, port, backoff_initial, backoff_max, bridge_opts, attempt \\ 1) do
-    conn = Bridge.open(host, port, bridge_opts)
+  @doc false
+  def pick_address(addresses, taken) do
+    Enum.min_by(addresses, &Enum.count(taken, fn held -> held == &1 end))
+  end
+
+  @doc false
+  def retry_address(addresses, current, taken) do
+    if current in addresses, do: current, else: pick_address(addresses, taken)
+  end
+
+  @doc false
+  def resolve(host) do
+    case :inet.getaddrs(String.to_charlist(host), :inet) do
+      {:ok, addresses} -> addresses |> Enum.map(&List.to_string(:inet.ntoa(&1))) |> Enum.uniq()
+      {:error, _reason} -> [host]
+    end
+  end
+
+  defp open_with_retry(config, address, attempt \\ 1) do
+    host = Keyword.get(config, :host, "localhost")
+    port = Keyword.get(config, :port, 2002)
+    backoff_initial = Keyword.get(config, :backoff_initial, @default_backoff_initial)
+    backoff_max = Keyword.get(config, :backoff_max, @default_backoff_max)
+    bridge_opts = Keyword.take(config, [:connect_timeout, :send_timeout])
+    conn = Bridge.open(address, port, bridge_opts)
 
     cond do
       is_nil(conn.error) ->
@@ -367,17 +388,19 @@ defmodule URP.Pool do
         :telemetry.execute(
           [:urp, :connection, :retry],
           %{attempt: attempt, delay: delay},
-          %{host: host, port: port, reason: conn.error}
+          %{host: host, address: address, port: port, reason: conn.error}
         )
 
         Logger.warning(
           "URP connection failed (attempt #{attempt}, retry in #{delay}ms): #{conn.error}",
           host: host,
+          address: address,
           port: port
         )
 
         Process.sleep(delay)
-        open_with_retry(host, port, backoff_initial, backoff_max, bridge_opts, attempt + 1)
+        address = retry_address(resolve(host), address, Keyword.get(config, :taken, []))
+        open_with_retry(config, address, attempt + 1)
 
       true ->
         # Connected but bootstrap failed — don't retry forever.
@@ -392,8 +415,8 @@ defmodule URP.Pool do
   end
 
   @impl NimblePool
-  def handle_checkout(:checkout, _from, conn, pool_state) do
-    {:ok, conn, conn, pool_state}
+  def handle_checkout(:checkout, _from, {reserved, conn}, pool_state) do
+    {:ok, conn, {reserved, conn}, pool_state}
   end
 
   @impl NimblePool
@@ -401,17 +424,17 @@ defmodule URP.Pool do
     {:remove, :closed, pool_state}
   end
 
-  def handle_checkin({:ok, conn}, _from, _worker_state, pool_state) do
-    {:ok, conn, pool_state}
+  def handle_checkin({:ok, conn}, _from, {reserved, _conn}, pool_state) do
+    {:ok, {reserved, conn}, pool_state}
   end
 
   @impl NimblePool
-  def terminate_worker(_reason, %Bridge{} = conn, pool_state) do
+  def terminate_worker(_reason, {reserved, %Bridge{} = conn}, pool_state) do
     Bridge.close!(conn)
-    {:ok, pool_state}
+    {:ok, Keyword.update(pool_state, :taken, [], &List.delete(&1, reserved))}
   end
 
-  def terminate_worker(_reason, _conn, pool_state) do
+  def terminate_worker(_reason, _worker_state, pool_state) do
     {:ok, pool_state}
   end
 
