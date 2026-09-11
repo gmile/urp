@@ -77,6 +77,42 @@ defmodule URP.PoolReconnectTest do
                    5_000
   end
 
+  test "a pool spreads its workers over every address the host resolves to" do
+    lookup = :inet_db.res_option(:lookup)
+    :inet_db.set_lookup([:file | lookup])
+    :inet_db.add_host({127, 0, 0, 1}, [~c"soffice-pair"])
+    :inet_db.add_host({127, 0, 0, 2}, [~c"soffice-pair"])
+
+    on_exit(fn ->
+      :inet_db.del_host({127, 0, 0, 1})
+      :inet_db.del_host({127, 0, 0, 2})
+      :inet_db.set_lookup(lookup)
+    end)
+
+    port = unused_port!()
+
+    start_supervised!(
+      {URP.Pool,
+       name: :"spread_test_#{System.unique_integer([:positive])}",
+       host: "soffice-pair",
+       port: port,
+       pool_size: 2,
+       connect_timeout: 300,
+       backoff_initial: 10,
+       backoff_max: 100}
+    )
+
+    assert_receive {:telemetry_event, [:urp, :connection, :retry], %{attempt: 1},
+                    %{address: first}},
+                   5_000
+
+    assert_receive {:telemetry_event, [:urp, :connection, :retry], %{attempt: 1},
+                    %{address: second}},
+                   5_000
+
+    assert Enum.sort([first, second]) == ["127.0.0.1", "127.0.0.2"]
+  end
+
   test "checkout timeout returns an error and emits start plus exception" do
     port = unused_port!()
     pool_name = :checkout_timeout_test
