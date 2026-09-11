@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.12.0] - 2026-09-11
+
 ### Changed
 
 - Spread pool workers across the addresses `host` resolves to, so a pool behind a headless
