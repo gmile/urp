@@ -59,10 +59,11 @@ config :urp, :default,
 > A single URP connection handles one operation at a time. LibreOffice accepts
 > multiple connections to one soffice process, but they share process-wide
 > state and generally do not improve conversion throughput. Keep `pool_size: 1`
-> unless you have tested your workload. For predictable parallelism and fault
-> isolation, use separate soffice processes with distinct profiles. The current
-> pool sends every worker to the configured host and port; distributing workers
-> across containers requires separate named pools or an external TCP balancer.
+> per soffice process. For parallelism and fault isolation, run one soffice per
+> container and point `host` at a name that resolves to all of them (a headless
+> Kubernetes service, a round-robin DNS record): each worker connects to the
+> address the fewest workers already hold, so `pool_size: N` spreads over N
+> processes. A worker whose address drops out of DNS reconnects elsewhere.
 
 ### Errors
 

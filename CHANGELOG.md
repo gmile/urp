@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Spread pool workers across the addresses `host` resolves to, so a pool behind a headless
+  Kubernetes service or a round-robin DNS name uses every soffice instance. A worker whose address
+  drops out of DNS picks another on retry.
+
 ## [v0.11.0] - 2026-08-20
 
 ### Changed
