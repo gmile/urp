@@ -28,8 +28,8 @@
       packages = forAllSystems (
         { pkgs, beam }:
         {
-          release = pkgs.writeShellApplication {
-            name = "release";
+          publish = pkgs.writeShellApplication {
+            name = "publish";
             runtimeInputs = mixTools beam ++ [
               pkgs.gh
               pkgs.git
