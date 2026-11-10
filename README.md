@@ -125,6 +125,14 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks and container image recommen
 
 ## Releasing
 
+From a clean `main` that matches `origin/main`, with `major`, `minor` or `patch`:
+
+```sh
+nix run .#release -- minor
+```
+
+It does what you would by hand:
+
 1. Bump `VERSION` and rename the `[Unreleased]` section of `CHANGELOG.md` to
    `[vX.Y.Z] - YYYY-MM-DD`, with a new empty `[Unreleased]` above it.
 2. Commit.

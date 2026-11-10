@@ -17,6 +17,16 @@
             beam = pkgs.beam_minimal.packages.erlang_29;
           }
         );
+      version = lib.trim (builtins.readFile ./VERSION);
+      next =
+        let
+          bumped = part: toString (lib.toInt (part version) + 1);
+        in
+        {
+          major = "${bumped lib.versions.major}.0.0";
+          minor = "${lib.versions.major version}.${bumped lib.versions.minor}.0";
+          patch = "${lib.versions.majorMinor version}.${bumped lib.versions.patch}";
+        };
       mixTools = beam: [
         beam.erlang
         beam.elixir_1_20
@@ -28,6 +38,34 @@
       packages = forAllSystems (
         { pkgs, beam }:
         {
+          release = pkgs.writeShellApplication {
+            name = "release";
+            runtimeInputs = [
+              pkgs.gawk
+              pkgs.git
+              pkgs.gnused
+            ];
+            runtimeEnv = next;
+            text = ''
+              case ''${1:-} in
+                major | minor | patch) version=''${!1} ;;
+                *) echo "usage: release major|minor|patch" >&2 && exit 1 ;;
+              esac
+              git fetch --quiet origin main
+              if [ "$(git branch --show-current)" != main ] ||
+                [ -n "$(git status --porcelain --untracked-files=no)" ] ||
+                [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+                echo "release from a clean main that matches origin/main" >&2
+                exit 1
+              fi
+              awk '/^## \[Unreleased\]/ { open = 1; next } /^## / { exit } open && NF { found = 1 } END { exit !found }' CHANGELOG.md ||
+                { echo "CHANGELOG.md has nothing under [Unreleased]" >&2 && exit 1; }
+              sed --in-place "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [v$version] - $(date --utc +%F)/" CHANGELOG.md
+              echo "$version" > VERSION
+              git commit --quiet VERSION CHANGELOG.md --message "Release v$version"
+              git push origin main
+            '';
+          };
           publish = pkgs.writeShellApplication {
             name = "publish";
             runtimeInputs = mixTools beam ++ [
@@ -35,7 +73,7 @@
               pkgs.git
             ];
             runtimeEnv = {
-              VERSION = lib.trim (builtins.readFile ./VERSION);
+              VERSION = version;
               MIX_REBAR3 = "${beam.rebar3}/bin/rebar3";
             };
             text = ''
