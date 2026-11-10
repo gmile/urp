@@ -138,7 +138,7 @@
                 (exec 3<>/dev/tcp/127.0.0.1/2002) 2>/dev/null && break
                 sleep 1
               done
-              URP_INTEGRATION=1 mix test --include integration --include lo26
+              mix test --include integration
               kill %1
             '').overrideAttrs
               (old: {

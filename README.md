@@ -102,7 +102,7 @@ Or run the integration suite against a soffice of your own:
 
 ```sh
 docker compose --file benchmarks/docker-compose.yml up --detach --wait soffice
-URP_INTEGRATION=1 nix develop --command mix test --include lo26
+nix develop --command mix test --include integration
 ```
 
 ### Telemetry

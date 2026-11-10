@@ -107,8 +107,6 @@ defmodule URPTest do
       assert "%PDF-" <> _ = pdf
     end
 
-    # Requires LO 26.2+; exclude locally if running older soffice.
-    @tag :lo26
     test "docx to markdown" do
       assert {:ok, md} =
                URP.convert({:binary, build_test_docx()},
