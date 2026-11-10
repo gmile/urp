@@ -98,10 +98,11 @@ nixpkgs on Linux, with:
 nix flake check
 ```
 
-Or run the integration suite against a soffice of your own:
+Or run the integration suite yourself, against LibreOffice from nixpkgs listening
+on `PORT`, 2002 by default:
 
 ```sh
-docker compose --file benchmarks/docker-compose.yml up --detach --wait soffice
+nix run .#soffice &
 nix develop --command mix test --include integration
 ```
 

@@ -51,6 +51,22 @@
             mix deps.get
             mix hex.audit
           '';
+          soffice = pkgs.writeShellApplication {
+            name = "soffice";
+            runtimeEnv.FONTCONFIG_FILE = pkgs.makeFontsConf {
+              fontDirectories = [
+                pkgs.liberation_ttf
+                pkgs.carlito
+              ];
+            };
+            text = ''
+              exec ${
+                if pkgs.stdenv.hostPlatform.isDarwin then pkgs.libreoffice-bin else pkgs.libreoffice
+              }/bin/soffice --headless --norestore --nologo \
+                "-env:UserInstallation=file://''${TMPDIR:-/tmp}/urp-soffice" \
+                "--accept=socket,host=127.0.0.1,port=''${PORT:-2002},tcpNoDelay=1;urp;"
+            '';
+          };
         }
       );
 
@@ -72,24 +88,30 @@
             hash = "sha256-wG1z4+BtT+UxoR8+5KF3Ec/fmeZix1j1G/IPXuc+kH0=";
           };
           mix =
-            name: env: command:
+            {
+              name,
+              env ? "test",
+              inputs ? [ ],
+              files ? [
+                ./.formatter.exs
+                ./mix.exs
+                ./mix.lock
+                ./lib
+                ./test
+                ./README.md
+                ./PERFORMANCE.md
+                ./CHANGELOG.md
+                ./LICENSE
+              ],
+              command,
+            }:
             pkgs.stdenvNoCC.mkDerivation {
               inherit name;
               src = lib.fileset.toSource {
                 root = ./.;
-                fileset = lib.fileset.unions [
-                  ./.formatter.exs
-                  ./mix.exs
-                  ./mix.lock
-                  ./lib
-                  ./test
-                  ./README.md
-                  ./PERFORMANCE.md
-                  ./CHANGELOG.md
-                  ./LICENSE
-                ];
+                fileset = lib.fileset.unions files;
               };
-              nativeBuildInputs = mixTools beam;
+              nativeBuildInputs = mixTools beam ++ inputs;
               MIX_ENV = env;
               MIX_REBAR3 = "${beam.rebar3}/bin/rebar3";
               HEX_OFFLINE = 1;
@@ -102,54 +124,60 @@
               '';
               installPhase = "touch $out";
             };
-          plt = (mix "plt" "dev" "mix dialyzer --plt").overrideAttrs {
-            src = lib.fileset.toSource {
-              root = ./.;
-              fileset = lib.fileset.unions [
-                ./mix.exs
-                ./mix.lock
-              ];
-            };
-            installPhase = "mkdir $out && cp priv/plts/*.plt $out";
+          plt = mix {
+            name = "plt";
+            env = "dev";
+            files = [
+              ./mix.exs
+              ./mix.lock
+            ];
+            command = ''
+              mix dialyzer --plt
+              mkdir $out
+              cp priv/plts/*.plt $out
+            '';
           };
         in
         {
-          test = mix "test" "test" ''
-            mix format --check-formatted
-            mix compile --warnings-as-errors
-            mix deps.unlock --check-unused
-            mix xref graph --format cycles --fail-above 0
-            mix test
-          '';
-          docs = mix "docs" "dev" "mix docs --warnings-as-errors";
-          dialyzer = mix "dialyzer" "dev" ''
-            mkdir -p priv/plts
-            cp ${plt}/* priv/plts
-            mix dialyzer --no-check
-          '';
+          test = mix {
+            name = "test";
+            command = ''
+              mix format --check-formatted
+              mix compile --warnings-as-errors
+              mix deps.unlock --check-unused
+              mix xref graph --format cycles --fail-above 0
+              mix test
+            '';
+          };
+          docs = mix {
+            name = "docs";
+            env = "dev";
+            command = "mix docs --warnings-as-errors";
+          };
+          dialyzer = mix {
+            name = "dialyzer";
+            env = "dev";
+            command = ''
+              mkdir -p priv/plts
+              cp ${plt}/* priv/plts
+              mix dialyzer --no-check
+            '';
+          };
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          integration =
-            (mix "integration" "test" ''
-              soffice --headless --norestore --nologo \
-                -env:UserInstallation=file://$TMPDIR/soffice \
-                "--accept=socket,host=127.0.0.1,port=2002,tcpNoDelay=1;urp;" &
+          integration = mix {
+            name = "integration";
+            inputs = [ self.packages.${pkgs.stdenv.hostPlatform.system}.soffice ];
+            command = ''
+              soffice &
               for _ in $(seq 120); do
                 (exec 3<>/dev/tcp/127.0.0.1/2002) 2>/dev/null && break
                 sleep 1
               done
               mix test --include integration
               kill %1
-            '').overrideAttrs
-              (old: {
-                nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.libreoffice ];
-                FONTCONFIG_FILE = pkgs.makeFontsConf {
-                  fontDirectories = [
-                    pkgs.liberation_ttf
-                    pkgs.carlito
-                  ];
-                };
-              });
+            '';
+          };
         }
       );
 
