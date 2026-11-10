@@ -91,7 +91,14 @@ assert {:ok, _} = MyApp.generate_invoice(order)
 ```
 
 `mix test` always runs the deterministic unit suite without probing local ports.
-Run the complete suite, including the LibreOffice 26.2+ coverage, explicitly with:
+Run everything CI runs, including the integration suite against LibreOffice from
+nixpkgs on Linux, with:
+
+```sh
+nix flake check
+```
+
+Or run the integration suite against a soffice of your own:
 
 ```sh
 docker compose --file benchmarks/docker-compose.yml up --detach --wait soffice
