@@ -7,9 +7,6 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'determinatesystems/magic-nix-cache-action@v15'
         - 'nixbuild/nix-quick-install-action@v35'
-    '.github/workflows/release.yml':
-        - 'actions/checkout@v7.0.1'
-        - 'nixbuild/nix-quick-install-action@v35'
 dependencies:
     'actions/checkout@v7.0.1':
         ref: 'v7.0.1'

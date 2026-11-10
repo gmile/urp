@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -11,7 +12,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -29,3 +30,33 @@ jobs:
           diagnostic-endpoint: ""
 
       - run: nix flake check --print-build-logs
+
+  version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    outputs:
+      unreleased: ${{ steps.release.outputs.unreleased }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - id: release
+        run: git ls-remote --exit-code --tags origin "v$(cat VERSION)" > /dev/null || echo unreleased=true >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: [test, version]
+    if: needs.version.outputs.unreleased == 'true'
+    runs-on: ubuntu-26.04
+    environment: hex
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: nixbuild/nix-quick-install-action@v35
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: nix run .#release

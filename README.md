@@ -125,10 +125,14 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks and container image recommen
 
 ## Releasing
 
-Open a pull request that sets the new version in `VERSION` and renames the
-`[Unreleased]` section of `CHANGELOG.md` to `[vX.Y.Z] - YYYY-MM-DD`, with a new
-empty `[Unreleased]` above it. Merging it publishes the package and its docs to
-Hex and creates the GitHub release.
+1. Bump `VERSION` and rename the `[Unreleased]` section of `CHANGELOG.md` to
+   `[vX.Y.Z] - YYYY-MM-DD`, with a new empty `[Unreleased]` above it.
+2. Commit.
+3. Push to `main`.
+
+CI publishes the package and its docs to Hex and creates the GitHub release
+once the tests pass. A release that failed before its tag was created can be
+retried by running the CI workflow on `main`.
 
 ## License
 
