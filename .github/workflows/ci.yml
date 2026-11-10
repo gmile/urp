@@ -3,16 +3,17 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   test:
-    name: Test
     runs-on: ubuntu-26.04
 
     steps:

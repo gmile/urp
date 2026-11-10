@@ -130,8 +130,8 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks and container image recommen
 2. Commit.
 3. Push to `main`.
 
-CI publishes the package and its docs to Hex and creates the GitHub release
-once the tests pass. A release that failed before its tag was created can be
+Once the tests pass, CI publishes the package and its docs to Hex and creates
+the GitHub release. A release that failed before its tag was created can be
 retried by running the CI workflow on `main`.
 
 ## License
