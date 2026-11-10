@@ -23,34 +23,29 @@
         beam.hex
         beam.rebar3
       ];
-      mixScript =
-        pkgs: beam: name: text:
-        pkgs.writeShellApplication {
-          inherit name text;
-          runtimeInputs = mixTools beam ++ [
-            pkgs.gh
-            pkgs.git
-          ];
-          runtimeEnv = {
-            VERSION = lib.trim (builtins.readFile ./VERSION);
-            MIX_REBAR3 = "${beam.rebar3}/bin/rebar3";
-          };
-        };
     in
     {
       packages = forAllSystems (
         { pkgs, beam }:
         {
-          release = mixScript pkgs beam "release" ''
-            grep --fixed-strings --quiet "## [v$VERSION]" CHANGELOG.md
-            mix deps.get
-            mix hex.publish --yes
-            gh release create "v$VERSION" --target "$(git rev-parse HEAD)" --generate-notes
-          '';
-          audit = mixScript pkgs beam "audit" ''
-            mix deps.get
-            mix hex.audit
-          '';
+          release = pkgs.writeShellApplication {
+            name = "release";
+            runtimeInputs = mixTools beam ++ [
+              pkgs.gh
+              pkgs.git
+            ];
+            runtimeEnv = {
+              VERSION = lib.trim (builtins.readFile ./VERSION);
+              MIX_REBAR3 = "${beam.rebar3}/bin/rebar3";
+            };
+            text = ''
+              grep --fixed-strings --quiet "## [v$VERSION]" CHANGELOG.md
+              mix deps.get
+              mix hex.audit
+              mix hex.publish --yes
+              gh release create "v$VERSION" --target "$(git rev-parse HEAD)" --generate-notes
+            '';
+          };
           soffice = pkgs.writeShellApplication {
             name = "soffice";
             runtimeEnv.FONTCONFIG_FILE = pkgs.makeFontsConf {
