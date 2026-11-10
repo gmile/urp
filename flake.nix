@@ -169,11 +169,9 @@
             name = "integration";
             inputs = [ self.packages.${pkgs.stdenv.hostPlatform.system}.soffice ];
             command = ''
-              soffice &
-              for _ in $(seq 120); do
-                (exec 3<>/dev/tcp/127.0.0.1/2002) 2>/dev/null && break
-                sleep 1
-              done
+              soffice &> soffice.log &
+              timeout 60 bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/2002) 2>/dev/null; do sleep 1; done' ||
+                { cat soffice.log; exit 1; }
               mix test --include integration
               kill %1
             '';
