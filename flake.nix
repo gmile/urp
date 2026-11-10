@@ -103,6 +103,13 @@
               installPhase = "touch $out";
             };
           plt = (mix "plt" "dev" "mix dialyzer --plt").overrideAttrs {
+            src = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                ./mix.exs
+                ./mix.lock
+              ];
+            };
             installPhase = "mkdir $out && cp priv/plts/*.plt $out";
           };
         in
