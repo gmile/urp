@@ -40,7 +40,7 @@ jobs:
       - id: release
         run: git ls-remote --exit-code --tags origin "v$(cat VERSION)" > /dev/null || echo unreleased=true >> "$GITHUB_OUTPUT"
 
-  release:
+  publish:
     needs: [test, version]
     if: needs.version.outputs.unreleased == 'true'
     runs-on: ubuntu-26.04
