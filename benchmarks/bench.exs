@@ -49,7 +49,7 @@ urp_opts = [filter: "writer_pdf_Export", filter_data: gotenberg_filter_data, out
 # ── Gotenberg setup ──
 
 Application.ensure_all_started(:telemetry)
-{:ok, _} = Finch.start_link(name: Req.Finch)
+{:ok, _} = Application.ensure_all_started(:req)
 form_data = [files: {docx_bytes, filename: fixture, content_type: "application/octet-stream"}]
 
 # ── Alpine pool (port 2003) ──
