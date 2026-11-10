@@ -175,7 +175,6 @@
           test = mix {
             name = "test";
             command = ''
-              mix format --check-formatted
               mix compile --warnings-as-errors
               mix deps.unlock --check-unused
               mix xref graph --format cycles --fail-above 0
@@ -187,6 +186,33 @@
             env = "dev";
             command = "mix docs --warnings-as-errors";
           };
+          formatting =
+            pkgs.runCommand "formatting"
+              {
+                nativeBuildInputs = [
+                  pkgs.nixfmt
+                  beam.elixir_1_20
+                ];
+                src = lib.fileset.toSource {
+                  root = ./.;
+                  fileset = lib.fileset.unions [
+                    (lib.fileset.fileFilter (file: file.hasExt "nix") ./.)
+                    ./.formatter.exs
+                    ./mix.exs
+                    ./VERSION
+                    ./lib
+                    ./test
+                  ];
+                };
+              }
+              ''
+                cp --recursive --no-preserve=mode $src source
+                cd source
+                export HOME=$TMPDIR
+                find . -name '*.nix' -exec nixfmt --check {} +
+                mix format --check-formatted
+                touch $out
+              '';
           dialyzer = mix {
             name = "dialyzer";
             env = "dev";
@@ -211,6 +237,8 @@
           };
         }
       );
+
+      formatter = forAllSystems ({ pkgs, ... }: pkgs.nixfmt-tree);
 
       devShells = forAllSystems (
         { pkgs, ... }:
