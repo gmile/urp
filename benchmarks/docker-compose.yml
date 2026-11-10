@@ -30,7 +30,7 @@ services:
       - ../test/fixtures:/test-fixtures:ro
 
   soffice-alpine:
-    image: libreofficedocker/alpine:3.23
+    image: libreofficedocker/alpine:3.24
     command:
       - soffice
       - --headless
@@ -40,6 +40,6 @@ services:
       - "127.0.0.1:2003:2002"
 
   gotenberg:
-    image: gotenberg/gotenberg:8.32.0
+    image: gotenberg/gotenberg:8.40.0
     ports:
       - "127.0.0.1:3002:3000"

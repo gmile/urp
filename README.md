@@ -91,11 +91,19 @@ assert {:ok, _} = MyApp.generate_invoice(order)
 ```
 
 `mix test` always runs the deterministic unit suite without probing local ports.
-Run the complete suite, including the LibreOffice 26.2+ coverage, explicitly with:
+Run everything CI runs, including the integration suite against LibreOffice from
+nixpkgs on Linux, with:
 
 ```sh
-docker compose --file benchmarks/docker-compose.yml up --detach --wait soffice
-URP_INTEGRATION=1 nix develop --command mix test --include lo26
+nix flake check
+```
+
+Or run the integration suite yourself, against LibreOffice from nixpkgs listening
+on `PORT`, 2002 by default:
+
+```sh
+nix run .#soffice &
+nix develop --command mix test --include integration
 ```
 
 ### Telemetry
@@ -117,12 +125,14 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks and container image recommen
 
 ## Releasing
 
-```sh
-./release.sh patch   # or minor, major
-git push origin main
-# Wait for main CI, then:
-git push origin "v$(cat VERSION)"
-```
+1. Bump `VERSION` and rename the `[Unreleased]` section of `CHANGELOG.md` to
+   `[vX.Y.Z] - YYYY-MM-DD`, with a new empty `[Unreleased]` above it.
+2. Commit.
+3. Push to `main`.
+
+Once the tests pass, CI publishes the package and its docs to Hex and creates
+the GitHub release. A release that failed before its tag was created can be
+retried by running the CI workflow on `main`.
 
 ## License
 

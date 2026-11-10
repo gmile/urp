@@ -48,7 +48,7 @@ defmodule URP.MixProject do
       {:nimble_ownership, "~> 1.0"},
       {:nimble_pool, "~> 1.1"},
       {:telemetry, "~> 1.0"},
-      {:req, "~> 0.6", only: :dev, runtime: false},
+      {:req, "~> 0.7", only: :dev, runtime: false},
       {:benchee, "~> 1.3", only: :dev, runtime: false}
     ]
   end
