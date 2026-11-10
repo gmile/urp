@@ -2,57 +2,22 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
-
-permissions:
-  contents: read
+    branches: [main]
+    paths: [VERSION]
 
 jobs:
-  validate:
-    name: Validate release commit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31
-      - run: nix flake check --print-build-logs
-
-  publish:
-    name: Publish to Hex
-    needs: validate
-    runs-on: ubuntu-latest
+  release:
+    runs-on: ubuntu-26.04
+    environment: hex
     permissions:
       contents: write
+      id-token: write
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v7
 
-      - uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31
+      - uses: nixbuild/nix-quick-install-action@v35
 
-      - name: Restore dependencies cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: deps
-          key: ${{ runner.os }}-mix-deps-${{ hashFiles('mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-deps-
-
-      - name: Install dependencies
-        run: nix develop .#ci --command mix deps.get --check-locked
-
-      - name: Verify tag, package version, and changelog
-        run: |
-          version="$(tr -d '[:space:]' < VERSION)"
-          test "${GITHUB_REF_NAME}" = "v${version}"
-          grep --fixed-strings --quiet "## [v${version}]" CHANGELOG.md
-          nix develop .#ci --command mix hex.build
-
-      - name: Publish to Hex
-        run: nix develop .#ci --command mix hex.publish --yes
-        env:
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-
-      - name: Create GitHub Release
-        run: gh release create ${{ github.ref_name }} --generate-notes
-        env:
+      - env:
           GH_TOKEN: ${{ github.token }}
+        run: nix run .#release

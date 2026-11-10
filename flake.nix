@@ -41,6 +41,12 @@
       packages = forAllSystems (
         { pkgs, beam }:
         {
+          release = mixScript pkgs beam "release" ''
+            grep --fixed-strings --quiet "## [v$VERSION]" CHANGELOG.md
+            mix deps.get
+            mix hex.publish --yes
+            gh release create "v$VERSION" --target "$(git rev-parse HEAD)" --generate-notes
+          '';
           audit = mixScript pkgs beam "audit" ''
             mix deps.get
             mix hex.audit
@@ -149,7 +155,6 @@
               pkgs.uv
             ];
           };
-          ci = pkgs.mkShell { packages = mixTools pkgs.beam_minimal.packages.erlang_29; };
         }
       );
     };

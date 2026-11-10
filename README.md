@@ -124,12 +124,10 @@ See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks and container image recommen
 
 ## Releasing
 
-```sh
-./release.sh patch   # or minor, major
-git push origin main
-# Wait for main CI, then:
-git push origin "v$(cat VERSION)"
-```
+Open a pull request that sets the new version in `VERSION` and renames the
+`[Unreleased]` section of `CHANGELOG.md` to `[vX.Y.Z] - YYYY-MM-DD`, with a new
+empty `[Unreleased]` above it. Merging it publishes the package and its docs to
+Hex and creates the GitHub release.
 
 ## License
 
