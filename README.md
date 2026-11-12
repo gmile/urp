@@ -106,6 +106,12 @@ nix run .#soffice &
 nix develop --command mix test --include integration
 ```
 
+Format the Nix files:
+
+```sh
+nix fmt
+```
+
 ### Telemetry
 
 Every operation emits a `[:urp, :call, :start]` event followed by either
