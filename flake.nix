@@ -158,6 +158,19 @@
               mix dialyzer --no-check
             '';
           };
+          nixfmt =
+            pkgs.runCommand "nixfmt"
+              {
+                nativeBuildInputs = [ pkgs.nixfmt ];
+                src = lib.fileset.toSource {
+                  root = ./.;
+                  fileset = lib.fileset.fileFilter (file: file.hasExt "nix") ./.;
+                };
+              }
+              ''
+                find $src -name '*.nix' -exec nixfmt --check {} +
+                touch $out
+              '';
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           integration = mix {
@@ -173,6 +186,8 @@
           };
         }
       );
+
+      formatter = forAllSystems ({ pkgs, ... }: pkgs.nixfmt-tree);
 
       devShells = forAllSystems (
         { pkgs, ... }:
