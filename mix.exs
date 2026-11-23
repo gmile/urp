@@ -17,8 +17,8 @@ defmodule URP.MixProject do
       docs: docs(),
       dialyzer: [
         plt_add_apps: [:crypto, :mix],
-        plt_local_path: "priv/plts",
-        plt_core_path: "priv/plts"
+        plt_local_path: "_build/plts",
+        plt_core_path: "_build/plts"
       ]
     ]
   end
@@ -43,7 +43,7 @@ defmodule URP.MixProject do
 
   defp deps do
     [
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:nimble_ownership, "~> 1.0"},
       {:nimble_pool, "~> 1.1"},

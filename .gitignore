@@ -4,8 +4,8 @@
 erl_crash.dump
 *.ez
 *.beam
-/priv/plts/
 /doc/
 /benchmarks/fixtures/
 /.worktrees/
 /perf.md
+/result*

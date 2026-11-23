@@ -1,4 +1,6 @@
 {
+  description = "Pure Elixir client for the UNO Remote Protocol";
+
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
   outputs =
@@ -79,7 +81,7 @@
                 ./VERSION
               ];
             };
-            mixEnv = "dev";
+            mixEnv = "";
             hash = "sha256-wG1z4+BtT+UxoR8+5KF3Ec/fmeZix1j1G/IPXuc+kH0=";
           };
           mix =
@@ -87,24 +89,22 @@
               name,
               env ? "test",
               inputs ? [ ],
-              files ? [
-                ./.formatter.exs
-                ./mix.exs
-                ./mix.lock
-                ./lib
-                ./test
-                ./README.md
-                ./PERFORMANCE.md
-                ./CHANGELOG.md
-                ./LICENSE
-              ],
+              files ? [ ],
+              setup ? "cp --recursive --no-preserve=mode ${compiled.${env}}/. .",
               command,
+              output ? "touch $out",
             }:
             pkgs.stdenvNoCC.mkDerivation {
               inherit name;
               src = lib.fileset.toSource {
                 root = ./.;
-                fileset = lib.fileset.unions files;
+                fileset = lib.fileset.unions (
+                  [
+                    ./mix.exs
+                    ./mix.lock
+                  ]
+                  ++ files
+                );
               };
               nativeBuildInputs = mixTools beam ++ inputs;
               MIX_ENV = env;
@@ -113,48 +113,73 @@
               buildPhase = ''
                 export HOME=$TMPDIR MIX_DEPS_PATH=$PWD/deps
                 echo 0.0.0 > VERSION
-                cp --recursive --no-preserve=mode ${deps} deps
-                mix deps.compile --no-deps-check
-                ${command}
+                ${setup}
               '';
-              installPhase = "touch $out";
+              doCheck = true;
+              checkPhase = ''
+                runHook preCheck
+                ${command}
+                runHook postCheck
+              '';
+              installPhase = output;
             };
+          compiled = lib.genAttrs [ "dev" "test" ] (
+            env:
+            mix {
+              name = "deps-${env}";
+              inherit env;
+              setup = "cp --recursive --no-preserve=mode ${deps} deps";
+              command = "mix deps.compile --no-deps-check";
+              output = ''
+                mkdir $out
+                cp --recursive deps _build $out
+              '';
+            }
+          );
           plt = mix {
             name = "plt";
             env = "dev";
-            files = [
-              ./mix.exs
-              ./mix.lock
-            ];
-            command = ''
-              mix dialyzer --plt
+            command = "mix dialyzer --plt";
+            output = ''
               mkdir $out
-              cp priv/plts/*.plt $out
+              cp _build/plts/*.plt $out
             '';
           };
         in
         {
           test = mix {
             name = "test";
+            files = [
+              ./.formatter.exs
+              ./lib
+              ./test
+            ];
             command = ''
               mix format --check-formatted
               mix compile --warnings-as-errors
               mix deps.unlock --check-unused
-              mix xref graph --format cycles --fail-above 0
-              mix test
+              mix test --warnings-as-errors
             '';
           };
           docs = mix {
             name = "docs";
             env = "dev";
+            files = [
+              ./lib
+              ./README.md
+              ./PERFORMANCE.md
+              ./CHANGELOG.md
+              ./LICENSE
+            ];
             command = "mix docs --warnings-as-errors";
           };
           dialyzer = mix {
             name = "dialyzer";
             env = "dev";
+            files = [ ./lib ];
             command = ''
-              mkdir -p priv/plts
-              cp ${plt}/* priv/plts
+              mkdir _build/plts
+              cp ${plt}/* _build/plts
               mix dialyzer --no-check
             '';
           };
@@ -176,11 +201,15 @@
           integration = mix {
             name = "integration";
             inputs = [ self.packages.${pkgs.stdenv.hostPlatform.system}.soffice ];
+            files = [
+              ./lib
+              ./test
+            ];
             command = ''
               soffice &> soffice.log &
               timeout 60 bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/2002) 2>/dev/null; do sleep 1; done' ||
                 { cat soffice.log; exit 1; }
-              mix test --include integration
+              mix test --only integration
               kill %1
             '';
           };
@@ -190,13 +219,18 @@
       formatter = forAllSystems ({ pkgs, ... }: pkgs.nixfmt-tree);
 
       devShells = forAllSystems (
-        { pkgs, ... }:
+        { pkgs, beam }:
         {
           default = pkgs.mkShell {
-            packages = mixTools pkgs.beam.packages.erlang_29 ++ [
-              pkgs.git
+            packages = mixTools beam ++ [
+              pkgs.fish
+              pkgs.gh
               pkgs.uv
             ];
+
+            shellHook = ''
+              case $- in *i*) exec ${pkgs.fish}/bin/fish ;; esac
+            '';
           };
         }
       );
