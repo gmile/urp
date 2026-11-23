@@ -99,8 +99,11 @@
             };
             text = ''
               exec ${
-                if pkgs.stdenv.hostPlatform.isDarwin then pkgs.libreoffice-bin else pkgs.libreoffice
-              }/bin/soffice --headless --norestore --nologo \
+                if pkgs.stdenv.hostPlatform.isDarwin then
+                  "${pkgs.libreoffice-bin}/bin/soffice"
+                else
+                  "${pkgs.libreoffice.unwrapped}/lib/libreoffice/program/soffice"
+              } --headless --norestore --nologo \
                 "-env:UserInstallation=file://''${TMPDIR:-/tmp}/urp-soffice" \
                 "--accept=socket,host=127.0.0.1,port=''${PORT:-2002},tcpNoDelay=1;urp;"
             '';
