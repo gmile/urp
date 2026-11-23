@@ -177,6 +177,10 @@
               '';
             }
           );
+          sofficeTestHook = pkgs.makeSetupHook {
+            name = "soffice-test-hook";
+            substitutions.soffice = lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.soffice;
+          } ./nix/soffice-test-hook.sh;
           plt = mix {
             name = "plt";
             env = "dev";
@@ -190,6 +194,7 @@
         {
           test = mix {
             name = "test";
+            inputs = [ sofficeTestHook ];
             files = [
               ./.formatter.exs
               ./lib
@@ -200,7 +205,7 @@
               mix compile --warnings-as-errors
               mix deps.unlock --check-unused
               mix xref graph --format cycles --label compile-connected --fail-above 0
-              mix test --warnings-as-errors
+              mix test --warnings-as-errors --include integration
             '';
           };
           docs = mix {
@@ -238,23 +243,6 @@
                 find $src -name '*.nix' -exec nixfmt --check {} +
                 touch $out
               '';
-        }
-        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          integration = mix {
-            name = "integration";
-            inputs = [ self.packages.${pkgs.stdenv.hostPlatform.system}.soffice ];
-            files = [
-              ./lib
-              ./test
-            ];
-            command = ''
-              soffice &> soffice.log &
-              timeout 60 bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/2002) 2>/dev/null; do sleep 1; done' ||
-                { cat soffice.log; exit 1; }
-              mix test --only integration
-              kill %1
-            '';
-          };
         }
       );
 
