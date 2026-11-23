@@ -70,13 +70,16 @@
           };
           publish = pkgs.writeShellApplication {
             name = "publish";
-            runtimeInputs = mixTools beam ++ [
+            runtimeInputs = [
+              beam.erlang
+              beam.elixir_1_20
               pkgs.gh
               pkgs.git
             ];
             runtimeEnv = {
-              VERSION = version;
+              ERL_LIBS = "${beam.hex}/lib/erlang/lib";
               MIX_REBAR3 = "${beam.rebar3}/bin/rebar3";
+              VERSION = version;
             };
             text = ''
               grep --fixed-strings --quiet "## [v$VERSION]" CHANGELOG.md
