@@ -92,7 +92,7 @@ assert {:ok, _} = MyApp.generate_invoice(order)
 
 `mix test` always runs the deterministic unit suite without probing local ports.
 Run everything CI runs, including the integration suite against LibreOffice from
-nixpkgs on Linux, with:
+nixpkgs, with:
 
 ```sh
 nix flake check
