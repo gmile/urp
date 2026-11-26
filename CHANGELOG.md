@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop leaking a document in `soffice` each time a call outlives `:recv_timeout`. `soffice` cannot
+  be interrupted, so it finished the load after the connection was gone and kept the document, its
+  lock file and its temp file for the life of the process, about 10 MB apiece. The connection is
+  now handed to a background process that waits up to the new `:drain_timeout` pool option
+  (default 5 minutes) for the late reply, closes the document and deletes its temp files. The
+  caller still gets `{:error, :timeout}` right away, and the pool slot stays out of service until
+  the drain is over. Each drain emits `[:urp, :connection, :drain]`. Stream I/O is not drained.
+- Stop sending cleanup requests on a connection whose socket has already failed.
+
 ## [v0.12.0] - 2026-09-11
 
 ### Changed

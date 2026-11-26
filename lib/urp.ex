@@ -16,9 +16,20 @@ defmodule URP do
         port: 2002,
         pool_size: 1,
         backoff_initial: 500,  # ms, initial reconnection delay
-        backoff_max: 5_000     # ms, max reconnection delay
+        backoff_max: 5_000,    # ms, max reconnection delay
+        drain_timeout: 300_000 # ms, how long to wait for a call that outlived recv_timeout
 
   See `convert/2` for usage examples and options.
+
+  ## Calls that outlive `:recv_timeout`
+
+  `soffice` cannot be told to stop. When a call times out, the caller gets
+  `{:error, :timeout}` at once, while `soffice` carries on and keeps the document
+  it was loading open for good. So the connection is not closed: a background
+  process waits up to `:drain_timeout` for the late reply, closes the document,
+  deletes its temp files and only then drops the connection. The pool slot stays
+  out of service meanwhile, since `soffice` would make the next call wait behind
+  the old one anyway. See `URP.Telemetry` for the event each drain emits.
 
   ## Diagnostics
 
@@ -568,7 +579,8 @@ defmodule URP do
               :backoff_initial,
               :backoff_max,
               :connect_timeout,
-              :send_timeout
+              :send_timeout,
+              :drain_timeout
             ])
 
         case DynamicSupervisor.start_child(URP.PoolSupervisor, {URP.Pool, opts}) do

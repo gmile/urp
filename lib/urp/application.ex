@@ -14,6 +14,7 @@ defmodule URP.Application do
        lazy: true,
        name: URP.Pool.Default},
       {DynamicSupervisor, strategy: :one_for_one, name: URP.PoolSupervisor},
+      {Task.Supervisor, name: URP.DrainSupervisor},
       {NimbleOwnership, name: URP.Test.Ownership}
     ]
 
