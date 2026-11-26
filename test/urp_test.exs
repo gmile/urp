@@ -402,6 +402,44 @@ defmodule URPTest do
     end
   end
 
+  describe "conversion that outlives recv_timeout" do
+    def handle_drain(_event, measurements, metadata, test_pid) do
+      send(test_pid, {:drain, measurements, metadata})
+    end
+
+    setup do
+      :telemetry.attach(
+        "drain-test",
+        [:urp, :connection, :drain],
+        &__MODULE__.handle_drain/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("drain-test") end)
+    end
+
+    test "is drained so soffice keeps no document open" do
+      lock_files = fn -> MapSet.new(Path.wildcard("/tmp/.~lock.urp_in_*", match_dot: true)) end
+      before = lock_files.()
+
+      for _ <- 1..5 do
+        assert {:error, :timeout} =
+                 URP.convert({:binary, build_test_docx()},
+                   filter: @pdf,
+                   output: :binary,
+                   recv_timeout: 1
+                 )
+
+        assert_receive {:drain, %{duration: _}, %{result: :ok}}, 30_000
+      end
+
+      assert MapSet.difference(lock_files.(), before) == MapSet.new()
+
+      assert {:ok, "%PDF-" <> _} =
+               URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+    end
+  end
+
   describe "pool queuing" do
     test "two concurrent callers queue on pool_size 1 and both succeed" do
       docx1 = build_test_docx("Document One")

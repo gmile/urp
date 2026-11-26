@@ -50,6 +50,15 @@ defmodule URP.Telemetry do
   attempt. Measurements contain `:attempt` and `:delay` in milliseconds.
   Metadata contains `:host`, `:port`, and `:reason`.
 
+  ### `[:urp, :connection, :drain]`
+
+  Emitted after a connection whose call outlived `:recv_timeout` has been
+  drained and closed. Measurements contain `:duration` in `:native` time units.
+  Metadata contains `:host`, `:address`, `:port` and `:result`, which is `:ok`
+  when the late reply arrived and everything the call left behind was released,
+  or `{:error, reason}` when it was not, for example `{:error, :timeout}` if
+  `soffice` stayed silent for the whole `:drain_timeout`.
+
   ## Example handler
 
       :telemetry.attach(

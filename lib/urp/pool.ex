@@ -10,6 +10,7 @@ defmodule URP.Pool do
   @default_timeout 120_000
   @default_backoff_initial 500
   @default_backoff_max 5_000
+  @default_drain_timeout 300_000
 
   # soffice's URP bridge transitions to STATE_TERMINATED when a connection
   # closes, revoking stubs from the UNO environment. If we reconnect before
@@ -117,10 +118,16 @@ defmodule URP.Pool do
 
       case checkout_outcome(result, convert_error, conn.error, stream_input?) do
         {value, :reuse} -> {value, {:ok, reset_conversion_state(conn)}}
-        {value, :discard} -> {value, :closed}
+        {value, :discard} -> {value, discard(conn)}
       end
     end)
   end
+
+  # soffice finishes a call the client stopped waiting for, and keeps whatever
+  # that call opened. A connection with a reply outstanding is handed to a
+  # drainer, which waits for the reply and closes the document it names.
+  defp discard(%Bridge{pending: nil}), do: :closed
+  defp discard(%Bridge{} = conn), do: {:drain, conn}
 
   @doc false
   @spec checkout_outcome(term(), URP.error() | nil, URP.error() | nil, boolean()) ::
@@ -313,8 +320,8 @@ defmodule URP.Pool do
     end
   end
 
-  defp persist_protocol_caches({:ok, conn}, tid_cache, oid_cache),
-    do: {:ok, %{conn | tid_cache: tid_cache, oid_cache: oid_cache}}
+  defp persist_protocol_caches({tag, conn}, tid_cache, oid_cache) when tag in [:ok, :drain],
+    do: {tag, %{conn | tid_cache: tid_cache, oid_cache: oid_cache}}
 
   defp persist_protocol_caches(checkin, _tid_cache, _oid_cache), do: checkin
 
@@ -328,7 +335,7 @@ defmodule URP.Pool do
 
   @impl NimblePool
   def init_pool(config) do
-    {:ok, Keyword.put(config, :taken, [])}
+    {:ok, config |> Keyword.put(:taken, []) |> Keyword.put(:draining, [])}
   end
 
   @impl NimblePool
@@ -336,6 +343,8 @@ defmodule URP.Pool do
     taken = Keyword.get(pool_state, :taken, [])
     reserved = pick_address(resolve(Keyword.get(pool_state, :host, "localhost")), taken)
     pool_state = Keyword.put(pool_state, :taken, [reserved | taken])
+    {drainers, pool_state} = Keyword.pop(pool_state, :draining, [])
+    pool_state = Keyword.put(pool_state, :draining, [])
 
     # Use {:async, ...} so start_link returns immediately even if soffice is
     # down and open_with_retry loops for a while. We must transfer socket
@@ -345,6 +354,9 @@ defmodule URP.Pool do
 
     {:async,
      fn ->
+       # A soffice still busy with an abandoned call makes the next one wait
+       # behind it, so the slot stays out of service until the drain is over.
+       Enum.each(drainers, &await_drainer/1)
        conn = open_with_retry(pool_state, reserved)
        if conn.sock, do: :gen_tcp.controlling_process(conn.sock, pool_pid)
        {reserved, conn}
@@ -424,11 +436,60 @@ defmodule URP.Pool do
     {:remove, :closed, pool_state}
   end
 
+  def handle_checkin({:drain, conn}, _from, {reserved, _conn}, pool_state) do
+    timeout = Keyword.get(pool_state, :drain_timeout, @default_drain_timeout)
+
+    meta = %{
+      host: Keyword.get(pool_state, :host, "localhost"),
+      address: reserved,
+      port: Keyword.get(pool_state, :port, 2002)
+    }
+
+    {:ok, drainer} =
+      Task.Supervisor.start_child(URP.DrainSupervisor, fn ->
+        receive do
+          :drain -> drain(conn, timeout, meta)
+        end
+      end)
+
+    :gen_tcp.controlling_process(conn.sock, drainer)
+    send(drainer, :drain)
+
+    {:remove, :draining, Keyword.update(pool_state, :draining, [drainer], &[drainer | &1])}
+  end
+
   def handle_checkin({:ok, conn}, _from, {reserved, _conn}, pool_state) do
     {:ok, {reserved, conn}, pool_state}
   end
 
+  defp drain(conn, timeout, meta) do
+    Process.put(:urp_tid_cache, conn.tid_cache)
+    Process.put(:urp_oid_cache, conn.oid_cache)
+    started = System.monotonic_time()
+
+    conn = Bridge.drain(conn, timeout)
+    Bridge.close!(conn)
+
+    :telemetry.execute(
+      [:urp, :connection, :drain],
+      %{duration: System.monotonic_time() - started},
+      Map.put(meta, :result, if(conn.error, do: {:error, conn.error}, else: :ok))
+    )
+  end
+
+  defp await_drainer(drainer) do
+    ref = Process.monitor(drainer)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    end
+  end
+
   @impl NimblePool
+  def terminate_worker(:draining, {reserved, _conn}, pool_state) do
+    {:ok, Keyword.update(pool_state, :taken, [], &List.delete(&1, reserved))}
+  end
+
   def terminate_worker(_reason, {reserved, %Bridge{} = conn}, pool_state) do
     Bridge.close!(conn)
     {:ok, Keyword.update(pool_state, :taken, [], &List.delete(&1, reserved))}
@@ -464,6 +525,8 @@ defmodule URP.Pool do
       conn
       | doc_oid: nil,
         cleanup_url: nil,
+        output_url: nil,
+        pending: nil,
         input_ctx: nil,
         reply_tid: nil,
         reader_type: nil,
