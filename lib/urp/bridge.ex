@@ -66,6 +66,8 @@ defmodule URP.Bridge do
           smgr_oid: String.t() | nil,
           doc_oid: String.t() | nil,
           cleanup_url: String.t() | nil,
+          output_url: String.t() | nil,
+          pending: :document | :reply | nil,
           sfa_oid: String.t() | nil,
           input_ctx: map() | nil,
           reply_tid: binary() | nil,
@@ -86,6 +88,8 @@ defmodule URP.Bridge do
     :smgr_oid,
     :doc_oid,
     :cleanup_url,
+    :output_url,
+    :pending,
     :sfa_oid,
     :input_ctx,
     :reply_tid,
@@ -158,10 +162,15 @@ defmodule URP.Bridge do
   def load_document(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
 
   def load_document(%__MODULE__{} = conn, url) do
-    conn
-    |> call(C.qi_loader(conn.desktop_oid), :qi)
-    |> call(C.load_component_from_url(url, [C.hidden_property()]), :interface)
-    |> stash(:doc_oid)
+    conn = call(conn, C.qi_loader(conn.desktop_oid), :qi)
+    loaded = call(conn, C.load_component_from_url(url, [C.hidden_property()]), :interface)
+
+    # A load that outlives recv_timeout still finishes inside soffice, and its
+    # reply is the only handle to the document it opened.
+    loaded =
+      if is_nil(conn.error) and loaded.pending, do: %{loaded | pending: :document}, else: loaded
+
+    stash(loaded, :doc_oid)
   end
 
   @doc """
@@ -192,47 +201,96 @@ defmodule URP.Bridge do
   def close_document(%__MODULE__{doc_oid: nil} = conn), do: conn
 
   def close_document(%__MODULE__{doc_oid: doc_oid} = conn) when is_binary(doc_oid) do
-    conn =
-      conn
-      |> call(C.qi_closeable(doc_oid), :qi)
-      |> call(C.close_document(), :void)
+    conn = call(conn, C.qi_closeable(doc_oid), :qi)
 
-    %{conn | doc_oid: nil}
+    if conn.error do
+      conn
+    else
+      %{call(conn, C.close_document(), :void) | doc_oid: nil}
+    end
   end
 
   @doc false
-  @spec cleanup(t()) :: t()
-  def cleanup(%__MODULE__{} = conn) do
+  @spec cleanup(t(), timeout()) :: t()
+  def cleanup(conn, timeout \\ @cleanup_timeout)
+
+  # A reply is still outstanding, or the socket failed in a way that leaves the
+  # stream position unknown. Anything sent now would queue behind the running
+  # call and answer out of order, so the remote state is left for drain/2.
+  def cleanup(%__MODULE__{pending: pending, error: error} = conn, _timeout)
+      when not is_nil(pending) or (is_atom(error) and not is_nil(error)) do
+    release_input(conn)
+  end
+
+  def cleanup(%__MODULE__{} = conn, timeout) do
     original_reply = conn.reply
     original_timeout = conn.recv_timeout
-    conn = %{conn | recv_timeout: min(original_timeout, @cleanup_timeout)}
+    conn = %{conn | recv_timeout: min(original_timeout, timeout)}
 
     conn =
-      if conn.sock && conn.doc_oid do
-        attempt_cleanup(conn, &close_document/1)
-      else
-        %{conn | doc_oid: nil}
-      end
-
-    cleanup_url = conn.cleanup_url
-
-    conn =
-      if conn.sock && cleanup_url do
-        attempt_cleanup(conn, &delete_file(&1, cleanup_url))
-      else
-        conn
-      end
-
-    conn = release_input(conn)
-
-    %{
       conn
-      | doc_oid: nil,
-        cleanup_url: nil,
-        input_ctx: nil,
-        reply: original_reply,
-        recv_timeout: original_timeout
-    }
+      |> cleanup_step(& &1.doc_oid, &close_document/1)
+      |> cleanup_step(& &1.output_url, &delete_file(&1, &1.output_url), :output_url)
+      |> cleanup_step(& &1.cleanup_url, &delete_file(&1, &1.cleanup_url), :cleanup_url)
+      |> release_input()
+
+    conn = %{conn | reply: original_reply, recv_timeout: original_timeout}
+
+    if conn.pending do
+      conn
+    else
+      %{conn | doc_oid: nil, cleanup_url: nil, output_url: nil}
+    end
+  end
+
+  defp cleanup_step(conn, needed, fun, done_field \\ nil) do
+    if conn.sock && is_nil(conn.pending) && needed.(conn) do
+      conn = attempt_cleanup(conn, fun)
+      if done_field && is_nil(conn.pending), do: Map.put(conn, done_field, nil), else: conn
+    else
+      conn
+    end
+  end
+
+  @doc false
+  @spec drain(t(), timeout()) :: t()
+  def drain(%__MODULE__{} = conn, timeout) do
+    drain_until(conn, System.monotonic_time(:millisecond) + timeout)
+  end
+
+  defp drain_until(%__MODULE__{pending: nil} = conn, _deadline), do: conn
+
+  defp drain_until(%__MODULE__{pending: pending} = conn, deadline) do
+    conn =
+      recv_reply(%{
+        conn
+        | pending: nil,
+          error: nil,
+          reply: nil,
+          recv_timeout: remaining(deadline)
+      })
+
+    if conn.error do
+      conn
+    else
+      conn = if pending == :document, do: adopt_document(conn), else: conn
+
+      conn
+      |> cleanup(remaining(deadline))
+      |> drain_until(deadline)
+    end
+  end
+
+  defp remaining(deadline) do
+    max(deadline - System.monotonic_time(:millisecond), @cleanup_timeout)
+  end
+
+  # A load that failed inside soffice opened nothing, which is as drained as it gets.
+  defp adopt_document(conn) do
+    case parse_reply(conn, :interface) do
+      %{error: nil} = conn -> %{conn | doc_oid: conn.reply}
+      conn -> %{conn | error: nil, reply: nil}
+    end
   end
 
   @doc false
@@ -258,6 +316,9 @@ defmodule URP.Bridge do
         conn
     end
   end
+
+  defp attempt_cleanup(%__MODULE__{pending: pending} = conn, _fun) when not is_nil(pending),
+    do: conn
 
   defp attempt_cleanup(conn, fun) do
     primary_error = conn.error
@@ -528,11 +589,12 @@ defmodule URP.Bridge do
     url = temp_url("urp_out")
 
     conn =
-      conn
+      %{conn | output_url: url}
       |> store_to_url(url, filter, filter_data)
       |> read_file(url)
 
-    delete_file_preserving_error(conn, url)
+    conn = delete_file_preserving_error(conn, url)
+    if conn.pending, do: conn, else: %{conn | output_url: nil}
   end
 
   @doc """
@@ -731,7 +793,7 @@ defmodule URP.Bridge do
   defp call(%__MODULE__{} = conn, frame) do
     conn
     |> send_frame(frame)
-    |> recv_reply()
+    |> await_reply()
   end
 
   defp call(%__MODULE__{error: e} = conn, _frame, _parser) when not is_nil(e), do: conn
@@ -740,6 +802,16 @@ defmodule URP.Bridge do
     conn
     |> call(frame)
     |> parse_reply(parser)
+  end
+
+  # The frame went out and nothing came back in time: soffice still owes a reply.
+  defp await_reply(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
+
+  defp await_reply(%__MODULE__{} = conn) do
+    case recv_reply(conn) do
+      %{error: :timeout} = conn -> %{conn | pending: :reply}
+      conn -> conn
+    end
   end
 
   defp call_reply(%__MODULE__{error: e} = conn, _builder, _parser) when not is_nil(e), do: conn
