@@ -53,15 +53,19 @@ config :urp, :default,
   pool_size: 1
 ```
 
-> #### pool_size {: .warning}
+> #### pool_size and clustering {: .warning}
 >
-> A connection converts one document at a time. LibreOffice accepts several
-> connections to one soffice process, but they share process-wide state and
-> generally do not improve throughput. Keep one connection per soffice
-> process. For parallelism and fault isolation, run several soffice processes
-> and point `host` at a name that resolves to all of them (a headless
-> Kubernetes service, a round-robin DNS record): the connections of a pool
-> take the addresses in turn, so `pool_size: N` spreads over N processes.
+> A `soffice` process is only safe to convert one document at a time — running
+> concurrent conversions against the same `soffice` can hang or fail it. URP
+> identifies each remote `soffice` process and enforces one job at a time per
+> `soffice` across every pool in the node and across connected Erlang nodes
+> (for example via [DNSCluster](https://hexdocs.pm/dns_cluster)).
+>
+> For parallelism and fault isolation, run several `soffice` processes and
+> point `host` at a name that resolves to all of them (a headless Kubernetes
+> service or round-robin DNS record): the connections of a pool take the
+> addresses in turn, so `pool_size: N` reaches all `N` processes while
+> connections and document I/O stay local to each node.
 
 ### Testing
 

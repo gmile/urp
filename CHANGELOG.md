@@ -11,6 +11,9 @@ several options and behaviours change; every breaking one is marked.
   stops waiting no longer takes the socket with it, so nothing is left half done in `soffice` and
   the connection goes on to its next job instead of being closed. A job in hand is finished when
   the application shuts down, too.
+- **At most one job runs at a time against any `soffice` process**, across pools on the same node
+  and across connected Erlang nodes. Each `soffice` is identified by its UNO context OID and leased
+  through `:global` and `:pg`, while connections and document I/O stay local to each node.
 - A pool is a queue of jobs and the connections that take them, under one supervisor, in place of
   NimblePool. A connection asks for a job when it has nothing to do, so one that is busy,
   reconnecting or stuck is never handed one. Every pool, the default one included, starts on
