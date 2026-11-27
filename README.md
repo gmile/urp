@@ -15,11 +15,10 @@ no Python, no wrappers, no sidecars.
 
 ## Prerequisites
 
-A running `soffice` with a URP socket listener:
+A running `soffice` that accepts URP connections:
 
 ```sh
-docker build --tag soffice --file benchmarks/Dockerfile.soffice-debian benchmarks/
-docker run --detach --name soffice --publish 2002:2002 soffice
+soffice --headless --norestore --accept="socket,host=127.0.0.1,port=2002,tcpNoDelay=1;urp;"
 ```
 
 ## Usage
@@ -59,7 +58,7 @@ config :urp, :default,
 > A connection converts one document at a time. LibreOffice accepts several
 > connections to one soffice process, but they share process-wide state and
 > generally do not improve throughput. Keep one connection per soffice
-> process. For parallelism and fault isolation, run one soffice per container
+> process. For parallelism and fault isolation, run several soffice processes
 > and point `host` at a name that resolves to all of them (a headless
 > Kubernetes service, a round-robin DNS record): the connections of a pool
 > take the addresses in turn, so `pool_size: N` spreads over N processes.
@@ -99,7 +98,8 @@ nix develop --command mix test --include integration
 
 ## Performance
 
-See [PERFORMANCE.md](PERFORMANCE.md) for benchmarks and container image recommendations.
+See [PERFORMANCE.md](PERFORMANCE.md) for what a conversion does call by call, how long
+it takes, and the scripts that measure both.
 
 ## References
 
