@@ -34,7 +34,7 @@ defmodule URP do
   keeps a document it loaded until it is told to close it. So each connection
   is a process of its own that sees a job through. A caller waits `:timeout`
   and then gets `{:error, :timeout}`, while the connection waits for `soffice`,
-  closes the document, deletes its temp files and only then takes another job.
+  closes the document, frees what it held and only then takes another job.
   It reconnects only if `soffice` says nothing for the whole `:drain_timeout`.
   See `URP.Telemetry` for the event this emits.
 
@@ -185,8 +185,8 @@ defmodule URP do
   Convert a document via LibreOffice.
 
   `input` is a file path or `{:binary, bytes}` for a document already in
-  memory. Either way it is sent over the socket and `soffice` loads it from
-  memory, so nothing has to be shared with it on disk.
+  memory. Either way it is sent over the socket, and `soffice` loads it from
+  memory and exports into memory, so nothing is shared with it on disk.
 
   ## Options
 

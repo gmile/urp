@@ -96,17 +96,6 @@ defmodule URPTest do
       assert {:error, "NoSuchSetting"} =
                text({:binary, build_test_docx()}, [settings: settings] ++ opts)
     end
-
-    # Meaningful where the tests share a filesystem with soffice, as in CI.
-    test "leaves nothing in soffice's temp directory" do
-      leftovers = fn -> MapSet.new(Path.wildcard("/tmp/{urp_,.~lock.urp_}*", match_dot: true)) end
-      before = leftovers.()
-
-      assert {:ok, _text} = text({:binary, build_test_docx()})
-      assert {:error, _message} = text({:binary, build_test_docx()}, filter: "no-such-filter")
-
-      assert MapSet.difference(leftovers.(), before) == MapSet.new()
-    end
   end
 
   describe "a job that fails" do

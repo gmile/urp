@@ -4,7 +4,7 @@ defmodule URP.Connection do
   # A connection to soffice, and the process that owns it.
   #
   # soffice cannot be interrupted. It finishes every call it was sent, and keeps
-  # what the call made — a loaded document, a temp file — until it is told to
+  # what the call made — a loaded document, the bytes it came from — until it is told to
   # let go. So the connection runs each job to the end in its own process,
   # whether or not anyone is still waiting for the result, and a job releases
   # what it opened in `after` blocks. The same holds at shutdown: the process
@@ -32,7 +32,6 @@ defmodule URP.Connection do
           context: String.t() | nil,
           service_manager: String.t() | nil,
           desktop: String.t() | nil,
-          file_access: String.t() | nil,
           silence: timeout(),
           deadline: timeout(),
           chunk_size: pos_integer()
@@ -44,7 +43,6 @@ defmodule URP.Connection do
     :context,
     :service_manager,
     :desktop,
-    :file_access,
     :silence,
     :chunk_size,
     deadline: :infinity
@@ -117,11 +115,21 @@ defmodule URP.Connection do
   @doc """
   Tell soffice we are done with an object it handed us, so that it can let go
   of it. There is no reply to wait for.
+
+  soffice counts a reference for each interface it has handed the object over
+  as, and each of those is given back.
   """
   @spec release(t(), String.t()) :: :ok
   def release(conn, oid) do
+    {held, queried} = Enum.split_with(state().queried, &match?({^oid, _interface}, &1))
+    update(&%{&1 | queried: MapSet.new(queried)})
+
     # Alone among requests, a release carries no current context.
-    P.send_frame(conn.sock, P.header(2, @interface, oid, conn.tid))
+    for {^oid, interface} <- held do
+      P.send_frame(conn.sock, P.header(2, interface, oid, conn.tid))
+    end
+
+    :ok
   end
 
   @doc """
@@ -392,16 +400,10 @@ defmodule URP.Connection do
     conn = %{conn | service_manager: URP.UNO.call(conn, context, :get_service_manager)}
     conn = %{conn | desktop: URP.UNO.create_instance(conn, "com.sun.star.frame.Desktop")}
 
-    conn = %{
-      conn
-      | file_access: URP.UNO.create_instance(conn, "com.sun.star.ucb.SimpleFileAccess")
-    }
-
-    # These two live as long as the connection, so they are asked once here
-    # for the interfaces every conversion calls them through. What a job
-    # learns about its own objects is forgotten when it ends.
+    # The desktop lives as long as the connection, so it is asked once here
+    # for the interface every conversion calls it through. What a job learns
+    # about its own objects is forgotten when it ends.
     query_interface(conn, conn.desktop, "com.sun.star.frame.XComponentLoader")
-    query_interface(conn, conn.file_access, "com.sun.star.ucb.XSimpleFileAccess")
     update(&%{&1 | bootstrapped: &1.queried})
     conn
   end

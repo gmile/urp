@@ -44,13 +44,9 @@ defmodule URP.UNO do
     get_element_names: {"com.sun.star.container.XNameAccess", 6, [], {:sequence, :string}},
     replace_by_name: {"com.sun.star.container.XNameReplace", 8, [:string, :any], :void},
     commit_changes: {"com.sun.star.util.XChangesBatch", 3, [], :void},
-    # XSimpleFileAccess, XInputStream
-    kill: {"com.sun.star.ucb.XSimpleFileAccess", 5, [:string], :void},
-    open_file_read:
-      {"com.sun.star.ucb.XSimpleFileAccess", 15, [:string],
-       {:interface, "com.sun.star.io.XInputStream"}},
+    # XInputStream
     read_bytes: {"com.sun.star.io.XInputStream", 3, [:long], [:long, :bytes]},
-    close_input: {"com.sun.star.io.XInputStream", 7, [], :void}
+    available: {"com.sun.star.io.XInputStream", 6, [], :long}
   }
 
   @typedoc "A value for an `any`: a boolean, an integer, a string, nested properties or an object."

@@ -63,11 +63,21 @@ defmodule URP.Bridge do
       try do
         fun.(document)
       after
-        release(fn -> UNO.call(conn, document, :dispose) end)
+        dispose(conn, document)
       end
     after
       Connection.release(conn, stream)
     end
+  end
+
+  # A document soffice no longer has cannot be disposed of, which is no
+  # failure of the job. Either way it is no longer ours to hold.
+  defp dispose(conn, document) do
+    UNO.call(conn, document, :dispose)
+  rescue
+    URP.Error -> :ok
+  after
+    Connection.release(conn, document)
   end
 
   defp read({:binary, bytes}), do: bytes
@@ -82,42 +92,40 @@ defmodule URP.Bridge do
     end
   end
 
-  # The result is written to a temp file on soffice's side and read back a
-  # chunk at a time, so no message holds more of it than that.
+  # soffice exports into a pipe it makes in its own memory, and the result is
+  # read out of that a chunk at a time, so no message holds more of it than
+  # that. Releasing the pipe lets go of whatever was not read.
   defp store(conn, document, properties, sink) do
-    url = temp_url("urp_out")
+    pipe = UNO.create_instance(conn, "com.sun.star.io.Pipe")
 
     try do
-      UNO.call(conn, document, :store_to_url, [url, UNO.properties(properties)])
+      properties = UNO.properties(properties ++ [OutputStream: {:object, pipe}])
+      UNO.call(conn, document, :store_to_url, ["private:stream", properties])
       Connection.checkpoint(conn)
-      stream = UNO.call(conn, conn.file_access, :open_file_read, [url])
-
-      try do
-        collect(conn, stream, sink)
-      after
-        release(fn -> UNO.call(conn, stream, :close_input) end)
-      end
+      collect(conn, pipe, sink)
     after
-      release(fn -> UNO.call(conn, conn.file_access, :kill, [url]) end)
+      Connection.release(conn, pipe)
     end
   end
 
   # A read that does not finish must not leave a half-written file behind.
-  defp collect(conn, stream, sink) do
+  defp collect(conn, pipe, sink) do
     output = Sink.open(sink)
 
     try do
-      stream
+      # Not every filter closes the pipe when it is done, and a pipe left open
+      # makes a read wait for all it was asked for. So only what is known to be
+      # there is asked for.
+      conn
+      |> UNO.call(pipe, :available)
       |> Stream.unfold(fn
-        nil ->
+        0 ->
           nil
 
-        # readBytes comes back short only at the end of the file.
-        stream ->
-          [_read, chunk] = UNO.call(conn, stream, :read_bytes, [conn.chunk_size])
-          {chunk, if(byte_size(chunk) == conn.chunk_size, do: stream)}
+        left ->
+          [read, chunk] = UNO.call(conn, pipe, :read_bytes, [min(left, conn.chunk_size)])
+          {chunk, left - read}
       end)
-      |> Stream.reject(&(&1 == <<>>))
       |> Enum.reduce(output, &Sink.write(&2, &1))
       |> Sink.finish()
     catch
@@ -126,18 +134,6 @@ defmodule URP.Bridge do
         with {:path, path} <- sink, do: File.rm(path)
         :erlang.raise(kind, reason, __STACKTRACE__)
     end
-  end
-
-  # Letting go of something soffice no longer has is not a failure of the job.
-  defp release(fun) do
-    fun.()
-  rescue
-    URP.Error -> :ok
-  end
-
-  defp temp_url(prefix) do
-    id = :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
-    "file:///tmp/#{prefix}_#{id}"
   end
 
   ## Settings
