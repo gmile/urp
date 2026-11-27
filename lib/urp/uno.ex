@@ -25,38 +25,36 @@ defmodule URP.UNO do
     # XMultiComponentFactory
     create_instance_with_context:
       {"com.sun.star.lang.XMultiComponentFactory", 3, [:string, @context], @object},
+    create_instance_with_arguments_and_context:
+      {"com.sun.star.lang.XMultiComponentFactory", 4, [:string, {:sequence, :any}, @context],
+       @object},
     get_available_service_names:
       {"com.sun.star.lang.XMultiComponentFactory", 5, [], {:sequence, :string}},
     # XMultiServiceFactory
     create_instance_with_arguments:
       {"com.sun.star.lang.XMultiServiceFactory", 4, [:string, {:sequence, :any}], @object},
-    # XComponentLoader, XStorable2, XCloseable
+    # XComponentLoader, XStorable2, XComponent
     load_component_from_url:
-      {"com.sun.star.frame.XComponentLoader", 3, [:string, :string, :long, @properties], @object},
+      {"com.sun.star.frame.XComponentLoader", 3, [:string, :string, :long, @properties],
+       {:interface, "com.sun.star.lang.XComponent"}},
     store_to_url: {"com.sun.star.frame.XStorable2", 8, [:string, @properties], :void},
-    close: {"com.sun.star.util.XCloseable", 5, [:boolean], :void},
+    dispose: {"com.sun.star.lang.XComponent", 3, [], :void},
     # XNameAccess, XNameReplace, XChangesBatch
     get_by_name: {"com.sun.star.container.XNameAccess", 5, [:string], :any},
     get_element_names: {"com.sun.star.container.XNameAccess", 6, [], {:sequence, :string}},
     replace_by_name: {"com.sun.star.container.XNameReplace", 8, [:string, :any], :void},
     commit_changes: {"com.sun.star.util.XChangesBatch", 3, [], :void},
-    # XSimpleFileAccess
+    # XSimpleFileAccess, XInputStream
     kill: {"com.sun.star.ucb.XSimpleFileAccess", 5, [:string], :void},
     open_file_read:
       {"com.sun.star.ucb.XSimpleFileAccess", 15, [:string],
        {:interface, "com.sun.star.io.XInputStream"}},
-    open_file_write:
-      {"com.sun.star.ucb.XSimpleFileAccess", 16, [:string],
-       {:interface, "com.sun.star.io.XOutputStream"}},
-    # XInputStream, XOutputStream
     read_bytes: {"com.sun.star.io.XInputStream", 3, [:long], [:long, :bytes]},
-    close_input: {"com.sun.star.io.XInputStream", 7, [], :void},
-    write_bytes: {"com.sun.star.io.XOutputStream", 3, [:bytes], :void},
-    close_output: {"com.sun.star.io.XOutputStream", 5, [], :void}
+    close_input: {"com.sun.star.io.XInputStream", 7, [], :void}
   }
 
-  @typedoc "A value for an `any`: a boolean, an integer, a string or nested properties."
-  @type value :: boolean() | integer() | String.t() | keyword(value())
+  @typedoc "A value for an `any`: a boolean, an integer, a string, nested properties or an object."
+  @type value :: boolean() | integer() | String.t() | keyword(value()) | {:object, String.t()}
 
   @doc "Call `method` on `object` with `args`, returning what it returns."
   @spec call(Connection.t(), String.t(), atom(), [term()]) :: term()
@@ -89,4 +87,8 @@ defmodule URP.UNO do
   def any(value) when is_integer(value), do: {:long, value}
   def any(value) when is_binary(value), do: {:string, value}
   def any(value) when is_list(value), do: {@properties, properties(value)}
+
+  # An object of soffice's own goes back to it as a plain reference. Typed as
+  # anything it was not handed to us as, soffice takes it for an object of ours.
+  def any({:object, oid}), do: {@object, oid}
 end

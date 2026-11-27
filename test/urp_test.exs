@@ -40,7 +40,7 @@ defmodule URPTest do
       assert File.read!(output) =~ "On disk"
     end
 
-    test "moves a document a chunk at a time, in and out" do
+    test "reads the result back a chunk at a time" do
       port = Application.get_env(:urp, :default, [])[:port] || 2002
       Application.put_env(:urp, :pools, small_chunks: [port: port, chunk_size: 1024])
       on_exit(fn -> Application.delete_env(:urp, :pools) end)

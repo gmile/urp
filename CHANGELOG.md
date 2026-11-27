@@ -24,15 +24,15 @@ several options and behaviours change; every breaking one is marked.
   `{:error, :timeout}` either way; waiting for a connection used to end in a
   `"pool checkout failed"` message.
 - **Breaking:** the `:io` option, stream I/O and enumerable input are gone. A document is sent to
-  `soffice` and read back in chunks through a temp file on its side, which keeps memory bounded at
-  both ends for every format. `soffice` had loaded an empty document from an enumerable, and from
-  a stream of anything but a ZIP or OLE2 document. A file path is read a chunk at a time, and the
-  new `:chunk_size` pool option (default 1 MiB) sets the size.
+  `soffice` in one message and loaded from memory there, for every format; `soffice` had loaded an
+  empty document from an enumerable, and from a stream of anything but a ZIP or OLE2 document.
+  The result is read back in chunks through a temp file on its side, and the new `:chunk_size`
+  pool option (default 1 MiB) sets their size.
 - **Breaking:** `:output` is required. Without it the result went to a temp file that nothing
   ever deleted.
 - **Breaking:** an `:output` function is called in the connection's process, not the caller's,
   with one chunk at a time.
-- **Breaking:** the `:max_frame_size` option is gone; no message is larger than a chunk.
+- **Breaking:** the `:max_frame_size` option is gone; no message received is larger than a chunk.
 - **Breaking:** options are checked with NimbleOptions, for the diagnostics as well. A bad option
   raises `NimbleOptions.ValidationError` where it raised `ArgumentError`, and an unknown one is
   an error too.

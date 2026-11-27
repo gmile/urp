@@ -315,6 +315,7 @@ defmodule URP.Protocol do
   defp type_tag({:interface, name}), do: named_tag(@interface, name)
   defp type_tag({:struct, name, _types}), do: named_tag(@classes.struct, name)
   defp type_tag({:sequence, _type} = type), do: named_tag(@classes.sequence, type_name(type))
+  defp type_tag(:bytes), do: named_tag(@classes.sequence, "[]byte")
   defp type_tag(type), do: <<Map.fetch!(@classes, type)>>
 
   defp named_tag(class, name), do: [<<class ||| @named, @uncached::16>>, enc_str(name)]

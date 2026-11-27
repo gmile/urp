@@ -36,57 +36,54 @@ defmodule URP.Bridge do
   defp filter_data(empty) when empty in [nil, []], do: []
   defp filter_data(filter_data), do: [FilterData: filter_data]
 
-  # A document travels through a temp file on soffice's side, written and read
-  # a chunk at a time, so neither end holds more of it than that in a message.
+  # soffice makes itself a stream over the document's bytes and loads from
+  # that, so the document never touches its disk. The stream is held until the
+  # document is gone, and then released so that soffice lets go of the bytes.
   defp load(conn, input, fun) do
-    chunks = chunks(input, conn.chunk_size)
-    url = temp_url("urp_in")
+    stream =
+      UNO.call(conn, conn.service_manager, :create_instance_with_arguments_and_context, [
+        "com.sun.star.io.SequenceInputStream",
+        [{:bytes, read(input)}],
+        conn.context
+      ])
 
     try do
-      stream = UNO.call(conn, conn.file_access, :open_file_write, [url])
-
-      try do
-        for chunk <- chunks, do: UNO.call(conn, stream, :write_bytes, [chunk])
-      after
-        release(fn -> UNO.call(conn, stream, :close_output) end)
-      end
-
       Connection.checkpoint(conn)
-      properties = UNO.properties(Hidden: true)
+      properties = UNO.properties(Hidden: true, InputStream: {:object, stream})
 
       document =
-        UNO.call(conn, conn.desktop, :load_component_from_url, [url, "_blank", 0, properties]) ||
+        UNO.call(conn, conn.desktop, :load_component_from_url, [
+          "private:stream",
+          "_blank",
+          0,
+          properties
+        ]) ||
           raise URP.Error, "soffice could not load the document"
 
       try do
         fun.(document)
       after
-        release(fn -> UNO.call(conn, document, :close, [true]) end)
+        release(fn -> UNO.call(conn, document, :dispose) end)
       end
     after
-      release(fn -> UNO.call(conn, conn.file_access, :kill, [url]) end)
+      Connection.release(conn, stream)
     end
   end
 
-  defp chunks({:binary, bytes}, size) do
-    for offset <- 0..(byte_size(bytes) - 1)//size do
-      binary_part(bytes, offset, min(size, byte_size(bytes) - offset))
-    end
-  end
+  defp read({:binary, bytes}), do: bytes
 
-  defp chunks(path, size) do
-    case File.stat(path) do
-      {:ok, %{type: :regular}} ->
-        File.stream!(path, size)
-
-      {:ok, _other} ->
-        raise URP.Error, "could not read file #{path}: not a regular file"
+  defp read(path) do
+    case File.read(path) do
+      {:ok, bytes} ->
+        bytes
 
       {:error, reason} ->
         raise URP.Error, "could not read file #{path}: #{:file.format_error(reason)}"
     end
   end
 
+  # The result is written to a temp file on soffice's side and read back a
+  # chunk at a time, so no message holds more of it than that.
   defp store(conn, document, properties, sink) do
     url = temp_url("urp_out")
 
@@ -96,7 +93,7 @@ defmodule URP.Bridge do
       stream = UNO.call(conn, conn.file_access, :open_file_read, [url])
 
       try do
-        read(conn, stream, sink)
+        collect(conn, stream, sink)
       after
         release(fn -> UNO.call(conn, stream, :close_input) end)
       end
@@ -106,7 +103,7 @@ defmodule URP.Bridge do
   end
 
   # A read that does not finish must not leave a half-written file behind.
-  defp read(conn, stream, sink) do
+  defp collect(conn, stream, sink) do
     output = Sink.open(sink)
 
     try do
