@@ -26,7 +26,10 @@ defmodule URP do
       config :urp, :pools, spreadsheets: [host: "soffice-2"]
 
   A pool connects when it is first used. If its `:host` resolves to several
-  addresses, its connections are spread over them.
+  addresses, its connections are spread over them. URP runs at most one job at
+  a time against any given `soffice` process, across pools on the same node and
+  across connected Erlang nodes; connections and document I/O stay local to each
+  node.
 
   ## Calls that outlive `:timeout`
 

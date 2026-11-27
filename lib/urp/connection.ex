@@ -156,7 +156,7 @@ defmodule URP.Connection do
       @defaults
       |> Keyword.merge(opts)
       |> Map.new()
-      |> Map.merge(%{address: nil, conn: nil, holding: false})
+      |> Map.merge(%{address: nil, conn: nil})
 
     {:ok, :disconnected, data, {:next_event, :internal, {:connect, 1}}}
   end
@@ -166,10 +166,9 @@ defmodule URP.Connection do
     address = address(data.host, data.index)
 
     case connect(address, data) do
-      # A job already in hand is run before another is asked for.
       {:ok, conn} ->
-        ready = if data.holding, do: [], else: [{:next_event, :internal, :ready}]
-        {:next_state, :connected, %{data | conn: conn, address: address, holding: false}, ready}
+        {:next_state, :connected, %{data | conn: conn, address: address},
+         {:next_event, :internal, :ready}}
 
       {:error, reason} ->
         delay = min(data.backoff_initial * Integer.pow(2, min(attempt - 1, 30)), data.backoff_max)
@@ -185,13 +184,16 @@ defmodule URP.Connection do
     end
   end
 
-  # A job that found its socket dead waits here for the new one.
-  def disconnected(:info, {:job, _from, _job}, _data), do: {:keep_state_and_data, :postpone}
+  def disconnected(:info, {:job, from, job}, data) do
+    Queue.requeue(data.queue, from, job)
+    :keep_state_and_data
+  end
+
   def disconnected(:info, _message, _data), do: :keep_state_and_data
 
   @doc false
   def connected(:internal, :ready, data) do
-    Queue.ready(data.queue)
+    Queue.ready(data.queue, data.conn.context)
     :keep_state_and_data
   end
 
@@ -203,7 +205,8 @@ defmodule URP.Connection do
       # A passive socket does not say when the other end has gone, which after
       # a soffice restart is every idle connection. Asking it for nothing tells.
       :gen_tcp.recv(data.conn.sock, 0, 0) != {:error, :timeout} ->
-        reconnect(%{data | holding: true}, :postpone)
+        Queue.requeue(data.queue, from, job)
+        reconnect(data)
 
       true ->
         started = System.monotonic_time()
@@ -217,19 +220,21 @@ defmodule URP.Connection do
         if Queue.expired?(job.deadline), do: report_drain(data, job.deadline, fate, result)
 
         case fate do
-          :keep -> {:keep_state_and_data, {:next_event, :internal, :ready}}
-          :drop -> reconnect(data, [])
+          :keep ->
+            {:keep_state_and_data, {:next_event, :internal, :ready}}
+
+          :drop ->
+            Queue.release(data.queue)
+            reconnect(data)
         end
     end
   end
 
   def connected(:info, _message, _data), do: :keep_state_and_data
 
-  defp reconnect(data, actions) do
+  defp reconnect(data) do
     :gen_tcp.close(data.conn.sock)
-
-    {:next_state, :disconnected, %{data | conn: nil},
-     [{:next_event, :internal, {:connect, 1}} | List.wrap(actions)]}
+    {:next_state, :disconnected, %{data | conn: nil}, {:next_event, :internal, {:connect, 1}}}
   end
 
   # The i-th connection of a pool takes the i-th address its host resolves to,
