@@ -26,8 +26,8 @@ several options and behaviours change; every breaking one is marked.
 - **Breaking:** the `:io` option, stream I/O and enumerable input are gone. A document is sent to
   `soffice` in one message and loaded from memory there, for every format; `soffice` had loaded an
   empty document from an enumerable, and from a stream of anything but a ZIP or OLE2 document.
-  The result is read back in chunks through a temp file on its side, and the new `:chunk_size`
-  pool option (default 1 MiB) sets their size.
+  The result is exported into memory there too and read back in chunks, whose size the new
+  `:chunk_size` pool option (default 1 MiB) sets. Neither leaves a file of ours on its disk.
 - **Breaking:** `:output` is required. Without it the result went to a temp file that nothing
   ever deleted.
 - **Breaking:** an `:output` function is called in the connection's process, not the caller's,
@@ -54,13 +54,12 @@ several options and behaviours change; every breaking one is marked.
   interrupted, so it finished the load after the connection was gone and kept the document, its
   lock file and its temp file for the life of the process, about 10 MB apiece. The caller still
   gets `{:error, :timeout}` right away; the connection waits for `soffice`, closes the document,
-  deletes its temp files and takes its next job. If `soffice` says nothing for the new
+  frees what it held and takes its next job. If `soffice` says nothing for the new
   `:drain_timeout` pool option (default 5 minutes) the connection reconnects instead. Each such
   wait emits `[:urp, :connection, :drain]`.
 - Release what a job opened when its caller is killed part way through.
 - An `:output` function that raises, exits or throws fails that conversion and nothing else.
-- Close the temp-file streams in `soffice` when a conversion fails part way through moving a
-  document.
+- Let go of everything a conversion held in `soffice` when it fails part way through.
 
 ## [v0.12.0] - 2026-09-11
 

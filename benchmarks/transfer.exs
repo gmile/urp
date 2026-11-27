@@ -1,6 +1,6 @@
 # How fast bytes move to soffice and back, without converting anything. Up is
-# one message, as a document is sent; down is a temp file read back in chunks
-# of several sizes, as a result is.
+# one message, as a document is sent; down is a pipe in soffice's memory read
+# in chunks of several sizes, as a result is.
 #
 #   mix run benchmarks/transfer.exs [megabytes]
 
@@ -14,22 +14,17 @@ best = fn job -> Enum.min(for _ <- 1..3, do: run.(job)) end
 
 up = fn conn ->
   args = ["com.sun.star.io.SequenceInputStream", [{:bytes, bytes}], conn.context]
-  ms.(fn -> conn |> UNO.call(conn.service_manager, :create_instance_with_arguments_and_context, args) |> then(&Connection.release(conn, &1)) end)
+  time = ms.(fn -> Process.put(:stream, UNO.call(conn, conn.service_manager, :create_instance_with_arguments_and_context, args)) end)
+  Connection.release(conn, Process.get(:stream))
+  time
 end
 
-# The file to read back is written through the same file access the result of
-# a conversion is read through.
 down = fn chunk ->
   fn conn ->
-    url = "file:///tmp/urp_transfer_#{System.unique_integer([:positive])}"
-    output = Connection.call(conn, conn.file_access, "com.sun.star.ucb.XSimpleFileAccess", 16, [string: url], {:interface, "com.sun.star.io.XOutputStream"})
-    Connection.call(conn, output, "com.sun.star.io.XOutputStream", 3, [bytes: bytes], :void)
-    Connection.call(conn, output, "com.sun.star.io.XOutputStream", 5, [], :void)
-
-    input = UNO.call(conn, conn.file_access, :open_file_read, [url])
-    time = ms.(fn -> for _ <- 0..(byte_size(bytes) - 1)//chunk, do: UNO.call(conn, input, :read_bytes, [chunk]) end)
-    UNO.call(conn, input, :close_input)
-    UNO.call(conn, conn.file_access, :kill, [url])
+    pipe = UNO.create_instance(conn, "com.sun.star.io.Pipe")
+    Connection.call(conn, pipe, "com.sun.star.io.XOutputStream", 3, [bytes: bytes], :void)
+    time = ms.(fn -> for at <- 0..(byte_size(bytes) - 1)//chunk, do: UNO.call(conn, pipe, :read_bytes, [min(chunk, byte_size(bytes) - at)]) end)
+    Connection.release(conn, pipe)
     time
   end
 end
