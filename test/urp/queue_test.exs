@@ -83,4 +83,39 @@ defmodule URP.QueueTest do
     caller(queue, job())
     assert_receive {:job, _from, _job}
   end
+
+  test "two connections to the same soffice do not run concurrently", %{queue: queue} do
+    test = self()
+    shared = "soffice-#{System.unique_integer([:positive])}"
+
+    conn = fn tag ->
+      spawn_link(fn ->
+        Queue.ready(queue, shared)
+
+        receive do
+          {:job, from, job} ->
+            send(test, {:started, tag, job.n})
+            receive do: (:go -> :ok)
+            GenServer.reply(from, tag)
+            Queue.ready(queue, shared)
+        end
+      end)
+    end
+
+    a = conn.(:a)
+    b = conn.(:b)
+    :sys.get_state(queue)
+
+    caller(queue, Map.put(job(), :n, 1))
+    caller(queue, Map.put(job(), :n, 2))
+
+    assert_receive {:started, :a, 1}
+    refute_receive {:started, :b, _}, 50
+
+    send(a, :go)
+    assert_receive {:started, :b, 2}
+    send(b, :go)
+    assert_receive {:answer, :a}
+    assert_receive {:answer, :b}
+  end
 end

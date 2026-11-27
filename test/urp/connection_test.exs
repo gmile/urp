@@ -10,25 +10,29 @@ defmodule URP.ConnectionTest do
   defmodule FakeSoffice do
     @interface "com.sun.star.uno.XInterface"
 
-    def start(script) do
+    def start(script, opts \\ []) do
       {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
       {:ok, port} = :inet.port(listen)
       {:ok, script} = Agent.start_link(fn -> script end)
-      spawn_link(fn -> accept(listen, script) end)
+      oid = Keyword.get_lazy(opts, :oid, fn -> "fake-#{System.unique_integer([:positive])}" end)
+      notify = Keyword.get(opts, :notify)
+      spawn_link(fn -> accept(listen, script, oid, notify) end)
       port
     end
 
-    defp accept(listen, script) do
+    defp accept(listen, script, oid, notify) do
       {:ok, sock} = :gen_tcp.accept(listen)
 
-      try do
-        handshake(sock)
-        serve(sock, script)
-      rescue
-        URP.SocketError -> :ok
-      end
+      spawn_link(fn ->
+        try do
+          handshake(sock)
+          serve(sock, script, oid, notify)
+        rescue
+          URP.SocketError -> :ok
+        end
+      end)
 
-      accept(listen, script)
+      accept(listen, script, oid, notify)
     end
 
     defp handshake(sock) do
@@ -46,50 +50,63 @@ defmodule URP.ConnectionTest do
     # Our requests carry the function in their second byte. queryInterface (0)
     # is answered with an object in an any, the calls that make objects (3, 4)
     # with an object, and the ask for services (5) as the script says.
-    defp serve(sock, script) do
+    defp serve(sock, script, oid, notify) do
       case P.recv_frame(sock, 5_000) do
         <<_flags, 0, _::binary>> ->
-          reply(sock, P.encode(:any, {{:interface, @interface}, "object"}))
+          reply(sock, P.encode(:any, {{:interface, @interface}, oid}))
 
         <<_flags, function, _::binary>> when function in [3, 4] ->
-          reply(sock, P.encode({:interface, @interface}, "object"))
+          reply(sock, P.encode({:interface, @interface}, oid))
 
         <<_flags, 5, _::binary>> ->
+          if notify, do: send(notify, {:call, :start, oid})
           services = P.encode({:sequence, :string}, ["a", "b"])
+          step = Agent.get_and_update(script, &List.pop_at(&1, 0))
+          if match?({:after, _}, step), do: Process.sleep(elem(step, 1))
+          if step == :say_nothing, do: Process.sleep(2_000)
+          if notify, do: send(notify, {:call, :stop, oid})
 
-          case Agent.get_and_update(script, &List.pop_at(&1, 0)) do
-            nil ->
-              reply(sock, services)
+          if step in [nil, :answer_then_hang_up] or match?({:after, _}, step),
+            do: reply(sock, services)
 
-            {:after, ms} ->
-              Process.sleep(ms)
-              reply(sock, services)
-
-            :answer_then_hang_up ->
-              reply(sock, services)
-              :gen_tcp.close(sock)
-
-            :hang_up ->
-              :gen_tcp.close(sock)
-
-            :say_nothing ->
-              Process.sleep(2_000)
-          end
+          if step in [:hang_up, :answer_then_hang_up], do: :gen_tcp.close(sock)
       end
 
-      serve(sock, script)
+      serve(sock, script, oid, notify)
     end
 
     defp reply(sock, body), do: P.send_frame(sock, [<<0x80>>, body])
+
+    def peak_concurrency(count) do
+      for _ <- 1..(count * 2), reduce: {%{}, %{}, 0, 0} do
+        {cur, peaks, total, total_peak} ->
+          receive do
+            {:call, :start, oid} ->
+              n = Map.get(cur, oid, 0) + 1
+              t = total + 1
+
+              {Map.put(cur, oid, n), Map.update(peaks, oid, n, &max(&1, n)), t,
+               max(total_peak, t)}
+
+            {:call, :stop, oid} ->
+              {Map.update!(cur, oid, &(&1 - 1)), peaks, total - 1, total_peak}
+          after
+            5_000 -> raise "timed out waiting for FakeSoffice call events"
+          end
+      end
+      |> then(fn {_cur, peaks, _total, total_peak} -> {peaks, total_peak} end)
+    end
   end
 
   defp start_pool(script, opts \\ []) do
     name = :"connection_test_#{System.unique_integer([:positive])}"
+    {port, opts} = Keyword.pop_lazy(opts, :port, fn -> FakeSoffice.start(script) end)
 
     start_supervised!(
-      {Pool,
-       [name: name, host: "127.0.0.1", port: FakeSoffice.start(script), backoff_initial: 10] ++
-         opts}
+      Supervisor.child_spec(
+        {Pool, [name: name, host: "127.0.0.1", port: port, backoff_initial: 10] ++ opts},
+        id: name
+      )
     )
 
     name
@@ -140,9 +157,25 @@ defmodule URP.ConnectionTest do
       job = Task.async(fn -> services(pool) end)
       Process.sleep(50)
 
-      stop_supervised!(Pool)
+      stop_supervised!(pool)
 
       assert Task.await(job) == {:ok, ["a", "b"]}
+    end
+
+    test "serializes jobs per soffice across connections and pools, while running distinct ones in parallel" do
+      port1 = FakeSoffice.start(List.duplicate({:after, 60}, 6), oid: "s1", notify: self())
+      port2 = FakeSoffice.start(List.duplicate({:after, 60}, 2), oid: "s2", notify: self())
+
+      pool_a = start_pool([], port: port1, pool_size: 3)
+      pool_b = start_pool([], port: port1, pool_size: 2)
+      pool_c = start_pool([], port: port2, pool_size: 1)
+
+      tasks =
+        for pool <- [pool_a, pool_a, pool_b, pool_b, pool_c, pool_c],
+            do: Task.async(fn -> services(pool) end)
+
+      assert Enum.all?(Task.await_many(tasks, 5_000), &(&1 == {:ok, ["a", "b"]}))
+      assert {%{"s1" => 1, "s2" => 1}, 2} = FakeSoffice.peak_concurrency(6)
     end
   end
 
