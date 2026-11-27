@@ -10,7 +10,7 @@ no Python, no wrappers, no sidecars.
 ## Installation
 
 ```elixir
-{:urp, "~> 0.10"}
+{:urp, "~> 0.12"}
 ```
 
 ## Prerequisites
@@ -24,25 +24,25 @@ docker run --detach --name soffice --publish 2002:2002 soffice
 
 ## Usage
 
-A default pool connects to `localhost:2002` automatically.
-
 ```elixir
-# file path, {:binary, bytes}, or any Enumerable as input
-{:ok, pdf_path} =
+# a file path or {:binary, bytes} in; a path, :binary or a function out
+{:ok, "/path/to/output.pdf"} =
   URP.convert("/path/to/input.docx",
     filter: "writer_pdf_Export",
-    filter_data: [Quality: 90, ReduceImageResolution: true, MaxImageResolution: 150]
+    filter_data: [Quality: 90, ReduceImageResolution: true, MaxImageResolution: 150],
+    output: "/path/to/output.pdf"
   )
 
-# docx to Markdown, output as binary
-{:ok, md} = URP.convert({:binary, docx_bytes}, filter: "Markdown", output: :binary)
+{:ok, markdown} = URP.convert({:binary, docx_bytes}, filter: "Markdown", output: :binary)
 
 {:ok, "26.2.0.3"} = URP.version()
 {:ok, filters}    = URP.filters()
 ```
 
 See `URP.convert/2` for all options ([filter names](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html),
-[FilterData properties](https://wiki.documentfoundation.org/Macros/Python_Guide/PDF_export_filter_data)).
+[FilterData properties](https://wiki.documentfoundation.org/Macros/Python_Guide/PDF_export_filter_data)),
+and the `URP` module documentation for configuration, errors and what happens
+to a conversion that outlives its timeout.
 
 ### Configuration
 
@@ -56,68 +56,46 @@ config :urp, :default,
 
 > #### pool_size {: .warning}
 >
-> A single URP connection handles one operation at a time. LibreOffice accepts
-> multiple connections to one soffice process, but they share process-wide
-> state and generally do not improve conversion throughput. Keep `pool_size: 1`
-> per soffice process. For parallelism and fault isolation, run one soffice per
-> container and point `host` at a name that resolves to all of them (a headless
-> Kubernetes service, a round-robin DNS record): each worker connects to the
-> address the fewest workers already hold, so `pool_size: N` spreads over N
-> processes. A worker whose address drops out of DNS reconnects elsewhere.
-
-### Errors
-
-A failure is `{:error, reason}`. A message string means soffice objected to the
-document or the filter; an atom means the socket gave out — `:timeout` when
-soffice stopped answering, `:closed` when it hung up, or a POSIX error. The two
-call for different handling: retrying a document soffice refused is pointless,
-and a wedged soffice is not the document's fault.
-
-```elixir
-case URP.convert(path, filter: "writer_pdf_Export", output: pdf) do
-  {:ok, ^pdf} -> :converted
-  {:error, reason} when is_atom(reason) -> {:unavailable, reason}
-  {:error, message} -> {:refused, message}
-end
-```
+> A connection converts one document at a time. LibreOffice accepts several
+> connections to one soffice process, but they share process-wide state and
+> generally do not improve throughput. Keep one connection per soffice
+> process. For parallelism and fault isolation, run one soffice per container
+> and point `host` at a name that resolves to all of them (a headless
+> Kubernetes service, a round-robin DNS record): the connections of a pool
+> take the addresses in turn, so `pool_size: N` spreads over N processes.
 
 ### Testing
 
-Stub conversions in tests — no running soffice needed. See `URP.Test`.
+Stub conversions in tests, with no soffice running. See `URP.Test`.
 
 ```elixir
-URP.Test.stub(fn _input, _opts -> {:ok, "/tmp/fake.pdf"} end)
+URP.Test.stub(fn _input, _opts -> {:ok, "%PDF-fake"} end)
 assert {:ok, _} = MyApp.generate_invoice(order)
 ```
 
-`mix test` always runs the deterministic unit suite without probing local ports.
-Run everything CI runs, including the integration suite against LibreOffice from
-nixpkgs, with:
+### Telemetry
+
+Every operation is a `[:urp, :call, _]` span whose stop event carries queue
+and service time. A connection that could not connect emits
+`[:urp, :connection, :retry]`, and one that finished a job after its caller
+stopped waiting emits `[:urp, :connection, :drain]`. See `URP.Telemetry`.
+
+## Development
+
+`mix test` runs the unit suite, which needs no soffice. Everything CI runs,
+including the integration suite against LibreOffice from nixpkgs:
 
 ```sh
 nix flake check
 ```
 
-Or run the integration suite yourself, against LibreOffice from nixpkgs listening
-on `PORT`, 2002 by default:
+Or run the integration suite yourself, against LibreOffice from nixpkgs
+listening on `PORT`, 2002 by default:
 
 ```sh
 nix run .#soffice &
 nix develop --command mix test --include integration
 ```
-
-Format the Nix files:
-
-```sh
-nix fmt
-```
-
-### Telemetry
-
-Every operation emits a `[:urp, :call, :start]` event followed by either
-`[:urp, :call, :stop]` or `[:urp, :call, :exception]`. Stop events include
-queue, service, backoff, and total time. Connection retries emit
-`[:urp, :connection, :retry]`. See `URP.Telemetry`.
 
 ## Performance
 

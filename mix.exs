@@ -29,7 +29,9 @@ defmodule URP.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md", "PERFORMANCE.md", "CHANGELOG.md", "LICENSE"]
+      extras: ["README.md", "PERFORMANCE.md", "CHANGELOG.md", "LICENSE"],
+      # Past entries name modules that are internal now.
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"]
     ]
   end
 
@@ -45,8 +47,8 @@ defmodule URP.MixProject do
     [
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
+      {:nimble_options, "~> 1.1"},
       {:nimble_ownership, "~> 1.0"},
-      {:nimble_pool, "~> 1.1"},
       {:telemetry, "~> 1.0"},
       {:req, "~> 0.7", only: :dev, runtime: false},
       {:benchee, "~> 1.3", only: :dev, runtime: false}
@@ -55,7 +57,7 @@ defmodule URP.MixProject do
 
   def application do
     [
-      extra_applications: [:crypto],
+      extra_applications: [:crypto, :logger],
       mod: {URP.Application, []}
     ]
   end

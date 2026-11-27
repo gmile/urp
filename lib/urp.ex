@@ -3,593 +3,283 @@ defmodule URP do
   Pure Elixir client for document conversion via LibreOffice's UNO Remote Protocol.
 
   Talks directly to a `soffice` process over TCP.
-  No Python, no unoserver, no Gotenberg.
 
   ## Setup
 
-  Add `:urp` to your dependencies — that's it. A default connection pool
-  starts automatically, connecting to `localhost:2002`.
+  With `:urp` among your dependencies, `convert/2` works against a `soffice`
+  on `localhost:2002`. To point it elsewhere:
 
-      # config/runtime.exs (optional — defaults shown)
+      # config/runtime.exs — every key is optional, defaults shown
       config :urp, :default,
-        host: "soffice",
+        host: "localhost",
         port: 2002,
-        pool_size: 1,
-        backoff_initial: 500,  # ms, initial reconnection delay
-        backoff_max: 5_000,    # ms, max reconnection delay
-        drain_timeout: 300_000 # ms, how long to wait for a call that outlived recv_timeout
+        pool_size: 1,           # connections, each converting one document at a time
+        chunk_size: 1_048_576,  # bytes of a document moved per message
+        drain_timeout: 300_000, # ms soffice may stay silent before a connection is dropped
+        connect_timeout: 5_000, # ms
+        backoff_initial: 500,   # ms, first delay before reconnecting
+        backoff_max: 5_000      # ms, longest delay before reconnecting
 
-  See `convert/2` for usage examples and options.
+  For several `soffice` instances, configure named pools the same way and pick
+  one with the `:pool` option:
 
-  ## Calls that outlive `:recv_timeout`
+      config :urp, :pools, spreadsheets: [host: "soffice-2"]
 
-  `soffice` cannot be told to stop. When a call times out, the caller gets
-  `{:error, :timeout}` at once, while `soffice` carries on and keeps the document
-  it was loading open for good. So the connection is not closed: a background
-  process waits up to `:drain_timeout` for the late reply, closes the document,
-  deletes its temp files and only then drops the connection. The pool slot stays
-  out of service meanwhile, since `soffice` would make the next call wait behind
-  the old one anyway. See `URP.Telemetry` for the event each drain emits.
+  A pool connects when it is first used. If its `:host` resolves to several
+  addresses, its connections are spread over them.
+
+  ## Calls that outlive `:timeout`
+
+  `soffice` cannot be told to stop: it finishes every call it was sent, and
+  keeps a document it loaded until it is told to close it. So each connection
+  is a process of its own that sees a job through. A caller waits `:timeout`
+  and then gets `{:error, :timeout}`, while the connection waits for `soffice`,
+  closes the document, deletes its temp files and only then takes another job.
+  It reconnects only if `soffice` says nothing for the whole `:drain_timeout`.
+  See `URP.Telemetry` for the event this emits.
+
+  ## Errors
+
+  A failure is `{:error, reason}`. A string is the reason this one job failed,
+  from `soffice` or from reading the input or writing the output; the next
+  call may well succeed. An atom means there was no answer to be had:
+  `:timeout` if none came within `:timeout`, `:closed` or a POSIX error if the
+  socket failed, `:unavailable` if the pool is not running and
+  `:protocol_error` if the exchange went wrong, with the details logged.
+
+      case URP.convert(path, filter: "writer_pdf_Export", output: pdf) do
+        {:ok, ^pdf} -> :converted
+        {:error, message} when is_binary(message) -> {:refused, message}
+        {:error, reason} -> {:unavailable, reason}
+      end
+
+  The functions ending in `!` return the bare result and raise `URP.Error` for
+  a string and `URP.SocketError` for an atom.
 
   ## Diagnostics
 
-  Query soffice state without converting anything:
-
-      {:ok, "26.2.0.3"} = URP.version()
-      {:ok, services} = URP.services()
-      {:ok, filters} = URP.filters()
-      {:ok, types} = URP.types()
-      {:ok, locale} = URP.locale()
-
-  ## Named pools
-
-  For multiple soffice instances, configure named pools:
-
-      config :urp, :pools,
-        spreadsheets: [host: "soffice-2", port: 2002, pool_size: 1]
-
-      {:ok, pdf} = URP.convert({:binary, bytes}, filter: "calc_pdf_Export", pool: :spreadsheets)
-
-  Named pools are started on first use.
+  `version/1`, `locale/1`, `services/1`, `filters/1` and `types/1` ask
+  `soffice` about itself. Each takes `:pool` and `:timeout`.
 
   ## Testing
 
-      URP.Test.stub(fn _input, _opts -> {:ok, "/tmp/fake.pdf"} end)
-      {:ok, _} = URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export")
-
-  See `URP.Test` for details.
+  See `URP.Test` for stubbing conversions without a `soffice`.
   """
 
-  @typedoc """
-  Why a call failed: a `soffice` message, or the atom `:gen_tcp` reported when
-  the socket itself gave out (`:timeout`, `:closed`, a POSIX error).
-  """
+  @typedoc "Why a call failed; see the Errors section of the module documentation."
   @type error :: String.t() | atom()
 
   @type setting :: {String.t(), String.t(), boolean() | integer() | String.t()}
   @type output :: Path.t() | :binary | (binary() -> any())
-  @type io_mode :: :file | :stream | {:file | :stream, :file | :stream}
-  @type opt ::
-          {:output, output()}
-          | {:pool, atom()}
-          | {:filter, String.t()}
-          | {:filter_data, keyword()}
-          | {:settings, [setting()]}
-          | {:io, io_mode()}
-          | {:timeout, non_neg_integer()}
-          | {:recv_timeout, timeout()}
-          | {:max_frame_size, pos_integer()}
 
-  @doc """
-  Query the soffice version string over URP.
+  @query_options NimbleOptions.new!(
+                   pool: [type: :atom],
+                   timeout: [type: :timeout, default: 120_000]
+                 )
 
-  Returns the raw version string (e.g. `"26.2.0.3"`). Callers can use
-  `Version.parse/1` if needed.
-
-  ## Examples
-
-      {:ok, version} = URP.version()
-      # => "26.2.0.3"
-
-  ## Options
-
-    * `:pool`    — named pool to use (default: the auto-started pool)
-    * `:timeout` — checkout timeout in ms (default `120_000`)
-  """
+  @doc "The soffice version, such as `\"26.2.0.3\"`."
   @spec version(keyword()) :: {:ok, String.t()} | {:error, error()}
-  def version(opts \\ []) do
-    {pool, opts} = resolve_pool(opts)
-    URP.Pool.version(pool, opts)
-  end
+  def version(opts \\ []), do: query(:version, opts)
+
+  @doc "The soffice locale, such as `\"en-US\"`, or `\"\"` if none is configured."
+  @spec locale(keyword()) :: {:ok, String.t()} | {:error, error()}
+  def locale(opts \\ []), do: query(:locale, opts)
+
+  @doc "Every service registered in soffice, such as `\"com.sun.star.frame.Desktop\"`."
+  @spec services(keyword()) :: {:ok, [String.t()]} | {:error, error()}
+  def services(opts \\ []), do: query(:services, opts)
+
+  @doc "Every filter soffice knows, such as `\"writer_pdf_Export\"`; any can be passed as `:filter`."
+  @spec filters(keyword()) :: {:ok, [String.t()]} | {:error, error()}
+  def filters(opts \\ []), do: query(:filters, opts)
+
+  @doc "Every document type soffice detects, such as `\"writer8\"`."
+  @spec types(keyword()) :: {:ok, [String.t()]} | {:error, error()}
+  def types(opts \\ []), do: query(:types, opts)
 
   @doc "Like `version/1` but raises on error."
   @spec version!(keyword()) :: String.t()
-  def version!(opts \\ []) do
-    case version(opts) do
-      {:ok, v} -> v
-      {:error, reason} -> raise_reason(reason)
-    end
-  end
-
-  @doc """
-  List all service names registered in the UNO service manager.
-
-  Returns a list of service name strings like `"com.sun.star.frame.Desktop"`.
-
-  ## Examples
-
-      {:ok, services} = URP.services()
-      "com.sun.star.frame.Desktop" in services
-      # => true
-
-  ## Options
-
-    * `:pool`    — named pool to use (default: the auto-started pool)
-    * `:timeout` — checkout timeout in ms (default `120_000`)
-  """
-  @spec services(keyword()) :: {:ok, [String.t()]} | {:error, error()}
-  def services(opts \\ []) do
-    {pool, opts} = resolve_pool(opts)
-    URP.Pool.services(pool, opts)
-  end
-
-  @doc "Like `services/1` but raises on error."
-  @spec services!(keyword()) :: [String.t()]
-  def services!(opts \\ []) do
-    case services(opts) do
-      {:ok, v} -> v
-      {:error, reason} -> raise_reason(reason)
-    end
-  end
-
-  @doc """
-  List all export filter names registered in soffice.
-
-  Returns a list of filter name strings like `"writer_pdf_Export"`.
-  Useful for discovering which filters are available on the connected soffice.
-
-  ## Examples
-
-      {:ok, filters} = URP.filters()
-      "writer_pdf_Export" in filters
-      # => true
-
-  ## Options
-
-    * `:pool`    — named pool to use (default: the auto-started pool)
-    * `:timeout` — checkout timeout in ms (default `120_000`)
-  """
-  @spec filters(keyword()) :: {:ok, [String.t()]} | {:error, error()}
-  def filters(opts \\ []) do
-    {pool, opts} = resolve_pool(opts)
-    URP.Pool.filters(pool, opts)
-  end
-
-  @doc "Like `filters/1` but raises on error."
-  @spec filters!(keyword()) :: [String.t()]
-  def filters!(opts \\ []) do
-    case filters(opts) do
-      {:ok, v} -> v
-      {:error, reason} -> raise_reason(reason)
-    end
-  end
-
-  @doc """
-  List all document type names registered in soffice.
-
-  Returns a list of type name strings like `"writer8"`.
-  These are the internal names soffice uses for file format detection.
-
-  ## Examples
-
-      {:ok, types} = URP.types()
-      "writer8" in types
-      # => true
-
-  ## Options
-
-    * `:pool`    — named pool to use (default: the auto-started pool)
-    * `:timeout` — checkout timeout in ms (default `120_000`)
-  """
-  @spec types(keyword()) :: {:ok, [String.t()]} | {:error, error()}
-  def types(opts \\ []) do
-    {pool, opts} = resolve_pool(opts)
-    URP.Pool.types(pool, opts)
-  end
-
-  @doc "Like `types/1` but raises on error."
-  @spec types!(keyword()) :: [String.t()]
-  def types!(opts \\ []) do
-    case types(opts) do
-      {:ok, v} -> v
-      {:error, reason} -> raise_reason(reason)
-    end
-  end
-
-  @doc """
-  Query the soffice locale string.
-
-  Returns the locale string (e.g. `"en-US"`) or `""` if not configured.
-
-  ## Examples
-
-      {:ok, locale} = URP.locale()
-      # => "en-US"
-
-  ## Options
-
-    * `:pool`    — named pool to use (default: the auto-started pool)
-    * `:timeout` — checkout timeout in ms (default `120_000`)
-  """
-  @spec locale(keyword()) :: {:ok, String.t()} | {:error, error()}
-  def locale(opts \\ []) do
-    {pool, opts} = resolve_pool(opts)
-    URP.Pool.locale(pool, opts)
-  end
+  def version!(opts \\ []), do: opts |> version() |> unwrap!()
 
   @doc "Like `locale/1` but raises on error."
   @spec locale!(keyword()) :: String.t()
-  def locale!(opts \\ []) do
-    case locale(opts) do
-      {:ok, v} -> v
-      {:error, reason} -> raise_reason(reason)
-    end
+  def locale!(opts \\ []), do: opts |> locale() |> unwrap!()
+
+  @doc "Like `services/1` but raises on error."
+  @spec services!(keyword()) :: [String.t()]
+  def services!(opts \\ []), do: opts |> services() |> unwrap!()
+
+  @doc "Like `filters/1` but raises on error."
+  @spec filters!(keyword()) :: [String.t()]
+  def filters!(opts \\ []), do: opts |> filters() |> unwrap!()
+
+  @doc "Like `types/1` but raises on error."
+  @spec types!(keyword()) :: [String.t()]
+  def types!(opts \\ []), do: opts |> types() |> unwrap!()
+
+  defp query(operation, opts) do
+    {pool, opts} = opts |> NimbleOptions.validate!(@query_options) |> Keyword.pop(:pool)
+    URP.Pool.run(ensure_pool!(pool), operation, opts, &apply(URP.Bridge, operation, [&1]))
   end
+
+  @scalar {:or, [:boolean, :integer, :string]}
+
+  @convert_options NimbleOptions.new!(
+                     filter: [
+                       type: :string,
+                       required: true,
+                       doc:
+                         "Export filter name, such as `\"writer_pdf_Export\"`, `\"calc_pdf_Export\"`, " <>
+                           "`\"impress_pdf_Export\"` or `\"Markdown\"`."
+                     ],
+                     filter_data: [
+                       type: :keyword_list,
+                       keys: [*: [type: @scalar]],
+                       default: [],
+                       doc: """
+                       Filter-specific export options, with boolean, integer or string values. \
+                       For PDF filters, see [PDF export options](https://wiki.documentfoundation.org/API/Tutorials/PDF_export) \
+                       (e.g. `[UseLosslessCompression: true, ExportFormFields: false]`).
+                       """
+                     ],
+                     settings: [
+                       type: {:list, {:tuple, [:string, :string, @scalar]}},
+                       type_doc: "list of `t:setting/0`",
+                       default: [],
+                       doc: """
+                       `{path, property, value}` triplets to set on soffice before the conversion \
+                       via `ConfigurationUpdateAccess`, for tuning cache limits, graphic memory and \
+                       the like. They change the soffice process-wide profile and outlast the \
+                       conversion; do not vary them concurrently on a shared soffice. See the \
+                       [officecfg schema](https://github.com/LibreOffice/core/tree/master/officecfg/registry/schema/org/openoffice/Office) \
+                       for what can be set.
+                       """
+                     ],
+                     output: [
+                       type: {:or, [{:in, [:binary]}, :string, {:fun, 1}]},
+                       type_doc: "`t:output/0`",
+                       required: true,
+                       doc: """
+                       Where the converted document goes.
+
+                         * a path — written there; returns `{:ok, path}`
+                         * `:binary` — returns `{:ok, bytes}`
+                         * a function — called with each chunk, in the connection's process \
+                           rather than the caller's; returns `:ok`
+                       """
+                     ],
+                     pool: [
+                       type: :atom,
+                       doc: "Named pool to use, instead of the default one."
+                     ],
+                     timeout: [
+                       type: :timeout,
+                       default: 120_000,
+                       doc:
+                         "How long to wait for the result, in ms: for a connection to come free " <>
+                           "and then for the conversion."
+                     ]
+                   )
 
   @doc """
   Convert a document via LibreOffice.
 
-  ## Input types
-
-    * `path` (binary) — local file path. File mode reads it locally before
-      uploading it to soffice; use stream input for bounded local memory.
-    * `{:binary, bytes}` — raw document bytes
-    * enumerable — any `Enumerable` (e.g. `File.stream!/2`), streamed lazily
+  `input` is a file path, read from the local disk a chunk at a time, or
+  `{:binary, bytes}` for a document already in memory. Either way it is sent
+  over the socket and `soffice` works from a temp file of its own, so nothing
+  has to be shared with it on disk.
 
   ## Options
 
-    * `:filter`  — export filter name (**required**). See moduledoc for common filters.
-    * `:filter_data` — keyword list of filter-specific export options.
-      Values can be booleans, integers, or strings.
-      For PDF filters, see [PDF export options](https://wiki.documentfoundation.org/API/Tutorials/PDF_export)
-      (e.g. `[UseLosslessCompression: true, ExportFormFields: false]`).
-    * `:settings` — list of `{path, property, value}` triplets to set on soffice
-      before conversion via `ConfigurationUpdateAccess`. Useful for tuning
-      cache limits, graphic memory, etc. Values can be booleans, integers, or strings.
-      These settings modify the soffice process-wide profile and persist after
-      the conversion; do not vary them concurrently on a shared soffice process.
-      See [officecfg schema](https://github.com/LibreOffice/core/tree/master/officecfg/registry/schema/org/openoffice/Office)
-      for all available settings.
-    * `:io` — I/O transfer strategy (default `:file`):
-      * `:file` — transfer complete files via temp files on soffice's filesystem.
-        Fast (~6 URP round-trips), but requires temp disk space on soffice.
-      * `:stream` — stream document bytes over the URP socket via
-        XInputStream/XOutputStream. Stream input is ~40-50% slower (many
-        seek/read round-trips for ZIP formats). Stream output adds <5%
-        overhead — soffice writes in fixed
-        [32 767-byte chunks](https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573),
-        so a 7 MB PDF is ~223 writeBytes calls.
-        No temp files. Path and callback outputs use bounded memory; `:binary`
-        output necessarily accumulates the complete result in memory.
-      * `{:file, :stream}` or `{:stream, :file}` — mix strategies independently
-        for input and output. `{:file, :stream}` is a good defensive choice:
-        fast file-based input with chunked stream output (no large single
-        allocation on the BEAM).
-    * `:output`  — where to write converted output:
-      * path string — write to file, returns `{:ok, path}`
-      * `:binary` — return bytes, returns `{:ok, bytes}`
-      * `fun/1` — call with each chunk, returns `:ok`
-      * not set — write to temp file, returns `{:ok, tmp_path}`
-    * `:pool`    — named pool to use (default: the auto-started pool)
-    * `:timeout` — checkout timeout in ms (default `120_000`)
+  #{NimbleOptions.docs(@convert_options)}
 
   ## Examples
 
-  File path input with various output modes:
+      {:ok, "/tmp/out.pdf"} =
+        URP.convert("/tmp/report.docx", filter: "writer_pdf_Export", output: "/tmp/out.pdf")
 
-      {:ok, pdf_path} = URP.convert("/tmp/report.docx", filter: "writer_pdf_Export")
-      {:ok, "/tmp/out.pdf"} = URP.convert("/tmp/report.docx", filter: "writer_pdf_Export", output: "/tmp/out.pdf")
-      {:ok, pdf_bytes} = URP.convert("/tmp/report.docx", filter: "writer_pdf_Export", output: :binary)
-
-  Raw bytes:
-
-      {:ok, pdf_bytes} = URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export", output: :binary)
-
-  Enumerable (e.g. streaming a large file):
-
-      {:ok, pdf_path} = URP.convert(File.stream!("huge.docx", 65_536), filter: "writer_pdf_Export")
+      {:ok, pdf_bytes} =
+        URP.convert({:binary, docx_bytes}, filter: "writer_pdf_Export", output: :binary)
 
   With soffice settings (e.g. raise graphic memory cache for image-heavy docs):
 
       {:ok, pdf} = URP.convert("charts.pptx",
         filter: "impress_pdf_Export",
+        output: :binary,
         settings: [
           {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicMemoryLimit", 500_000_000}
         ]
       )
 
-  The `:filter` option is required:
+  Options are checked before anything is sent:
 
       iex> URP.convert({:binary, "bytes"}, output: :binary)
-      ** (ArgumentError) URP.convert/2 requires the :filter option. Common filters: "writer_pdf_Export", "calc_pdf_Export", "impress_pdf_Export", "Markdown"
-
-  With a test stub (see `URP.Test`):
-
-      iex> URP.Test.stub(fn _input, _opts -> {:ok, "/tmp/fake.pdf"} end)
-      :ok
-      iex> URP.convert("/tmp/test.docx", filter: "writer_pdf_Export")
-      {:ok, "/tmp/fake.pdf"}
-
-  ## Errors
-
-  A failure is `{:error, reason}`. `reason` is a message string when soffice
-  itself objected — a document it would not open, a filter it does not know —
-  and the atom `:gen_tcp` reported when the socket gave out: `:timeout` if
-  soffice stopped answering, `:closed` if it hung up, or a POSIX error. A caller
-  that has to tell "this document is bad" from "soffice is wedged" matches on
-  the shape:
-
-      case URP.convert(path, filter: "writer_pdf_Export", output: pdf) do
-        {:ok, ^pdf} -> :converted
-        {:error, reason} when is_atom(reason) -> {:unavailable, reason}
-        {:error, message} -> {:refused, message}
-      end
+      ** (NimbleOptions.ValidationError) required :filter option not found, received options: [:output]
   """
-  @spec convert(binary() | {:binary, binary()} | Enumerable.t(), [opt()]) ::
+  @spec convert(Path.t() | {:binary, binary()}, keyword()) ::
           {:ok, Path.t()} | {:ok, binary()} | :ok | {:error, error()}
-  def convert(input, opts \\ [])
+  def convert(input, opts)
+      when is_binary(input) or (is_tuple(input) and elem(input, 0) == :binary) do
+    validated = NimbleOptions.validate!(opts, @convert_options)
 
-  def convert(input, opts) when is_binary(input) and is_list(opts) do
-    do_convert(input, opts)
-  end
+    with :error <- URP.Test.__fetch_stub__() do
+      {output, validated} = Keyword.pop!(validated, :output)
+      {pool, validated} = Keyword.pop(validated, :pool)
+      {pool_opts, job_opts} = Keyword.split(validated, [:timeout])
+      sink = if is_binary(output), do: {:path, output}, else: output
 
-  def convert({:binary, bytes} = input, opts) when is_binary(bytes) and is_list(opts) do
-    do_convert(input, opts)
-  end
-
-  def convert(input, opts) when is_list(opts) do
-    if Enumerable.impl_for(input) do
-      do_convert(input, opts)
+      case URP.Pool.run(
+             ensure_pool!(pool),
+             :convert,
+             pool_opts,
+             &URP.Bridge.convert(&1, input, sink, job_opts)
+           ) do
+        {:ok, :ok} when is_binary(output) -> {:ok, output}
+        {:ok, :ok} -> :ok
+        result -> result
+      end
     else
-      raise ArgumentError,
-            "URP.convert/2 expects a file path (binary), {:binary, bytes}, or an Enumerable. " <>
-              "Got: #{inspect(input)}"
+      {:ok, stub} -> stub.(input, opts)
     end
   end
 
   @doc "Like `convert/2` but raises on error."
-  @spec convert!(binary() | {:binary, binary()} | Enumerable.t(), [opt()]) ::
-          Path.t() | binary() | :ok
-  def convert!(input, opts \\ []) do
-    case convert(input, opts) do
-      {:ok, v} -> v
-      :ok -> :ok
-      {:error, reason} -> raise_reason(reason)
-    end
-  end
+  @spec convert!(Path.t() | {:binary, binary()}, keyword()) :: Path.t() | binary() | :ok
+  def convert!(input, opts), do: input |> convert(opts) |> unwrap!()
 
-  defp do_convert(input, opts) do
-    validate_convert_opts!(opts)
+  defp unwrap!({:ok, value}), do: value
+  defp unwrap!(:ok), do: :ok
+  defp unwrap!({:error, message}) when is_binary(message), do: raise(URP.Error, message)
+  defp unwrap!({:error, reason}), do: raise(URP.SocketError, reason: reason)
 
-    case URP.Test.__fetch_stub__() do
-      {:ok, fun} ->
-        fun.(input, opts)
-
-      :error ->
-        {pool, opts} = resolve_pool(opts)
-        {output, opts} = Keyword.pop(opts, :output)
-
-        pool_opts =
-          case output do
-            nil ->
-              tmp = generate_tmp_path(input, opts[:filter])
-              Keyword.put(opts, :sink, {:path, tmp})
-
-            :binary ->
-              opts
-
-            path when is_binary(path) ->
-              Keyword.put(opts, :sink, {:path, path})
-
-            fun when is_function(fun, 1) ->
-              Keyword.put(opts, :sink, fun)
-
-            other ->
-              raise ArgumentError,
-                    ":output must be a path, :binary, or a one-argument function; got: #{inspect(other)}"
-          end
-
-        case URP.Pool.convert(pool, input, pool_opts) do
-          :ok when is_nil(output) -> {:ok, elem(pool_opts[:sink], 1)}
-          :ok when is_binary(output) -> {:ok, output}
-          :ok when is_function(output, 1) -> :ok
-          {:ok, _bytes} = ok when output == :binary -> ok
-          {:error, _msg} = err -> err
-        end
-    end
-  end
-
-  defp validate_convert_opts!(opts) do
-    if not Keyword.keyword?(opts) do
-      raise ArgumentError, "URP.convert/2 options must be a keyword list"
-    end
-
-    filter = Keyword.get(opts, :filter)
-
-    if not (is_binary(filter) and filter != "") do
-      raise ArgumentError,
-            "URP.convert/2 requires the :filter option. " <>
-              "Common filters: \"writer_pdf_Export\", \"calc_pdf_Export\", \"impress_pdf_Export\", \"Markdown\""
-    end
-
-    validate_io!(Keyword.get(opts, :io, :file))
-    validate_timeout!(:timeout, Keyword.get(opts, :timeout, 120_000))
-    validate_timeout!(:recv_timeout, Keyword.get(opts, :recv_timeout, 120_000))
-    validate_output!(Keyword.get(opts, :output))
-    validate_filter_data!(Keyword.get(opts, :filter_data, []))
-    validate_settings!(Keyword.get(opts, :settings, []))
-
-    case Keyword.get(opts, :max_frame_size, 1) do
-      value when is_integer(value) and value > 0 ->
-        :ok
-
-      value ->
-        raise ArgumentError, ":max_frame_size must be a positive integer; got: #{inspect(value)}"
-    end
-
-    case Keyword.get(opts, :pool) do
-      nil -> :ok
-      name when is_atom(name) -> :ok
-      name -> raise ArgumentError, ":pool must be a configured atom; got: #{inspect(name)}"
-    end
-  end
-
-  defp validate_io!(:file), do: :ok
-  defp validate_io!(:stream), do: :ok
-
-  defp validate_io!({input, output})
-       when input in [:file, :stream] and output in [:file, :stream], do: :ok
-
-  defp validate_io!(value) do
-    raise ArgumentError,
-          ":io must be :file, :stream, or {:file | :stream, :file | :stream}; got: #{inspect(value)}"
-  end
-
-  # A socket failure re-raises as itself, so the reason survives into the message.
-  @spec raise_reason(error()) :: no_return()
-  defp raise_reason(reason) when is_binary(reason), do: raise(reason)
-  defp raise_reason(reason), do: raise(URP.SocketError, reason: reason)
-
-  defp validate_timeout!(_name, :infinity), do: :ok
-  defp validate_timeout!(_name, value) when is_integer(value) and value >= 0, do: :ok
-
-  defp validate_timeout!(name, value) do
-    raise ArgumentError,
-          ":#{name} must be a non-negative integer or :infinity; got: #{inspect(value)}"
-  end
-
-  defp validate_output!(nil), do: :ok
-  defp validate_output!(:binary), do: :ok
-  defp validate_output!(path) when is_binary(path), do: :ok
-  defp validate_output!(fun) when is_function(fun, 1), do: :ok
-
-  defp validate_output!(value) do
-    raise ArgumentError,
-          ":output must be a path, :binary, or a one-argument function; got: #{inspect(value)}"
-  end
-
-  defp validate_filter_data!(filter_data) do
-    valid? =
-      Keyword.keyword?(filter_data) and
-        Enum.all?(filter_data, fn {_key, value} ->
-          is_boolean(value) or is_integer(value) or is_binary(value)
-        end)
-
-    if not valid? do
-      raise ArgumentError,
-            ":filter_data must be a keyword list with boolean, integer, or string values"
-    end
-  end
-
-  defp validate_settings!(settings) do
-    valid? =
-      is_list(settings) and
-        Enum.all?(settings, fn
-          {path, property, value} ->
-            is_binary(path) and is_binary(property) and
-              (is_boolean(value) or is_integer(value) or is_binary(value))
-
-          _other ->
-            false
-        end)
-
-    if not valid? do
-      raise ArgumentError,
-            ":settings must contain {path, property, value} triplets with supported values"
-    end
-  end
-
-  @filter_extensions %{
-    "writer_pdf_Export" => ".pdf",
-    "calc_pdf_Export" => ".pdf",
-    "impress_pdf_Export" => ".pdf",
-    "draw_pdf_Export" => ".pdf",
-    "Markdown" => ".md",
-    "HTML (StarWriter)" => ".html",
-    "HTML (StarCalc)" => ".html",
-    "Rich Text Format" => ".rtf",
-    "Text" => ".txt",
-    "Text (encoded)" => ".txt",
-    "Office Open XML Text" => ".docx",
-    "writer8" => ".odt"
-  }
-
-  defp generate_tmp_path(input, filter) do
-    basename =
-      case input do
-        path when is_binary(path) -> Path.basename(path, Path.extname(path))
-        _ -> "urp"
-      end
-
-    ext = Map.get(@filter_extensions, filter, ".bin")
-    id = :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
-    Path.join(System.tmp_dir!(), "#{basename}_#{id}#{ext}")
-  end
-
-  defp resolve_pool(opts) do
-    {pool_name, opts} = Keyword.pop(opts, :pool)
-    pool = if pool_name, do: ensure_pool!(pool_name), else: URP.Pool.Default
-    {pool, opts}
-  end
-
+  # Pools start on first use: the one configured under `config :urp, :default`
+  # when no `:pool` is given, otherwise the named one under `config :urp, :pools`.
   @doc false
-  def ensure_pool!(name) when not is_atom(name) do
-    raise ArgumentError, "pool name must be a configured atom; got: #{inspect(name)}"
-  end
+  def ensure_pool!(nil), do: start_pool(URP.Pool.Default, Application.get_env(:urp, :default, []))
 
   def ensure_pool!(name) do
-    pools = Application.get_env(:urp, :pools, [])
+    case Keyword.fetch(Application.get_env(:urp, :pools, []), name) do
+      {:ok, config} ->
+        start_pool(:"URP.Pool.#{name}", config)
 
-    config =
-      case Keyword.fetch(pools, name) do
-        {:ok, config} ->
-          config
-
-        :error ->
-          raise ArgumentError,
-                "pool #{inspect(name)} is not configured. " <>
-                  "Add it to config :urp, :pools, #{name}: [host: \"...\", port: 2002]"
-      end
-
-    pid_name = pool_process_name(name)
-
-    case GenServer.whereis(pid_name) do
-      pid when is_pid(pid) ->
-        pid_name
-
-      nil ->
-        opts =
-          [
-            name: pid_name,
-            host: Keyword.get(config, :host, "localhost"),
-            port: Keyword.get(config, :port, 2002),
-            pool_size: Keyword.get(config, :pool_size, 1)
-          ] ++
-            Keyword.take(config, [
-              :backoff_initial,
-              :backoff_max,
-              :connect_timeout,
-              :send_timeout,
-              :drain_timeout
-            ])
-
-        case DynamicSupervisor.start_child(URP.PoolSupervisor, {URP.Pool, opts}) do
-          {:ok, _pid} -> pid_name
-          {:error, {:already_started, _pid}} -> pid_name
-          {:error, reason} -> raise "could not start pool #{inspect(name)}: #{inspect(reason)}"
-        end
+      :error ->
+        raise ArgumentError,
+              "pool #{inspect(name)} is not configured. " <>
+                "Add it to config :urp, :pools, #{name}: [host: \"...\", port: 2002]"
     end
   end
 
-  defp pool_process_name(name), do: :"URP.Pool.#{name}"
+  defp start_pool(process, config) do
+    if is_nil(GenServer.whereis(process)) do
+      spec = {URP.Pool, Keyword.put(config, :name, process)}
+
+      # Losing a race to start the pool is as good as winning it.
+      with {:error, reason} <- DynamicSupervisor.start_child(URP.PoolSupervisor, spec),
+           nil <- GenServer.whereis(process) do
+        raise "could not start pool #{inspect(process)}: #{inspect(reason)}"
+      end
+    end
+
+    process
+  end
 end

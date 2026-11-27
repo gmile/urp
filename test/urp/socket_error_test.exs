@@ -18,7 +18,7 @@ defmodule URP.SocketErrorTest do
     {client, server}
   end
 
-  describe inspect(&P.recv_frame/3) do
+  describe inspect(&P.recv_frame/2) do
     test "returns the payload of a well-formed block" do
       {client, server} = socket_pair()
       payload = "a reply"
@@ -31,16 +31,10 @@ defmodule URP.SocketErrorTest do
     test "raises with reason :timeout when soffice stops answering" do
       {client, _server} = socket_pair()
 
-      assert_raise URP.SocketError, "soffice did not answer in time", fn ->
-        P.recv_frame(client, 10)
-      end
-    end
+      error = assert_raise(URP.SocketError, fn -> P.recv_frame(client, 10) end)
 
-    test "carries the reason as an atom rather than a formatted message" do
-      {client, _server} = socket_pair()
-
-      assert %URP.SocketError{reason: :timeout} =
-               assert_raise(URP.SocketError, fn -> P.recv_frame(client, 10) end)
+      assert error.reason == :timeout
+      assert Exception.message(error) == "soffice did not answer in time"
     end
 
     test "raises with reason :closed when soffice hangs up" do
@@ -64,7 +58,7 @@ defmodule URP.SocketErrorTest do
   end
 
   describe inspect(&P.send_frame/2) do
-    test "raises rather than failing a match when the socket is gone" do
+    test "raises when the socket is gone" do
       {client, server} = socket_pair()
       :gen_tcp.close(server)
       :gen_tcp.close(client)

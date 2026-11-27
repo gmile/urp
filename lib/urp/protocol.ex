@@ -1,51 +1,95 @@
 defmodule URP.Protocol do
-  @moduledoc """
-  Low-level URP (UNO Remote Protocol) binary wire format.
+  @moduledoc false
 
-  Handles framing, encoding, decoding, and reply parsing for the
-  binaryurp protocol used by LibreOffice's `soffice` process.
-
-  ## References
-
-    * [binaryurp source](https://git.libreoffice.org/core/+/refs/heads/master/binaryurp/)
-    * [typeclass.h](https://git.libreoffice.org/core/+/refs/heads/master/include/typelib/typeclass.h)
-    * [specialfunctionids.hxx](https://git.libreoffice.org/core/+/refs/heads/master/binaryurp/source/specialfunctionids.hxx)
-  """
+  # The binary URP (UNO Remote Protocol) wire format: frames, message headers
+  # and the handful of UNO types the client marshals.
+  #
+  # URP lets a message leave out its type, object or thread id to mean "same as
+  # the previous message", and lets it refer to one by a numbered cache slot.
+  # Outgoing messages use neither: every request names all three in full, so
+  # nothing on our side has to remember what went before. soffice does use both
+  # in what it sends, and `reader/0` is the state needed to follow it.
+  #
+  # Values are encoded and decoded against a type:
+  #
+  #   * `:void`, `:boolean`, `:long`, `:hyper`, `:string`
+  #   * `:bytes` — `sequence<byte>`
+  #   * `:type` — an interface type, as `queryInterface` takes it (encode only)
+  #   * `{:interface, name}` — an object reference, held as its OID or `nil`
+  #   * `{:sequence, type}`
+  #   * `{:struct, name, [type]}` — a list of member values (encode only)
+  #   * `:any` — a `{type, value}` pair when encoded. Decoding returns the bare
+  #     value, and understands only what soffice answers with here: void,
+  #     strings, numbers, booleans and object references.
+  #
+  # References: binaryurp/source/{reader,writer,marshal,unmarshal}.cxx and
+  # include/typelib/typeclass.h in LibreOffice core.
 
   import Bitwise
 
-  # Header flags — binaryurp/source/reader.cxx, writer.cxx
-  @longheader 0x80
-  @request 0x40
-  @newtype 0x20
-  @newoid 0x10
-  @newtid 0x08
-  @functionid16 0x04
+  # Cache index meaning "do not cache this".
+  @uncached 0xFFFF
 
-  # reply-specific, shares bit 5 with @newtype
-  @exception 0x20
+  # ORed into a type class byte when the type's name follows.
+  @named 0x80
 
   # UNO TypeClass — include/typelib/typeclass.h
-  @tc_string 12
-  @tc_interface 22
+  @classes %{
+    void: 0,
+    boolean: 2,
+    long: 6,
+    hyper: 8,
+    string: 12,
+    any: 14,
+    struct: 17,
+    sequence: 20,
+    interface: 22
+  }
+  @void @classes.void
+  @boolean @classes.boolean
+  @long @classes.long
+  @hyper @classes.hyper
+  @string @classes.string
+  @any @classes.any
+  @interface @classes.interface
 
-  # ORed into type class byte for uncached types
-  @tc_new 0x80
-  @tc_void 0
+  # Any object reference, where the interface it is typed as does not matter.
+  @object {:interface, "com.sun.star.uno.XInterface"}
 
-  @recv_timeout 120_000
+  # No message comes near this: documents move a chunk at a time. A frame that
+  # claims more is a corrupt stream.
+  @max_frame_size 32 * 1024 * 1024
 
-  # Safety cap for incoming frame size — prevents OOM from corrupt streams
-  @max_frame_size 512 * 1024 * 1024
+  @type type ::
+          :void
+          | :boolean
+          | :long
+          | :hyper
+          | :string
+          | :any
+          | :bytes
+          | :type
+          | {:interface, String.t()}
+          | {:sequence, type()}
+          | {:struct, String.t(), [type()]}
 
-  ## Frame I/O
+  @typedoc "The types and objects `soffice` has put in numbered cache slots."
+  @type reader :: %{
+          types: %{non_neg_integer() => String.t()},
+          oids: %{non_neg_integer() => String.t()}
+        }
+
+  @type message :: {:reply, binary()} | {:exception, String.t()} | {:request, non_neg_integer()}
+
+  @spec reader() :: reader()
+  def reader, do: %{types: %{}, oids: %{}}
+
+  ## Frames
 
   @doc "Send a single URP block: `<<size::32, count::32, payload>>`."
   @spec send_frame(:gen_tcp.socket(), iodata()) :: :ok
   def send_frame(sock, payload) do
-    size = IO.iodata_length(payload)
-
-    case :gen_tcp.send(sock, [<<size::32, 1::32>>, payload]) do
+    case :gen_tcp.send(sock, [<<IO.iodata_length(payload)::32, 1::32>>, payload]) do
       :ok -> :ok
       {:error, reason} -> raise URP.SocketError, reason: reason
     end
@@ -54,50 +98,19 @@ defmodule URP.Protocol do
   @doc """
   Receive a single URP block, returning the payload.
 
-  Raises if the block contains more than one message (the C++ writer always
-  sends count=1, but the spec allows count>1).
+  Raises `URP.SocketError` when the socket fails or nothing arrives within
+  `timeout`.
   """
-  @spec recv_frame(:gen_tcp.socket(), timeout(), pos_integer()) :: binary()
-  def recv_frame(sock, timeout \\ @recv_timeout, max_frame_size \\ @max_frame_size) do
-    <<size::32, count::32>> = recv(sock, 8, timeout)
-
-    if count != 1 do
-      raise "URP: received block with count=#{count}, expected 1 (multi-message blocks not supported)"
+  @spec recv_frame(:gen_tcp.socket(), timeout()) :: binary()
+  def recv_frame(sock, timeout) do
+    case recv(sock, 8, timeout) do
+      <<size::32, 1::32>> when size <= @max_frame_size -> recv(sock, size, timeout)
+      header -> raise "URP: unreadable block header #{inspect(header)}"
     end
-
-    if size > max_frame_size do
-      raise "URP: frame size #{size} exceeds #{max_frame_size} bytes (corrupt stream?)"
-    end
-
-    recv_exact(sock, size, timeout)
   end
 
-  # :gen_tcp.recv fails with :enomem for large sizes (~64 MB+).
-  # Read in chunks and reassemble.
-  @recv_chunk_size 4 * 1024 * 1024
+  defp recv(_sock, 0, _timeout), do: <<>>
 
-  defp recv_exact(_sock, 0, _timeout), do: <<>>
-
-  defp recv_exact(sock, size, timeout) when size <= @recv_chunk_size do
-    recv(sock, size, timeout)
-  end
-
-  defp recv_exact(sock, size, timeout) do
-    recv_chunks(sock, size, timeout, [])
-  end
-
-  defp recv_chunks(_sock, 0, _timeout, acc) do
-    IO.iodata_to_binary(Enum.reverse(acc))
-  end
-
-  defp recv_chunks(sock, remaining, timeout, acc) do
-    chunk_size = min(remaining, @recv_chunk_size)
-    chunk = recv(sock, chunk_size, timeout)
-    recv_chunks(sock, remaining - chunk_size, timeout, [chunk | acc])
-  end
-
-  # A socket failure carries the reason as an atom, so callers can tell a
-  # soffice that went quiet from one that refused the document.
   defp recv(sock, size, timeout) do
     case :gen_tcp.recv(sock, size, timeout) do
       {:ok, payload} -> payload
@@ -105,402 +118,231 @@ defmodule URP.Protocol do
     end
   end
 
-  ## Request header builder
+  ## Outgoing requests
 
   @doc """
-  Build a URP request header with automatic flag computation.
-
-  Options:
-    * `:type` — `{:new, type_name, cache_idx}` or `{:cached, cache_idx}`
-    * `:oid`  — `{oid_string, cache_idx}`
-    * `:tid`  — `{tid_bytes, cache_idx}`
-
-  Omitting an option reuses the value from the previous message on the wire.
+  The header of a request: function, interface type, object and thread, all
+  spelled out and none of them cached.
   """
-  @spec request(non_neg_integer(), keyword()) :: binary()
-  def request(func_id, opts \\ []) do
-    flags = @longheader ||| @request
-
-    {flags, type_part} =
-      case opts[:type] do
-        nil ->
-          {flags, <<>>}
-
-        {:cached, cache} ->
-          {flags ||| @newtype, <<@tc_interface, cache::16>>}
-
-        {:new, name, cache} ->
-          {flags ||| @newtype, <<@tc_interface ||| @tc_new, cache::16>> <> enc_str(name)}
-      end
-
-    {flags, oid_part} =
-      case opts[:oid] do
-        nil -> {flags, <<>>}
-        {oid_str, cache} -> {flags ||| @newoid, enc_str(oid_str) <> <<cache::16>>}
-      end
-
-    {flags, tid_part} =
-      case opts[:tid] do
-        nil -> {flags, <<>>}
-        {tid_bytes, cache} -> {flags ||| @newtid, enc_str(tid_bytes) <> <<cache::16>>}
-      end
-
-    <<flags, func_id>> <> type_part <> oid_part <> tid_part
+  @spec header(byte(), String.t(), String.t(), binary()) :: iodata()
+  def header(function, type, oid, tid) do
+    # A long header for a request that names a new type, object and thread.
+    [
+      <<1::1, 1::1, 1::1, 1::1, 1::1, 0::3, function>>,
+      type_tag({:interface, type}),
+      enc_str(oid),
+      <<@uncached::16>>,
+      enc_str(tid),
+      <<@uncached::16>>
+    ]
   end
 
-  @doc "Build a void reply (LONGHEADER only)."
-  @spec reply() :: binary()
-  def reply, do: <<@longheader>>
+  @doc "A request: header, null current context, then the encoded arguments."
+  @spec request(byte(), String.t(), String.t(), binary(), [{type(), term()}]) :: iodata()
+  def request(function, type, oid, tid, args) do
+    [
+      header(function, type, oid, tid),
+      encode(@object, nil),
+      for({type, value} <- args, do: encode(type, value))
+    ]
+  end
 
-  @doc "Build a reply with body."
-  @spec reply(binary()) :: binary()
-  def reply(body), do: <<@longheader>> <> body
+  ## Incoming messages
 
-  @doc "Build a void reply with explicit TID (for cross-thread replies)."
-  @spec reply_with_tid(binary()) :: binary()
-  def reply_with_tid(tid) when is_binary(tid),
-    do: <<@longheader ||| @newtid>> <> enc_str(tid) <> <<0xFFFF::16>>
+  @doc """
+  Read the header of an incoming frame.
 
-  @doc "Build a reply with body and explicit TID (for cross-thread replies)."
-  @spec reply_with_tid(binary(), binary()) :: binary()
-  def reply_with_tid(body, tid) when is_binary(tid),
-    do: <<@longheader ||| @newtid>> <> enc_str(tid) <> <<0xFFFF::16>> <> body
+  A reply comes back as its undecoded body, to be read with `decode/3` against
+  the type the request returns, or as the message of the exception it carries.
+  A request comes back as the number of the function called; whatever its
+  header put in a cache slot is remembered.
+  """
+  @spec decode_message(binary(), reader()) :: {message(), reader()}
+  def decode_message(frame, reader)
 
-  ## Compressed string encoding — binaryurp/source/marshal.cxx
+  # Long header, reply: an exception flag and perhaps a thread id.
+  def decode_message(<<1::1, 0::1, exception::1, _::1, tid::1, _::3, rest::binary>>, reader) do
+    rest = skip_tid(tid, rest)
+    if exception == 1, do: decode_exception(rest, reader), else: {{:reply, rest}, reader}
+  end
+
+  # Long header, request: each of type, object and thread is there if flagged.
+  def decode_message(
+        <<1::1, 1::1, type::1, oid::1, _tid::1, wide::1, _::1, more::1, rest::binary>>,
+        reader
+      ) do
+    rest = binary_part(rest, more, byte_size(rest) - more)
+    bits = if wide == 1, do: 16, else: 8
+    <<function::size(^bits), rest::binary>> = rest
+
+    {rest, reader} =
+      if type == 1 do
+        {_type, rest, reader} = dec_type(rest, reader)
+        {rest, reader}
+      else
+        {rest, reader}
+      end
+
+    reader =
+      if oid == 1 do
+        {_oid, _rest, reader} = decode(@object, rest, reader)
+        reader
+      else
+        reader
+      end
+
+    {{:request, function}, reader}
+  end
+
+  # Short header: the type, object and thread of the message before.
+  def decode_message(<<0::1, 0::1, function::6, _::binary>>, reader) do
+    {{:request, function}, reader}
+  end
+
+  def decode_message(<<0::1, 1::1, function::14, _::binary>>, reader) do
+    {{:request, function}, reader}
+  end
+
+  defp skip_tid(0, rest), do: rest
+
+  defp skip_tid(1, rest) do
+    {_tid, <<_slot::16, rest::binary>>} = dec_str(rest)
+    rest
+  end
+
+  # Every UNO exception starts with a message and the object that raised it.
+  # What a derived exception adds cannot be read without its type description,
+  # and is left: anything it would have cached is then unknown to us.
+  defp decode_exception(rest, reader) do
+    {{_class, name}, rest, reader} = dec_type(rest, reader)
+    {message, rest} = dec_str(rest)
+    {_context, _rest, reader} = decode(@object, rest, reader)
+    {{:exception, if(message == "", do: name || "UNO exception", else: message)}, reader}
+  end
+
+  ## Values
+
+  @doc "Encode `value` as `type`."
+  @spec encode(type(), term()) :: iodata()
+  def encode(:void, _value), do: []
+  def encode(:boolean, value), do: if(value, do: <<1>>, else: <<0>>)
+  def encode(:long, value), do: <<value::32-signed>>
+  def encode(:hyper, value), do: <<value::64-signed>>
+  def encode(:string, value), do: enc_str(value)
+  def encode(:bytes, value), do: [enc_count(byte_size(value)), value]
+  def encode(:type, name), do: type_tag({:interface, name})
+  def encode(:any, {type, value}), do: [type_tag(type), encode(type, value)]
+  def encode({:interface, _name}, nil), do: <<0, @uncached::16>>
+  def encode({:interface, _name}, oid), do: [enc_str(oid), <<@uncached::16>>]
+
+  def encode({:sequence, type}, values) do
+    [enc_count(length(values)) | Enum.map(values, &encode(type, &1))]
+  end
+
+  def encode({:struct, _name, types}, values) do
+    Enum.zip_with(types, values, &encode/2)
+  end
+
+  @doc """
+  Decode a value of `type` from the front of `binary`.
+
+  Returns the value, what is left of the binary, and the reader, which learns
+  any type or object `soffice` cached along the way.
+  """
+  @spec decode(type(), binary(), reader()) :: {term(), binary(), reader()}
+  def decode(:void, rest, reader), do: {nil, rest, reader}
+  def decode(:boolean, <<value, rest::binary>>, reader), do: {value != 0, rest, reader}
+  def decode(:long, <<value::32-signed, rest::binary>>, reader), do: {value, rest, reader}
+  def decode(:hyper, <<value::64-signed, rest::binary>>, reader), do: {value, rest, reader}
+
+  def decode(type, binary, reader) when type in [:string, :bytes] do
+    {value, rest} = dec_str(binary)
+    {value, rest, reader}
+  end
+
+  # An object reference is its OID with a slot to keep it in, or an empty OID
+  # and the slot it was kept in. A null reference is empty and uncached.
+  def decode({:interface, _name}, binary, reader) do
+    case dec_str(binary) do
+      {"", <<slot::16, rest::binary>>} -> {reader.oids[slot], rest, reader}
+      {oid, <<@uncached::16, rest::binary>>} -> {oid, rest, reader}
+      {oid, <<slot::16, rest::binary>>} -> {oid, rest, put_in(reader.oids[slot], oid)}
+    end
+  end
+
+  def decode({:sequence, type}, binary, reader) do
+    {count, rest} = dec_count(binary)
+
+    {values, {rest, reader}} =
+      Enum.map_reduce(1..count//1, {rest, reader}, fn _index, {rest, reader} ->
+        {value, rest, reader} = decode(type, rest, reader)
+        {value, {rest, reader}}
+      end)
+
+    {values, rest, reader}
+  end
+
+  def decode(:any, binary, reader) do
+    {{class, _name}, rest, reader} = dec_type(binary, reader)
+
+    case class do
+      @void -> {nil, rest, reader}
+      @boolean -> decode(:boolean, rest, reader)
+      @long -> decode(:long, rest, reader)
+      @hyper -> decode(:hyper, rest, reader)
+      @string -> decode(:string, rest, reader)
+      @interface -> decode(@object, rest, reader)
+      other -> raise "URP: cannot decode an any holding type class #{other}"
+    end
+  end
+
+  # A type is its class, and for anything past `any` a cache slot and, the
+  # first time, its name. The slots are shared by headers and values alike.
+  defp dec_type(<<class, rest::binary>>, reader) when class <= @any do
+    {{class, nil}, rest, reader}
+  end
+
+  defp dec_type(<<1::1, class::7, slot::16, rest::binary>>, reader) do
+    {name, rest} = dec_str(rest)
+    reader = if slot == @uncached, do: reader, else: put_in(reader.types[slot], name)
+    {{class, name}, rest, reader}
+  end
+
+  defp dec_type(<<class, slot::16, rest::binary>>, reader) do
+    {{class, reader.types[slot]}, rest, reader}
+  end
+
+  defp type_tag({:interface, name}), do: named_tag(@interface, name)
+  defp type_tag({:struct, name, _types}), do: named_tag(@classes.struct, name)
+  defp type_tag({:sequence, _type} = type), do: named_tag(@classes.sequence, type_name(type))
+  defp type_tag(type), do: <<Map.fetch!(@classes, type)>>
+
+  defp named_tag(class, name), do: [<<class ||| @named, @uncached::16>>, enc_str(name)]
+
+  defp type_name({:sequence, type}), do: "[]" <> type_name(type)
+  defp type_name({:struct, name, _types}), do: name
+  defp type_name({:interface, name}), do: name
+  defp type_name(type), do: Atom.to_string(type)
+
+  ## Compressed lengths — binaryurp/source/marshal.cxx
 
   @doc "Encode a string with URP compressed-length prefix."
   @spec enc_str(binary()) :: binary()
-  def enc_str(s) when byte_size(s) < 0xFF, do: <<byte_size(s), s::binary>>
-  def enc_str(s), do: <<0xFF, byte_size(s)::32, s::binary>>
+  def enc_str(s), do: enc_count(byte_size(s)) <> s
 
-  @doc "Like `enc_str/1` but returns iodata to avoid copying large payloads."
-  @spec enc_str_iodata(binary()) :: iodata()
-  def enc_str_iodata(s) when byte_size(s) < 0xFF, do: [<<byte_size(s)>>, s]
-  def enc_str_iodata(s), do: [<<0xFF, byte_size(s)::32>>, s]
-
-  @doc "Encode a URP compressed sequence count."
+  @doc "Encode a URP compressed count: one byte below 255, else 0xFF and four."
   @spec enc_count(non_neg_integer()) :: binary()
   def enc_count(count) when count < 0xFF, do: <<count>>
   def enc_count(count), do: <<0xFF, count::32>>
 
   @doc "Decode a compressed string, returning `{string, rest}`."
   @spec dec_str(binary()) :: {binary(), binary()}
-  def dec_str(<<0xFF, len::32, s::binary-size(len), rest::binary>>), do: {s, rest}
-  def dec_str(<<len, s::binary-size(len), rest::binary>>), do: {s, rest}
-
-  ## Null CurrentContext — prefix on every request body after handshake
-
-  @doc "Null CurrentContext reference: empty OID (0x00) + cache sentinel (0xFFFF)."
-  @spec null_ctx() :: binary()
-  def null_ctx, do: <<0x00, 0xFF, 0xFF>>
-
-  ## Type parameters for queryInterface body
-
-  @doc "Reference a type already in the peer's cache."
-  @spec type_cached(non_neg_integer()) :: binary()
-  def type_cached(cache_idx), do: <<@tc_interface, cache_idx::16>>
-
-  @doc "Register a new interface type in the peer's cache."
-  @spec type_new(String.t(), non_neg_integer()) :: iodata()
-  def type_new(name, cache_idx) do
-    [<<@tc_interface ||| @tc_new, cache_idx::16>>, enc_str(name)]
-  end
-
-  ## UNO PropertyValue struct — Name(string) + Handle(int32) + Value(any) + State(int32)
-
-  @doc "Encode a UNO PropertyValue struct."
-  @spec property(String.t(), non_neg_integer(), iodata()) :: iodata()
-  def property(name, type_class, value_bytes) do
-    [enc_str(name), <<0::32, type_class>>, value_bytes, <<0::32>>]
-  end
-
-  ## Incoming frame classification
-
-  @doc """
-  True if the frame is a reply (long header, no REQUEST flag).
-  Everything else (long-header request or short-header) is a request.
-  """
-  @spec is_reply?(binary()) :: boolean()
-  def is_reply?(<<flags, _::binary>>), do: (flags &&& 0xC0) == @longheader
-
-  @doc """
-  Parse an incoming request, extracting `func_id`, `body`, and `one_way` flag.
-
-  Handles both long headers (LONGHEADER set, REQUEST set) and short headers
-  (LONGHEADER not set — func_id in lower 6 bits, all cached values reused).
-
-  `one_way` is true when the sender does not expect a reply (MOREFLAGS absent
-  or MUSTREPLY not set). One-way calls like `release` must not receive replies.
-  """
-  @spec parse_request(binary()) :: %{
-          func_id: non_neg_integer(),
-          body: binary(),
-          type_cache: non_neg_integer() | nil,
-          tid: binary() | nil
-        }
-  def parse_request(<<flags, rest::binary>>) when (flags &&& @longheader) != 0 do
-    # Long header — skip optional flags2, then extract func_id and skip header fields
-    rest =
-      if (flags &&& 0x01) != 0 do
-        <<_flags2, r::binary>> = rest
-        r
-      else
-        rest
-      end
-
-    # FUNCTIONID16 (bit 2): if set, func_id is uint16; otherwise uint8
-    {func_id, rest} =
-      if (flags &&& @functionid16) != 0 do
-        <<fid::16, r::binary>> = rest
-        {fid, r}
-      else
-        <<fid, r::binary>> = rest
-        {fid, r}
-      end
-
-    {type_cache, rest} =
-      if (flags &&& @newtype) != 0 do
-        <<tc, cache::16, rest::binary>> = rest
-        rest = if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
-        {cache, rest}
-      else
-        {nil, rest}
-      end
-
-    rest =
-      if (flags &&& @newoid) != 0 do
-        {_oid, rest} = dec_str(rest)
-        <<_cache::16, rest::binary>> = rest
-        rest
-      else
-        rest
-      end
-
-    {tid, rest} =
-      if (flags &&& @newtid) != 0 do
-        {tid_bytes, rest} = dec_str(rest)
-        <<cache::16, rest::binary>> = rest
-
-        tid =
-          if tid_bytes == "" do
-            # Cached TID — look up from our read cache
-            tid_cache = Process.get(:urp_tid_cache, %{})
-            Map.get(tid_cache, cache, tid_bytes)
-          else
-            # New TID — store in our read cache if cache index is valid
-            if cache != 0xFFFF do
-              tid_cache = Process.get(:urp_tid_cache, %{})
-              Process.put(:urp_tid_cache, Map.put(tid_cache, cache, tid_bytes))
-            end
-
-            tid_bytes
-          end
-
-        {tid, rest}
-      else
-        {nil, rest}
-      end
-
-    %{func_id: func_id, body: rest, type_cache: type_cache, tid: tid}
-  end
-
-  def parse_request(<<header, rest::binary>>) do
-    # Short header — reuses all cached values (including type).
-    #
-    # Bit 6 (0x40) = FUNCTIONID14: if set, func_id is 14-bit (bits[5:0] << 8 | next byte).
-    # If clear, func_id is 6-bit (bits[5:0]).
-    if (header &&& 0x40) != 0 do
-      <<lo, body::binary>> = rest
-      %{func_id: (header &&& 0x3F) <<< 8 ||| lo, body: body, type_cache: nil, tid: nil}
-    else
-      %{func_id: header &&& 0x3F, body: rest, type_cache: nil, tid: nil}
-    end
-  end
-
-  @doc """
-  True if the given func_id is `release` (one-way, no reply expected).
-
-  Per the URP spec, `release` (func_id 2) is the only one-way call we'll
-  encounter from soffice. Sending a reply to a one-way call is a protocol
-  violation.
-  """
-  @spec one_way?(non_neg_integer()) :: boolean()
-  def one_way?(2), do: true
-  def one_way?(_), do: false
-
-  ## Reply parsing
-
-  @doc "Parse a queryInterface reply — extracts OID from `any(XInterface)` return value."
-  @spec parse_qi_reply(binary()) :: {:ok, String.t()} | {:error, String.t()}
-  def parse_qi_reply(payload) do
-    {flags, rest} = skip_reply_header(payload)
-
-    if (flags &&& @exception) != 0 do
-      {:error, parse_exception(payload)}
-    else
-      case rest do
-        <<@tc_void, _::binary>> ->
-          {:error, "queryInterface returned void"}
-
-        <<tc, _ci::16, rest::binary>> ->
-          rest = if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
-          decode_oid_reference(rest)
-      end
-    end
-  end
-
-  @doc "Parse a reply returning a single interface reference (OID string)."
-  @spec parse_interface_reply(binary()) :: {:ok, String.t()} | {:error, String.t()}
-  def parse_interface_reply(payload) do
-    {flags, rest} = skip_reply_header(payload)
-
-    if (flags &&& @exception) != 0 do
-      {:error, parse_exception(payload)}
-    else
-      decode_oid_reference(rest)
-    end
-  end
-
-  @doc "Parse a reply returning `any(string)` — extracts the string value."
-  @spec parse_any_string_reply(binary()) :: {:ok, String.t()} | {:error, String.t()}
-  def parse_any_string_reply(payload) do
-    {flags, rest} = skip_reply_header(payload)
-
-    if (flags &&& @exception) != 0 do
-      {:error, parse_exception(payload)}
-    else
-      <<@tc_string, rest::binary>> = rest
-      {value, _} = dec_str(rest)
-      {:ok, value}
-    end
-  end
-
-  @doc "Parse a reply returning a single signed 32-bit integer."
-  @spec parse_int32_reply(binary()) :: {:ok, integer()} | {:error, String.t()}
-  def parse_int32_reply(payload) do
-    {flags, rest} = skip_reply_header(payload)
-
-    if (flags &&& @exception) != 0 do
-      {:error, parse_exception(payload)}
-    else
-      <<value::32-signed, _::binary>> = rest
-      {:ok, value}
-    end
-  end
-
-  @doc "Parse a readBytes reply — return value (long) + out param (sequence<byte>)."
-  @spec parse_read_bytes_reply(binary()) :: {:ok, binary()} | {:error, String.t()}
-  def parse_read_bytes_reply(payload) do
-    {flags, rest} = skip_reply_header(payload)
-
-    if (flags &&& @exception) != 0 do
-      {:error, parse_exception(payload)}
-    else
-      <<_bytes_read::32-signed, rest::binary>> = rest
-      {data, _} = dec_str(rest)
-      {:ok, data}
-    end
-  end
-
-  @doc "Parse a reply returning `sequence<string>`."
-  @spec parse_string_sequence_reply(binary()) :: {:ok, [String.t()]} | {:error, String.t()}
-  def parse_string_sequence_reply(payload) do
-    {flags, rest} = skip_reply_header(payload)
-
-    if (flags &&& @exception) != 0 do
-      {:error, parse_exception(payload)}
-    else
-      {count, rest} = dec_count(rest)
-      {:ok, dec_strings(rest, count, [])}
-    end
-  end
-
-  @doc """
-  Extract a human-readable error message from an exception reply.
-
-  UNO exceptions are `Any` values containing a struct. The first member
-  of all exception structs is `Message` (string). Returns the message
-  string, or a fallback if parsing fails.
-  """
-  @spec parse_exception(binary()) :: String.t() | nil
-  def parse_exception(payload) do
-    {flags, rest} = skip_reply_header(payload)
-
-    if (flags &&& @exception) != 0 do
-      # Exception body: Any(type + struct). Skip type encoding to reach
-      # the struct whose first member is always Message (string).
-      try do
-        <<tc, rest::binary>> = rest
-
-        rest =
-          if tc > 14 do
-            <<_cache::16, rest::binary>> = rest
-            if (tc &&& @tc_new) != 0, do: elem(dec_str(rest), 1), else: rest
-          else
-            rest
-          end
-
-        {message, _} = dec_str(rest)
-        message
-      rescue
-        _error -> "UNO exception (could not parse message)"
-      end
-    end
-  end
-
-  defp skip_reply_header(<<flags, rest::binary>>) do
-    rest =
-      if (flags &&& @newtid) != 0 do
-        {tid_bytes, rest} = dec_str(rest)
-        <<cache::16, rest::binary>> = rest
-
-        # Maintain TID read cache (shared with parse_request)
-        if tid_bytes != "" and cache != 0xFFFF do
-          tid_cache = Process.get(:urp_tid_cache, %{})
-          Process.put(:urp_tid_cache, Map.put(tid_cache, cache, tid_bytes))
-        end
-
-        rest
-      else
-        rest
-      end
-
-    {flags, rest}
+  def dec_str(binary) do
+    {length, rest} = dec_count(binary)
+    <<string::binary-size(^length), rest::binary>> = rest
+    {string, rest}
   end
 
   defp dec_count(<<0xFF, count::32, rest::binary>>), do: {count, rest}
   defp dec_count(<<count, rest::binary>>), do: {count, rest}
-
-  defp decode_oid_reference(rest) do
-    {oid, rest} = dec_str(rest)
-    <<cache::16, _rest::binary>> = rest
-
-    cond do
-      oid != "" ->
-        if cache != 0xFFFF do
-          oid_cache = Process.get(:urp_oid_cache, %{})
-          Process.put(:urp_oid_cache, Map.put(oid_cache, cache, oid))
-        end
-
-        {:ok, oid}
-
-      cache != 0xFFFF ->
-        case Process.get(:urp_oid_cache, %{}) do
-          %{^cache => cached_oid} -> {:ok, cached_oid}
-          _cache -> {:error, "unknown cached OID index #{cache}"}
-        end
-
-      true ->
-        {:error, "empty OID"}
-    end
-  rescue
-    _error -> {:error, "malformed interface reference"}
-  end
-
-  defp dec_strings(_rest, 0, acc), do: Enum.reverse(acc)
-
-  defp dec_strings(rest, n, acc) do
-    {s, rest} = dec_str(rest)
-    dec_strings(rest, n - 1, [s | acc])
-  end
 end

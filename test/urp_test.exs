@@ -6,403 +6,151 @@ defmodule URPTest do
   @moduletag :integration
   @moduletag timeout: 15_000
 
-  # Use /tmp (not System.tmp_dir!) so paths match inside the soffice Docker container
-  @test_dir "/tmp"
   @pdf "writer_pdf_Export"
 
-  describe "file path input" do
-    test "default output (temp file)" do
-      input = write_test_file!("txt", "Hello from URP test")
-
-      try do
-        assert {:ok, tmp_path} = URP.convert(input, filter: @pdf)
-        assert String.ends_with?(tmp_path, ".pdf")
-        assert "%PDF-" <> _ = File.read!(tmp_path)
-      after
-        File.rm(input)
-      end
-    end
-
-    test "output: explicit path" do
-      input = write_test_file!("txt", "Hello from URP test")
-      output = tmp_path("pdf")
-
-      try do
-        assert {:ok, ^output} = URP.convert(input, filter: @pdf, output: output)
-        assert File.exists?(output)
-        assert "%PDF-" <> _ = File.read!(output)
-      after
-        File.rm(input)
-        File.rm(output)
-      end
-    end
-
-    test "output: :binary" do
-      input = write_test_file!("docx", build_test_docx())
-
-      try do
-        assert {:ok, pdf} = URP.convert(input, filter: @pdf, output: :binary)
-        assert "%PDF-" <> _ = pdf
-      after
-        File.rm(input)
-      end
-    end
-
-    test "output: fun/1 callback" do
-      input = write_test_file!("docx", build_test_docx())
-      test_pid = self()
-
-      try do
-        assert :ok =
-                 URP.convert(input,
-                   filter: @pdf,
-                   output: fn chunk -> send(test_pid, {:chunk, chunk}) end
-                 )
-
-        chunks = collect_chunks()
-        pdf = IO.iodata_to_binary(chunks)
-        assert "%PDF-" <> _ = pdf
-      after
-        File.rm(input)
-      end
-    end
+  # "Text" gives output that can be compared; a PDF differs from run to run.
+  defp text(input, opts \\ []) do
+    URP.convert(input, Keyword.merge([filter: "Text", output: :binary], opts))
   end
 
-  describe "{:binary, bytes} input" do
-    test "output: :binary" do
-      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert "%PDF-" <> _ = pdf
-    end
-
-    test "default output (temp file)" do
-      assert {:ok, tmp_path} = URP.convert({:binary, build_test_docx()}, filter: @pdf)
-      assert String.ends_with?(tmp_path, ".pdf")
-      assert "%PDF-" <> _ = File.read!(tmp_path)
-    end
+  defp tmp_path(ext) do
+    path = Path.join(System.tmp_dir!(), "urp_test_#{System.unique_integer([:positive])}.#{ext}")
+    on_exit(fn -> File.rm(path) end)
+    path
   end
 
-  describe "enumerable input" do
-    test "default output (temp file)" do
-      chunks = to_chunks(build_test_docx(), 512)
-      assert {:ok, tmp_path} = URP.convert(chunks, filter: @pdf)
-      assert String.ends_with?(tmp_path, ".pdf")
-      assert "%PDF-" <> _ = File.read!(tmp_path)
-    end
-
-    test "output: :binary" do
-      chunks = to_chunks(build_test_docx(), 512)
-      assert {:ok, pdf} = URP.convert(chunks, filter: @pdf, output: :binary)
-      assert "%PDF-" <> _ = pdf
-    end
+  # The page count from the PDF Pages dictionary (/Type /Pages ... /Count N).
+  defp pdf_page_count(pdf) do
+    [_, count] = Regex.run(~r|/Type\s*/Pages.*?/Count\s+(\d+)|s, pdf)
+    String.to_integer(count)
   end
 
-  describe "filters" do
-    test "xlsx to pdf via calc_pdf_Export" do
-      assert {:ok, pdf} =
-               URP.convert({:binary, build_test_xlsx()},
-                 filter: "calc_pdf_Export",
-                 output: :binary
-               )
-
-      assert "%PDF-" <> _ = pdf
+  describe "convert/2" do
+    test "takes a document in memory and returns the result" do
+      assert {:ok, text} = text({:binary, build_test_docx("In memory")})
+      assert text =~ "In memory"
     end
 
-    test "docx to markdown" do
-      assert {:ok, md} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: "Markdown",
-                 output: :binary
-               )
+    test "takes a file and writes a file" do
+      input = tmp_path("docx")
+      output = tmp_path("txt")
+      File.write!(input, build_test_docx("On disk"))
 
-      assert md =~ "Hello from URP smoke test"
+      assert {:ok, ^output} = URP.convert(input, filter: "Text", output: output)
+      assert File.read!(output) =~ "On disk"
     end
-  end
 
-  describe "real-world fixtures" do
-    # These tests convert non-trivial documents from filesamples.com and verify
-    # the PDF output has the expected page count — catching regressions like
-    # empty-page output from missing XSeekable or broken TID caching.
+    test "moves a document a chunk at a time, in and out" do
+      port = Application.get_env(:urp, :default, [])[:port] || 2002
+      Application.put_env(:urp, :pools, small_chunks: [port: port, chunk_size: 1024])
+      on_exit(fn -> Application.delete_env(:urp, :pools) end)
 
-    test "sample3.docx produces multi-page PDF" do
+      test = self()
       docx = File.read!("test/fixtures/sample3.docx")
+      {:ok, whole} = text({:binary, docx})
 
-      assert {:ok, pdf} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
-      assert "%PDF-" <> _ = pdf
-      assert pdf_page_count(pdf) >= 2
+      assert :ok = text({:binary, docx}, pool: :small_chunks, output: &send(test, {:chunk, &1}))
+
+      chunks =
+        for _ <- 1..ceil(byte_size(whole) / 1024) do
+          assert_received {:chunk, chunk}
+          chunk
+        end
+
+      refute_received {:chunk, _}
+      assert Enum.all?(chunks, &(byte_size(&1) <= 1024))
+      assert IO.iodata_to_binary(chunks) == whole
     end
 
-    test "sample1.xlsx produces multi-page PDF" do
+    test "converts real documents in full" do
+      docx = File.read!("test/fixtures/sample3.docx")
       xlsx = File.read!("test/fixtures/sample1.xlsx")
 
-      assert {:ok, pdf} =
-               URP.convert({:binary, xlsx}, filter: "calc_pdf_Export", output: :binary)
+      assert {:ok, pdf} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
+      assert pdf_page_count(pdf) >= 2
 
-      assert "%PDF-" <> _ = pdf
+      assert {:ok, pdf} = URP.convert({:binary, xlsx}, filter: "calc_pdf_Export", output: :binary)
       assert pdf_page_count(pdf) >= 9
     end
-  end
 
-  describe "filter_data" do
-    test "PDF export with filter options" do
-      assert {:ok, pdf} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: @pdf,
-                 filter_data: [UseLosslessCompression: true, ExportFormFields: false],
-                 output: :binary
-               )
+    test "exports through any filter soffice has" do
+      assert {:ok, markdown} =
+               URP.convert({:binary, build_test_docx()}, filter: "Markdown", output: :binary)
 
-      assert "%PDF-" <> _ = pdf
+      assert markdown =~ "Hello from URP smoke test"
     end
 
-    test "integer filter option (FormsType)" do
-      assert {:ok, pdf} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: @pdf,
-                 filter_data: [FormsType: 0],
-                 output: :binary
-               )
+    test "applies settings, and says which one soffice does not have" do
+      cache = "org.openoffice.Office.Common/Cache/GraphicManager"
+      opts = [filter_data: [UseLosslessCompression: true, FormsType: 1]]
 
-      assert "%PDF-" <> _ = pdf
-    end
-  end
+      settings = [
+        {cache, "GraphicMemoryLimit", 500_000_000},
+        {cache, "GraphicAllowedIdleTime", 20}
+      ]
 
-  describe "settings" do
-    test "conversion succeeds with a setting applied" do
-      assert {:ok, pdf} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: @pdf,
-                 output: :binary,
-                 settings: [
-                   {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicMemoryLimit",
-                    500_000_000}
-                 ]
-               )
+      assert {:ok, _text} = text({:binary, build_test_docx()}, [settings: settings] ++ opts)
 
-      assert "%PDF-" <> _ = pdf
+      settings = [{cache, "NoSuchSetting", 1}]
+
+      assert {:error, "NoSuchSetting"} =
+               text({:binary, build_test_docx()}, [settings: settings] ++ opts)
     end
 
-    test "multiple settings on the same nodepath" do
-      assert {:ok, pdf} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: @pdf,
-                 output: :binary,
-                 settings: [
-                   {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicMemoryLimit",
-                    500_000_000},
-                   {"org.openoffice.Office.Common/Cache/GraphicManager", "GraphicAllowedIdleTime",
-                    20}
-                 ]
-               )
+    # Meaningful where the tests share a filesystem with soffice, as in CI.
+    test "leaves nothing in soffice's temp directory" do
+      leftovers = fn -> MapSet.new(Path.wildcard("/tmp/{urp_,.~lock.urp_}*", match_dot: true)) end
+      before = leftovers.()
 
-      assert "%PDF-" <> _ = pdf
+      assert {:ok, _text} = text({:binary, build_test_docx()})
+      assert {:error, _message} = text({:binary, build_test_docx()}, filter: "no-such-filter")
+
+      assert MapSet.difference(leftovers.(), before) == MapSet.new()
     end
   end
 
-  describe "temp file cleanup" do
-    test "no urp_in temp files linger after conversion" do
-      before = MapSet.new(Path.wildcard("/tmp/urp_in_*"))
-
-      assert {:ok, _pdf} =
-               URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-
-      after_conversion = MapSet.new(Path.wildcard("/tmp/urp_in_*"))
-      assert MapSet.difference(after_conversion, before) == MapSet.new()
-    end
-
-    test "no urp_out temp files linger after conversion" do
-      before = MapSet.new(Path.wildcard("/tmp/urp_out_*"))
-
-      assert {:ok, _pdf} =
-               URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-
-      after_conversion = MapSet.new(Path.wildcard("/tmp/urp_out_*"))
-      assert MapSet.difference(after_conversion, before) == MapSet.new()
-    end
-  end
-
-  describe "error handling" do
-    test "nonexistent file returns error with message" do
+  describe "a job that fails" do
+    test "for want of its input says so, and the next one runs" do
       assert {:error, message} =
-               URP.convert("/tmp/nonexistent_#{System.unique_integer([:positive])}.docx",
-                 filter: @pdf,
-                 output: :binary
-               )
+               text("/tmp/urp_missing_#{System.unique_integer([:positive])}.docx")
 
       assert message =~ "no such file"
+
+      assert {:ok, _text} = text({:binary, build_test_docx()})
     end
 
-    test "pool stays alive after error" do
-      assert {:error, _} =
-               URP.convert(
-                 "/tmp/nonexistent_#{System.unique_integer([:positive])}.docx",
-                 filter: @pdf,
-                 output: :binary
-               )
-
-      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert "%PDF-" <> _ = pdf
-    end
-  end
-
-  describe "diagnostics" do
-    test "version/0 returns a version string" do
-      assert {:ok, version} = URP.version()
-      assert version =~ ~r/^\d+\.\d+\.\d+/
-    end
-
-    test "services/0 returns a list of service names" do
-      assert {:ok, services} = URP.services()
-      assert is_list(services)
-      assert "com.sun.star.frame.Desktop" in services
-    end
-
-    test "filters/0 returns a list of filter names" do
-      assert {:ok, filters} = URP.filters()
-      assert is_list(filters)
-      assert "writer_pdf_Export" in filters
-    end
-
-    test "types/0 returns a list of type names" do
-      assert {:ok, types} = URP.types()
-      assert is_list(types)
-      assert "writer8" in types
-    end
-
-    test "locale/0 returns a locale string" do
-      assert {:ok, locale} = URP.locale()
-      assert is_binary(locale)
-    end
-
-    test "pool stays usable after diagnostic queries" do
-      assert {:ok, _} = URP.version()
-      assert {:ok, _} = URP.services()
-      assert {:ok, _} = URP.filters()
-      assert {:ok, _} = URP.types()
-      assert {:ok, _} = URP.locale()
-
-      assert {:ok, pdf} = URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert "%PDF-" <> _ = pdf
-    end
-  end
-
-  describe "consecutive conversions" do
-    test "multiple conversions reuse pool" do
-      docx = build_test_docx()
-      assert {:ok, pdf1} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
-      assert {:ok, pdf2} = URP.convert({:binary, docx}, filter: @pdf, output: :binary)
-      assert "%PDF-" <> _ = pdf1
-      assert "%PDF-" <> _ = pdf2
-    end
-  end
-
-  describe "bang variants" do
-    test "version! returns string" do
-      assert URP.version!() =~ ~r/^\d+\.\d+\.\d+/
-    end
-
-    test "services! returns list" do
-      assert "com.sun.star.frame.Desktop" in URP.services!()
-    end
-
-    test "filters! returns list" do
-      assert "writer_pdf_Export" in URP.filters!()
-    end
-
-    test "types! returns list" do
-      assert "writer8" in URP.types!()
-    end
-
-    test "locale! returns string" do
-      assert is_binary(URP.locale!())
-    end
-
-    test "convert! returns bytes" do
-      pdf = URP.convert!({:binary, build_test_docx()}, filter: @pdf, output: :binary)
-      assert "%PDF-" <> _ = pdf
-    end
-  end
-
-  describe "store_to_stream (Bridge-level)" do
-    alias URP.Bridge
-
-    test "converts document via XOutputStream" do
-      conn =
-        Bridge.open()
-        |> Bridge.load_document_write(build_test_docx())
-        |> Bridge.store_to_stream(filter: @pdf)
-
-      assert is_nil(conn.error)
-      assert "%PDF-" <> _ = conn.reply
-      Bridge.delete_file(conn, conn.cleanup_url)
-      Bridge.close!(conn)
-    end
-  end
-
-  describe "stream I/O through the public API" do
-    test "file-backed stream input remains available through export" do
-      path = write_test_file!("docx", build_test_docx("Streamed file input"))
-      on_exit(fn -> File.rm(path) end)
-
-      assert {:ok, pdf} =
-               URP.convert(path,
-                 filter: @pdf,
-                 output: :binary,
-                 io: {:stream, :file}
-               )
-
-      assert "%PDF-" <> _ = pdf
-    end
-
-    test "consecutive enumerable inputs get independent stream connections" do
-      docx = build_test_docx("Enumerable input")
-
-      for _iteration <- 1..2 do
-        assert {:ok, pdf} =
-                 URP.convert(to_chunks(docx, 1_024),
-                   filter: @pdf,
-                   output: :binary
-                 )
-
-        assert "%PDF-" <> _ = pdf
-      end
-    end
-
-    test "stream output writes a complete path result" do
+    test "in soffice leaves no output file behind" do
       path = tmp_path("pdf")
-      on_exit(fn -> File.rm(path) end)
-
-      assert {:ok, ^path} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: @pdf,
-                 output: path,
-                 io: {:file, :stream}
-               )
-
-      assert "%PDF-" <> _ = File.read!(path)
-    end
-
-    test "stream output propagates sink and UNO export failures" do
-      assert {:error, message} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: @pdf,
-                 output: fn _chunk -> raise "sink exploded" end,
-                 io: {:file, :stream}
-               )
-
-      assert message =~ "sink exploded"
 
       assert {:error, message} =
-               URP.convert({:binary, build_test_docx()},
-                 filter: "not-a-real-export-filter",
-                 output: :binary,
-                 io: {:file, :stream}
-               )
+               URP.convert({:binary, build_test_docx()}, filter: "no-such-filter", output: path)
 
       assert is_binary(message)
+      refute File.exists?(path)
+    end
+
+    test "in its output function says so, and the next one runs" do
+      assert {:error, message} =
+               text({:binary, build_test_docx()}, output: fn _chunk -> raise "sink exploded" end)
+
+      assert message =~ "sink exploded"
+      assert {:ok, _text} = text({:binary, build_test_docx()})
+    end
+
+    test "because its caller was killed does not stop the next" do
+      docx = build_test_docx()
+
+      for _ <- 1..5 do
+        caller = spawn(fn -> text({:binary, docx}) end)
+        Process.sleep(5)
+        Process.exit(caller, :kill)
+      end
+
+      assert {:ok, _text} = text({:binary, docx})
     end
   end
 
-  describe "conversion that outlives recv_timeout" do
+  describe "a job that outlives its timeout" do
     def handle_drain(_event, measurements, metadata, test_pid) do
       send(test_pid, {:drain, measurements, metadata})
     end
@@ -418,138 +166,115 @@ defmodule URPTest do
       on_exit(fn -> :telemetry.detach("drain-test") end)
     end
 
-    test "is drained so soffice keeps no document open" do
-      lock_files = fn -> MapSet.new(Path.wildcard("/tmp/.~lock.urp_in_*", match_dot: true)) end
-      before = lock_files.()
+    test "is seen through by the connection, which then takes the next" do
+      slow = fn _chunk -> Process.sleep(300) end
 
-      for _ <- 1..5 do
-        assert {:error, :timeout} =
-                 URP.convert({:binary, build_test_docx()},
-                   filter: @pdf,
-                   output: :binary,
-                   recv_timeout: 1
-                 )
-
-        assert_receive {:drain, %{duration: _}, %{result: :ok}}, 30_000
+      for _ <- 1..3 do
+        assert {:error, :timeout} = text({:binary, build_test_docx()}, output: slow, timeout: 100)
+        assert_receive {:drain, %{duration: duration}, %{result: :ok}}, 30_000
+        assert duration > 0
       end
 
-      assert MapSet.difference(lock_files.(), before) == MapSet.new()
-
-      assert {:ok, "%PDF-" <> _} =
-               URP.convert({:binary, build_test_docx()}, filter: @pdf, output: :binary)
+      assert {:ok, _text} = text({:binary, build_test_docx()})
     end
   end
 
-  describe "pool queuing" do
-    test "two concurrent callers queue on pool_size 1 and both succeed" do
-      docx1 = build_test_docx("Document One")
-      docx2 = build_test_docx("Document Two")
+  describe "two callers and one connection" do
+    test "each gets its own document" do
+      tasks =
+        for n <- ["One", "Two"], do: Task.async(fn -> text({:binary, build_test_docx(n)}) end)
 
-      task1 =
-        Task.async(fn ->
-          result = URP.convert({:binary, docx1}, filter: "Text", output: :binary)
-          {result, System.monotonic_time(:microsecond)}
-        end)
-
-      task2 =
-        Task.async(fn ->
-          result = URP.convert({:binary, docx2}, filter: "Text", output: :binary)
-          {result, System.monotonic_time(:microsecond)}
-        end)
-
-      {{:ok, text1}, t1} = Task.await(task1, 15_000)
-      {{:ok, text2}, t2} = Task.await(task2, 15_000)
-
-      # Each task converted its own document
-      assert text1 =~ "Document One"
-      assert text2 =~ "Document Two"
-
-      # With pool_size 1, conversions are serial. The second task must wait
-      # for the first to finish and return the worker, so their completion
-      # timestamps should be measurably separated even on fast machines.
-      assert abs(t2 - t1) >= 1_000
+      assert [{:ok, one}, {:ok, two}] = Task.await_many(tasks, 15_000)
+      assert one =~ "One"
+      assert two =~ "Two"
     end
   end
 
-  describe "URP.Test stubs" do
+  describe "diagnostics" do
+    test "report on soffice, and their ! forms return the same" do
+      assert {:ok, version} = URP.version()
+      assert version =~ ~r/^\d+\.\d+/
+      assert URP.version!() == version
+
+      assert {:ok, locale} = URP.locale()
+      assert URP.locale!() == locale
+
+      assert "com.sun.star.frame.Desktop" in URP.services!()
+      assert "writer_pdf_Export" in URP.filters!()
+      assert "writer8" in URP.types!()
+    end
+  end
+
+  describe "without soffice" do
     @describetag integration: false
 
-    test "stub receives opts" do
-      URP.Test.stub(fn _input, opts ->
+    test "a stub gets the input and options, and answers for convert/2" do
+      URP.Test.stub(fn input, opts ->
+        assert input == {:binary, "bytes"}
         assert opts[:filter] == "calc_pdf_Export"
-        assert opts[:output] == :binary
-        {:ok, "filtered"}
+        {:ok, "stubbed"}
       end)
 
-      assert {:ok, "filtered"} =
+      assert {:ok, "stubbed"} =
                URP.convert({:binary, "bytes"}, filter: "calc_pdf_Export", output: :binary)
     end
 
-    test "stub is per-process via $callers" do
+    test "a task started by the test uses the test's stub" do
       URP.Test.stub(fn _input, _opts -> {:ok, "parent stub"} end)
-
-      task =
-        Task.async(fn ->
-          URP.convert({:binary, "bytes"}, filter: @pdf, output: :binary)
-        end)
+      task = Task.async(fn -> URP.convert({:binary, "bytes"}, filter: @pdf, output: :binary) end)
 
       assert {:ok, "parent stub"} = Task.await(task)
     end
 
-    test "production option validation still runs when a stub is installed" do
+    test "a process the test allows uses the test's stub" do
+      URP.Test.stub(fn _input, _opts -> {:ok, "allowed"} end)
+      test = self()
+
+      pid =
+        spawn(fn ->
+          receive do: (:go ->
+                         send(test, URP.convert({:binary, "b"}, filter: @pdf, output: :binary)))
+        end)
+
+      URP.Test.allow(self(), pid)
+      send(pid, :go)
+
+      assert_receive {:ok, "allowed"}
+    end
+
+    test "options are checked even when a stub would answer" do
       URP.Test.stub(fn _input, _opts -> flunk("invalid calls must not reach the stub") end)
 
-      assert_raise ArgumentError, ~r/requires the :filter option/, fn ->
-        URP.convert({:binary, "bytes"})
-      end
-
-      assert_raise ArgumentError, ~r/:io must be/, fn ->
-        URP.convert({:binary, "bytes"}, filter: @pdf, io: :invalid)
-      end
-
-      assert_raise ArgumentError, ~r/:output must be/, fn ->
-        URP.convert({:binary, "bytes"}, filter: @pdf, output: {:invalid, :output})
-      end
-
-      assert_raise ArgumentError, ~r/:pool must be/, fn ->
-        URP.convert({:binary, "bytes"}, filter: @pdf, pool: "dynamic-name")
+      for {opts, message} <- [
+            {[output: :binary], ~r/required :filter option/},
+            {[filter: @pdf], ~r/required :output option/},
+            {[filter: @pdf, output: :binary, io: :stream], ~r/unknown options \[:io\]/},
+            {[filter: @pdf, output: {:invalid, :output}], ~r/invalid value for :output option/},
+            {[filter: @pdf, output: :binary, pool: "name"], ~r/invalid value for :pool option/}
+          ] do
+        assert_raise NimbleOptions.ValidationError, message, fn ->
+          URP.convert({:binary, "bytes"}, opts)
+        end
       end
     end
-  end
 
-  defp collect_chunks(acc \\ []) do
-    receive do
-      {:chunk, chunk} -> collect_chunks([chunk | acc])
-    after
-      0 -> Enum.reverse(acc)
+    test "convert!/2 returns the result, and raises by the kind of failure" do
+      opts = [filter: @pdf, output: :binary]
+
+      URP.Test.stub(fn _input, _opts -> {:ok, "bytes"} end)
+      assert URP.convert!({:binary, "b"}, opts) == "bytes"
+
+      URP.Test.stub(fn _input, _opts -> {:error, "soffice refused"} end)
+      assert_raise URP.Error, "soffice refused", fn -> URP.convert!({:binary, "b"}, opts) end
+
+      URP.Test.stub(fn _input, _opts -> {:error, :closed} end)
+      assert_raise URP.SocketError, fn -> URP.convert!({:binary, "b"}, opts) end
     end
-  end
 
-  defp to_chunks(binary, chunk_size) do
-    binary
-    |> Stream.unfold(fn
-      <<>> -> nil
-      bin -> String.split_at(bin, chunk_size)
-    end)
-  end
-
-  defp tmp_path(ext) do
-    id = System.unique_integer([:positive])
-    Path.join(@test_dir, "urp_test_#{id}.#{ext}")
-  end
-
-  defp write_test_file!(ext, content) do
-    path = tmp_path(ext)
-    File.write!(path, content)
-    path
-  end
-
-  # Extract page count from the PDF Pages dictionary (/Type /Pages ... /Count N).
-  # Returns 0 if parsing fails.
-  defp pdf_page_count(pdf) when is_binary(pdf) do
-    case Regex.run(~r|/Type\s*/Pages.*?/Count\s+(\d+)|s, pdf) do
-      [_, count] -> String.to_integer(count)
-      nil -> 0
+    test "a pool that is not configured is an error" do
+      assert_raise ArgumentError, ~r/pool :nowhere is not configured/, fn ->
+        URP.version(pool: :nowhere)
+      end
     end
   end
 end

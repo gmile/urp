@@ -59,7 +59,7 @@ form_data = [files: {docx_bytes, filename: fixture, content_type: "application/o
 # ── Warmup all services ──
 
 {:ok, _} = URP.convert({:binary, docx_bytes}, urp_opts)
-{:ok, _} = URP.Pool.convert(:alpine, {:binary, docx_bytes}, urp_opts)
+{:ok, _} = URP.Pool.run(:alpine, :convert, [], &URP.Bridge.convert(&1, {:binary, docx_bytes}, :binary, filter: "writer_pdf_Export"))
 Req.post!(gotenberg_url, form_multipart: form_data)
 
 # ── Benchmark ──
@@ -71,7 +71,7 @@ Benchee.run(
       pdf
     end,
     "URP → Alpine musl" => fn ->
-      {:ok, pdf} = URP.Pool.convert(:alpine, {:binary, docx_bytes}, urp_opts)
+      {:ok, pdf} = URP.Pool.run(:alpine, :convert, [], &URP.Bridge.convert(&1, {:binary, docx_bytes}, :binary, filter: "writer_pdf_Export"))
       pdf
     end,
     "Gotenberg (HTTP)" => fn ->

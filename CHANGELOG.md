@@ -2,16 +2,65 @@
 
 ## [Unreleased]
 
+The connection handling is rewritten. `URP.convert/2` and the diagnostics keep their shape, but
+several options and behaviours change; every breaking one is marked.
+
+### Changed
+
+- **Each connection is a process that owns its socket and sees every job through.** A caller that
+  stops waiting no longer takes the socket with it, so nothing is left half done in `soffice` and
+  the connection goes on to its next job instead of being closed. A job in hand is finished when
+  the application shuts down, too.
+- A pool is a queue of jobs and the connections that take them, under one supervisor, in place of
+  NimblePool. A connection asks for a job when it has nothing to do, so one that is busy,
+  reconnecting or stuck is never handed one. Every pool, the default one included, starts on
+  first use.
+- A connection finds out that `soffice` went away while it was idle before running the next job,
+  and reconnects first. That job used to fail with `:closed`.
+- The i-th connection of a pool takes the i-th address its host resolves to. This replaces
+  "the address the fewest connections hold".
+- **Breaking:** `:recv_timeout` is gone, and `:timeout` is how long the caller waits for the
+  result: for a connection to come free and then for the whole conversion. Waiting too long is
+  `{:error, :timeout}` either way; waiting for a connection used to end in a
+  `"pool checkout failed"` message.
+- **Breaking:** the `:io` option, stream I/O and enumerable input are gone. A document is sent to
+  `soffice` and read back in chunks through a temp file on its side, which keeps memory bounded at
+  both ends for every format. `soffice` had loaded an empty document from an enumerable, and from
+  a stream of anything but a ZIP or OLE2 document. A file path is read a chunk at a time, and the
+  new `:chunk_size` pool option (default 1 MiB) sets the size.
+- **Breaking:** `:output` is required. Without it the result went to a temp file that nothing
+  ever deleted.
+- **Breaking:** an `:output` function is called in the connection's process, not the caller's,
+  with one chunk at a time.
+- **Breaking:** the `:max_frame_size` option is gone; no message is larger than a chunk.
+- **Breaking:** options are checked with NimbleOptions, for the diagnostics as well. A bad option
+  raises `NimbleOptions.ValidationError` where it raised `ArgumentError`, and an unknown one is
+  an error too.
+- **Breaking:** an atom reason now always means there was no answer to be had, and a string that
+  this one job failed. A pool that is not running is `:unavailable`, and an exchange with
+  `soffice` that went wrong is `:protocol_error`, with the details logged; both were strings.
+- **Breaking:** the functions ending in `!` raise `URP.Error` for a string reason, where they
+  raised `RuntimeError`.
+- **Breaking:** `[:urp, :call, _]` is a `:telemetry.span/3`. `:total_time` is `:duration`, and
+  `:backoff_time` and `:attempts` are gone along with the retry they measured. A call that times
+  out is a `:stop` event with `result: :error` and neither `:queue_time` nor `:service_time`,
+  since the caller cannot know how far it got.
+- Only `URP`, `URP.Test`, `URP.Telemetry` and the two exceptions are documented. The modules
+  under them were never supported API, and have been rewritten.
+
 ### Fixed
 
-- Stop leaking a document in `soffice` each time a call outlives `:recv_timeout`. `soffice` cannot
-  be interrupted, so it finished the load after the connection was gone and kept the document, its
-  lock file and its temp file for the life of the process, about 10 MB apiece. The connection is
-  now handed to a background process that waits up to the new `:drain_timeout` pool option
-  (default 5 minutes) for the late reply, closes the document and deletes its temp files. The
-  caller still gets `{:error, :timeout}` right away, and the pool slot stays out of service until
-  the drain is over. Each drain emits `[:urp, :connection, :drain]`. Stream I/O is not drained.
-- Stop sending cleanup requests on a connection whose socket has already failed.
+- Stop leaking a document in `soffice` each time a call outlives its timeout. `soffice` cannot be
+  interrupted, so it finished the load after the connection was gone and kept the document, its
+  lock file and its temp file for the life of the process, about 10 MB apiece. The caller still
+  gets `{:error, :timeout}` right away; the connection waits for `soffice`, closes the document,
+  deletes its temp files and takes its next job. If `soffice` says nothing for the new
+  `:drain_timeout` pool option (default 5 minutes) the connection reconnects instead. Each such
+  wait emits `[:urp, :connection, :drain]`.
+- Release what a job opened when its caller is killed part way through.
+- An `:output` function that raises, exits or throws fails that conversion and nothing else.
+- Close the temp-file streams in `soffice` when a conversion fails part way through moving a
+  document.
 
 ## [v0.12.0] - 2026-09-11
 

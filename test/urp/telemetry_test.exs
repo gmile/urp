@@ -22,17 +22,10 @@ defmodule URP.TelemetryTest do
 
     assert_receive {:telemetry_event, [:urp, :call, :stop], measurements, metadata}
 
-    assert is_integer(measurements.total_time)
-    assert is_integer(measurements.queue_time)
-    assert is_integer(measurements.service_time)
-    assert is_integer(measurements.backoff_time)
-    assert measurements.total_time > 0
+    assert measurements.duration > 0
     assert measurements.queue_time >= 0
     assert measurements.service_time > 0
-    assert measurements.backoff_time >= 0
-
-    assert measurements.total_time ==
-             measurements.queue_time + measurements.service_time + measurements.backoff_time
+    assert measurements.duration >= measurements.queue_time + measurements.service_time
 
     assert metadata.operation == :version
     assert metadata.pool == URP.Pool.Default
