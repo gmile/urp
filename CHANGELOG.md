@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.13.0] - 2026-11-27
+
 The connection handling is rewritten. `URP.convert/2` and the diagnostics keep their shape, but
 several options and behaviours change; every breaking one is marked.
 
