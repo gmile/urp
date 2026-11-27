@@ -4,74 +4,59 @@ defmodule URP.Telemetry do
 
   ## Events
 
+  The three `[:urp, :call, _]` events are a `:telemetry.span/3` around one
+  operation, from asking the pool for a connection to having the result.
+  Times are in `:native` units; `System.convert_time_unit/3` converts them.
+
   ### `[:urp, :call, :start]`
 
-  Emitted before requesting a connection from the pool. Measurements contain
-  `:system_time`; metadata contains `:operation` and `:pool`.
+  Measurements contain `:system_time` and `:monotonic_time`; metadata contains
+  `:operation` (such as `:convert` or `:version`) and `:pool`.
 
   ### `[:urp, :call, :stop]`
 
-  Emitted when an operation completes normally, including operations that
-  return an error tuple.
+  Emitted when an operation completes, including one that returns an error
+  tuple.
 
-  #### Measurements (in `:native` time units)
-
-  | Key | Description |
+  | Measurement | Description |
   |---|---|
-  | `:total_time` | Wall time from checkout request to work completion |
-  | `:queue_time` | Time spent waiting for a pool connection |
-  | `:service_time` | Time spent doing work on the connection |
-  | `:backoff_time` | Time spent outside queue/service, primarily disposed-bridge retry backoff |
+  | `:duration` | From asking for a connection to having the result |
+  | `:queue_time` | Time spent waiting for a connection to take the job |
+  | `:service_time` | Time the connection spent on it |
 
-  Use `System.convert_time_unit/3` to convert to milliseconds or
-  microseconds:
-
-      System.convert_time_unit(queue_time, :native, :millisecond)
-
-  #### Metadata
-
-  | Key | Type | Description |
-  |---|---|---|
-  | `:operation` | `atom` | The operation performed (e.g. `:convert`, `:version`, `:filters`) |
-  | `:pool` | `term` | The pool name or pid |
-  | `:result` | `:ok \\| :error` | Whether the operation succeeded |
-  | `:attempts` | `pos_integer` | Number of checkout attempts |
+  A call that timed out reports only `:duration`: the caller cannot know how
+  far it got. Metadata adds `:result`, `:ok` or `:error`, to that of the start
+  event.
 
   ### `[:urp, :call, :exception]`
 
-  Emitted when checkout exits or operation code raises, throws, or exits.
-  Measurements contain `:duration`. Metadata contains `:operation`, `:pool`,
-  `:kind`, `:reason`, and `:stacktrace`. Expected pool exits are converted into
-  `{:error, message}` by non-bang APIs after this event is emitted.
+  Emitted if the operation raises in the caller. Measurements contain
+  `:duration`. Metadata adds `:kind`, `:reason` and `:stacktrace`.
 
   ### `[:urp, :connection, :retry]`
 
-  Emitted when a worker cannot connect to soffice and schedules another
-  attempt. Measurements contain `:attempt` and `:delay` in milliseconds.
-  Metadata contains `:host`, `:port`, and `:reason`.
+  Emitted when a connection cannot connect to soffice and will try again.
+  Measurements contain `:attempt` and `:delay` in milliseconds. Metadata
+  contains `:host`, `:address`, `:port` and `:reason`.
 
   ### `[:urp, :connection, :drain]`
 
-  Emitted after a connection whose call outlived `:recv_timeout` has been
-  drained and closed. Measurements contain `:duration` in `:native` time units.
-  Metadata contains `:host`, `:address`, `:port` and `:result`, which is `:ok`
-  when the late reply arrived and everything the call left behind was released,
-  or `{:error, reason}` when it was not, for example `{:error, :timeout}` if
-  `soffice` stayed silent for the whole `:drain_timeout`.
+  Emitted when a connection is done with a job whose caller had stopped
+  waiting. Measurements contain `:duration`, the time since the caller's
+  `:timeout` ran out, in `:native` units. Metadata contains `:host`,
+  `:address`, `:port` and `:result`: `:ok` when what the job left behind was
+  released and the connection takes its next job, or `{:error, reason}` when
+  the connection was lost and reconnects — `{:error, :timeout}` if `soffice`
+  said nothing for the whole `:drain_timeout`.
 
   ## Example handler
 
       :telemetry.attach(
         "urp-logger",
         [:urp, :call, :stop],
-        fn event, measurements, metadata, _config ->
-          total_ms = System.convert_time_unit(measurements.total_time, :native, :millisecond)
-          queue_ms = System.convert_time_unit(measurements.queue_time, :native, :millisecond)
-
-          Logger.info(
-            "[URP] \#{metadata.operation} \#{metadata.result} " <>
-              "total=\#{total_ms}ms queue=\#{queue_ms}ms"
-          )
+        fn _event, %{duration: duration}, metadata, _config ->
+          ms = System.convert_time_unit(duration, :native, :millisecond)
+          Logger.info("[URP] \#{metadata.operation} \#{metadata.result} in \#{ms}ms")
         end,
         nil
       )

@@ -1,429 +1,149 @@
 defmodule URP.Bridge do
-  @moduledoc """
-  Mid-level UNO operations over a URP connection.
+  @moduledoc false
 
-  Manages a TCP connection to a `soffice` process and provides functions for
-  the UNO operations needed for document conversion: loading documents,
-  storing to URL, and closing.
+  # The jobs a connection runs: converting a document, and reporting on
+  # `soffice`.
+  #
+  # Each function takes a connection, returns its result and raises `URP.Error`
+  # if it cannot go on. Anything it opens in `soffice` it closes in an `after`
+  # block, so it is released however the job ends.
 
-  Each connection performs a handshake and bootstraps a Desktop reference
-  on `open/2`. A connection handles one conversion at a time. LibreOffice can
-  accept multiple connections, but they share process-wide state and much of
-  the document core is serialized internally. Close the connection with
-  `close!/1` when done.
+  alias URP.Connection
+  alias URP.Sink
+  alias URP.UNO
 
-  All functions take and return `conn`, following the Plug pattern. Document
-  OIDs and conversion state are stashed on the conn struct — no separate
-  values to track.
-
-  ## Example
-
-      "localhost"
-      |> URP.Bridge.open(2002)
-      |> URP.Bridge.load_document("file:///tmp/input.docx")
-      |> URP.Bridge.store_to_url("file:///tmp/output.pdf", "writer_pdf_Export")
-      |> URP.Bridge.close_document()
-      |> URP.Bridge.close!()
-
-  ## Streaming
-
-  `load_document_stream/2` and `store_to_stream/2` use UNO's
-  `XInputStream`/`XOutputStream` interfaces to transfer document bytes
-  over the URP socket, eliminating the need for a shared filesystem.
-
-      conn =
-        "localhost"
-        |> URP.Bridge.open(2002)
-        |> URP.Bridge.load_document_stream(File.read!("input.docx"))
-        |> URP.Bridge.store_to_stream(filter: "writer_pdf_Export")
-
-      pdf = conn.reply
-      URP.Bridge.close!(conn)
-
-  ## Private storage
-
-  Diagnostic functions stash results in `conn.private`:
-
-      conn =
-        "localhost"
-        |> URP.Bridge.open(2002)
-        |> URP.Bridge.version()
-
-      conn.private.version
-      # => "26.2.0.3"
-  """
-
-  alias URP.Protocol, as: P
-  alias URP.Call, as: C
-
-  # sock is a plain :gen_tcp socket — inspect at any time via:
-  #   :inet.getstat(conn.sock)   # send/recv counts, bytes, pending
-  #   :inet.peername(conn.sock)  # remote {ip, port}
-  @type t :: %__MODULE__{
-          sock: :gen_tcp.socket() | nil,
-          desktop_oid: String.t() | nil,
-          ctx_oid: String.t() | nil,
-          smgr_oid: String.t() | nil,
-          doc_oid: String.t() | nil,
-          cleanup_url: String.t() | nil,
-          output_url: String.t() | nil,
-          pending: :document | :reply | nil,
-          sfa_oid: String.t() | nil,
-          input_ctx: map() | nil,
-          reply_tid: binary() | nil,
-          reader_type: non_neg_integer() | nil,
-          recv_timeout: timeout(),
-          max_frame_size: pos_integer(),
-          reply: term(),
-          error: String.t() | atom() | nil,
-          tid_cache: map(),
-          oid_cache: map(),
-          private: map()
-        }
-
-  defstruct [
-    :sock,
-    :desktop_oid,
-    :ctx_oid,
-    :smgr_oid,
-    :doc_oid,
-    :cleanup_url,
-    :output_url,
-    :pending,
-    :sfa_oid,
-    :input_ctx,
-    :reply_tid,
-    :reader_type,
-    :reply,
-    :error,
-    recv_timeout: 120_000,
-    max_frame_size: 512 * 1024 * 1024,
-    tid_cache: %{},
-    oid_cache: %{},
-    private: %{}
-  ]
-
-  # Reply marker byte — integer form of P.reply() for use in pattern matching
-  @reply_byte 0x80
-
-  # Configuration provider singleton path (used by version and locale)
-  @config_provider_path "/singletons/com.sun.star.configuration.theDefaultProvider"
-  @cleanup_timeout 1_000
-  @default_connect_timeout 5_000
-  @default_send_timeout 120_000
-
-  @doc "Connect to soffice, perform URP handshake, and bootstrap a Desktop reference."
-  @spec open(String.t(), non_neg_integer(), keyword()) :: t()
-  def open(host \\ "localhost", port \\ 2002, opts \\ []) do
-    connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
-    send_timeout = Keyword.get(opts, :send_timeout, @default_send_timeout)
-
-    socket_opts = [
-      :binary,
-      active: false,
-      send_timeout: send_timeout,
-      send_timeout_close: true
-    ]
-
-    case :gen_tcp.connect(String.to_charlist(host), port, socket_opts, connect_timeout) do
-      {:ok, sock} ->
-        init_connection(sock)
-
-      {:error, reason} ->
-        %__MODULE__{error: "connection failed: #{:inet.format_error(reason)}"}
-    end
-  end
-
-  defp init_connection(sock) do
-    Process.put(:urp_tid_cache, %{})
-    Process.put(:urp_oid_cache, %{})
-
-    %__MODULE__{sock: sock}
-    |> handshake!()
-    |> bootstrap()
-    |> capture_protocol_caches()
-  rescue
-    e ->
-      :gen_tcp.close(sock)
-      %__MODULE__{error: "handshake failed: #{Exception.message(e)}"}
-  end
-
-  @doc "Close the TCP connection."
-  @spec close!(t()) :: :ok
-  def close!(%__MODULE__{sock: nil}), do: :ok
-  def close!(%__MODULE__{sock: sock}), do: :gen_tcp.close(sock)
+  @config_provider "/singletons/com.sun.star.configuration.theDefaultProvider"
 
   @doc """
-  Load a document from a `file://` URL. Stashes the document OID on `conn.doc_oid`.
+  Convert `input` into `sink`: `:binary` to get the bytes back, `{:path, path}`
+  or a function called with each chunk.
 
-  On failure, stashes the error on `conn.error`.
+  `input` is a file path or `{:binary, bytes}`. Options are `:filter`,
+  `:filter_data` and `:settings`, as `URP.convert/2` describes them.
   """
-  @spec load_document(t(), String.t()) :: t()
-  def load_document(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
+  @spec convert(Connection.t(), Path.t() | {:binary, binary()}, Sink.sink(), keyword()) ::
+          binary() | :ok
+  def convert(conn, input, sink, opts) do
+    properties = [FilterName: Keyword.fetch!(opts, :filter)] ++ filter_data(opts[:filter_data])
+    apply_settings(conn, Keyword.get(opts, :settings, []))
 
-  def load_document(%__MODULE__{} = conn, url) do
-    conn = call(conn, C.qi_loader(conn.desktop_oid), :qi)
-    loaded = call(conn, C.load_component_from_url(url, [C.hidden_property()]), :interface)
-
-    # A load that outlives recv_timeout still finishes inside soffice, and its
-    # reply is the only handle to the document it opened.
-    loaded =
-      if is_nil(conn.error) and loaded.pending, do: %{loaded | pending: :document}, else: loaded
-
-    stash(loaded, :doc_oid)
+    load(conn, input, fn document ->
+      Connection.checkpoint(conn)
+      store(conn, document, properties, sink)
+    end)
   end
 
-  @doc """
-  Store a document to a `file://` URL with the given [export filter](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html).
+  defp filter_data(empty) when empty in [nil, []], do: []
+  defp filter_data(filter_data), do: [FilterData: filter_data]
 
-  Common filters: `"writer_pdf_Export"`, `"calc_pdf_Export"`, `"impress_pdf_Export"`.
+  # A document travels through a temp file on soffice's side, written and read
+  # a chunk at a time, so neither end holds more of it than that in a message.
+  defp load(conn, input, fun) do
+    chunks = chunks(input, conn.chunk_size)
+    url = temp_url("urp_in")
 
-  `filter_data` is an optional keyword list of export-specific options passed
-  as a nested `FilterData` property (e.g. `[UseLosslessCompression: true]`).
-  """
-  @spec store_to_url(t(), String.t(), String.t(), keyword()) :: t()
-  def store_to_url(conn, url, filter, filter_data \\ [])
+    try do
+      stream = UNO.call(conn, conn.file_access, :open_file_write, [url])
 
-  def store_to_url(%__MODULE__{error: e} = conn, _url, _filter, _filter_data)
-      when not is_nil(e),
-      do: conn
-
-  def store_to_url(%__MODULE__{doc_oid: doc_oid} = conn, url, filter, filter_data)
-      when is_binary(doc_oid) do
-    conn
-    |> call(C.qi_storable(doc_oid), :qi)
-    |> call(C.store_to_url(url, store_props(filter, filter_data)), :void)
-  end
-
-  @doc "Close the loaded document, releasing soffice resources."
-  @spec close_document(t()) :: t()
-  def close_document(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
-  def close_document(%__MODULE__{doc_oid: nil} = conn), do: conn
-
-  def close_document(%__MODULE__{doc_oid: doc_oid} = conn) when is_binary(doc_oid) do
-    conn = call(conn, C.qi_closeable(doc_oid), :qi)
-
-    if conn.error do
-      conn
-    else
-      %{call(conn, C.close_document(), :void) | doc_oid: nil}
-    end
-  end
-
-  @doc false
-  @spec cleanup(t(), timeout()) :: t()
-  def cleanup(conn, timeout \\ @cleanup_timeout)
-
-  # A reply is still outstanding, or the socket failed in a way that leaves the
-  # stream position unknown. Anything sent now would queue behind the running
-  # call and answer out of order, so the remote state is left for drain/2.
-  def cleanup(%__MODULE__{pending: pending, error: error} = conn, _timeout)
-      when not is_nil(pending) or (is_atom(error) and not is_nil(error)) do
-    release_input(conn)
-  end
-
-  def cleanup(%__MODULE__{} = conn, timeout) do
-    original_reply = conn.reply
-    original_timeout = conn.recv_timeout
-    conn = %{conn | recv_timeout: min(original_timeout, timeout)}
-
-    conn =
-      conn
-      |> cleanup_step(& &1.doc_oid, &close_document/1)
-      |> cleanup_step(& &1.output_url, &delete_file(&1, &1.output_url), :output_url)
-      |> cleanup_step(& &1.cleanup_url, &delete_file(&1, &1.cleanup_url), :cleanup_url)
-      |> release_input()
-
-    conn = %{conn | reply: original_reply, recv_timeout: original_timeout}
-
-    if conn.pending do
-      conn
-    else
-      %{conn | doc_oid: nil, cleanup_url: nil, output_url: nil}
-    end
-  end
-
-  defp cleanup_step(conn, needed, fun, done_field \\ nil) do
-    if conn.sock && is_nil(conn.pending) && needed.(conn) do
-      conn = attempt_cleanup(conn, fun)
-      if done_field && is_nil(conn.pending), do: Map.put(conn, done_field, nil), else: conn
-    else
-      conn
-    end
-  end
-
-  @doc false
-  @spec drain(t(), timeout()) :: t()
-  def drain(%__MODULE__{} = conn, timeout) do
-    drain_until(conn, System.monotonic_time(:millisecond) + timeout)
-  end
-
-  defp drain_until(%__MODULE__{pending: nil} = conn, _deadline), do: conn
-
-  defp drain_until(%__MODULE__{pending: pending} = conn, deadline) do
-    conn =
-      recv_reply(%{
-        conn
-        | pending: nil,
-          error: nil,
-          reply: nil,
-          recv_timeout: remaining(deadline)
-      })
-
-    if conn.error do
-      conn
-    else
-      conn = if pending == :document, do: adopt_document(conn), else: conn
-
-      conn
-      |> cleanup(remaining(deadline))
-      |> drain_until(deadline)
-    end
-  end
-
-  defp remaining(deadline) do
-    max(deadline - System.monotonic_time(:millisecond), @cleanup_timeout)
-  end
-
-  # A load that failed inside soffice opened nothing, which is as drained as it gets.
-  defp adopt_document(conn) do
-    case parse_reply(conn, :interface) do
-      %{error: nil} = conn -> %{conn | doc_oid: conn.reply}
-      conn -> %{conn | error: nil, reply: nil}
-    end
-  end
-
-  @doc false
-  @spec release_input(t()) :: t()
-  def release_input(%__MODULE__{input_ctx: nil} = conn), do: conn
-
-  def release_input(%__MODULE__{input_ctx: %{source: source}} = conn) do
-    release_result =
-      case source do
-        {:file, fd, _size} -> File.close(fd)
-        {:enum, _buffer, reader} -> URP.Stream.stop_enum_reader(reader)
-        {:enum, _buffer, reader, _timeout} -> URP.Stream.stop_enum_reader(reader)
-        _other -> :ok
+      try do
+        for chunk <- chunks, do: UNO.call(conn, stream, :write_bytes, [chunk])
+      after
+        release(fn -> UNO.call(conn, stream, :close_output) end)
       end
 
-    conn = %{conn | input_ctx: nil}
+      Connection.checkpoint(conn)
+      properties = UNO.properties(Hidden: true)
 
-    case {conn.error, release_result} do
-      {nil, {:error, reason}} ->
-        %{conn | error: "could not release input stream: #{:file.format_error(reason)}"}
+      document =
+        UNO.call(conn, conn.desktop, :load_component_from_url, [url, "_blank", 0, properties]) ||
+          raise URP.Error, "soffice could not load the document"
 
-      _ ->
-        conn
+      try do
+        fun.(document)
+      after
+        release(fn -> UNO.call(conn, document, :close, [true]) end)
+      end
+    after
+      release(fn -> UNO.call(conn, conn.file_access, :kill, [url]) end)
     end
   end
 
-  defp attempt_cleanup(%__MODULE__{pending: pending} = conn, _fun) when not is_nil(pending),
-    do: conn
-
-  defp attempt_cleanup(conn, fun) do
-    primary_error = conn.error
-    cleaned = fun.(%{conn | error: nil, reply: nil})
-    %{cleaned | error: primary_error || cleaned.error}
+  defp chunks({:binary, bytes}, size) do
+    for offset <- 0..(byte_size(bytes) - 1)//size do
+      binary_part(bytes, offset, min(size, byte_size(bytes) - offset))
+    end
   end
 
-  @doc """
-  Query the soffice version string over URP.
+  defp chunks(path, size) do
+    case File.stat(path) do
+      {:ok, %{type: :regular}} ->
+        File.stream!(path, size)
 
-  Reads `ooSetupVersionAboutBox` from the configuration API via 5 UNO
-  round trips. Stashes the result in `conn.private.version`.
-  """
-  @spec version(t()) :: t()
-  def version(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
+      {:ok, _other} ->
+        raise URP.Error, "could not read file #{path}: not a regular file"
 
-  def version(%__MODULE__{} = conn) do
-    conn
-    |> call(C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
-    |> call_reply(&C.qi_msf/1, :qi)
-    |> call(C.create_config_access(), :interface)
-    |> call_reply(&C.qi_name_access/1, :qi)
-    |> call(C.get_version(), :string)
-    |> stash_private(:version)
+      {:error, reason} ->
+        raise URP.Error, "could not read file #{path}: #{:file.format_error(reason)}"
+    end
   end
 
-  @doc """
-  List all service names registered in the UNO service manager.
+  defp store(conn, document, properties, sink) do
+    url = temp_url("urp_out")
 
-  Calls `XMultiComponentFactory.getAvailableServiceNames()`.
-  Stashes the result in `conn.private.services`.
-  """
-  @spec services(t()) :: t()
-  def services(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
+    try do
+      UNO.call(conn, document, :store_to_url, [url, UNO.properties(properties)])
+      Connection.checkpoint(conn)
+      stream = UNO.call(conn, conn.file_access, :open_file_read, [url])
 
-  def services(%__MODULE__{} = conn) do
-    conn
-    |> call(C.get_available_service_names(conn.smgr_oid), :strings)
-    |> stash_private(:services)
+      try do
+        read(conn, stream, sink)
+      after
+        release(fn -> UNO.call(conn, stream, :close_input) end)
+      end
+    after
+      release(fn -> UNO.call(conn, conn.file_access, :kill, [url]) end)
+    end
   end
 
-  @doc """
-  List all export filter names registered in soffice.
+  # A read that does not finish must not leave a half-written file behind.
+  defp read(conn, stream, sink) do
+    output = Sink.open(sink)
 
-  Creates a `FilterFactory` instance and calls `getElementNames()` via `XNameAccess`.
-  Stashes the result in `conn.private.filters`.
-  """
-  @spec filters(t()) :: t()
-  def filters(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
+    try do
+      stream
+      |> Stream.unfold(fn
+        nil ->
+          nil
 
-  def filters(%__MODULE__{} = conn) do
-    conn =
-      call(
-        conn,
-        C.create_instance_with_context(conn.smgr_oid, "com.sun.star.document.FilterFactory"),
-        :interface
-      )
-
-    conn
-    |> call_reply(&C.qi_ff_name_access/1, :qi)
-    |> call(C.get_filter_element_names(), :strings)
-    |> stash_private(:filters)
+        # readBytes comes back short only at the end of the file.
+        stream ->
+          [_read, chunk] = UNO.call(conn, stream, :read_bytes, [conn.chunk_size])
+          {chunk, if(byte_size(chunk) == conn.chunk_size, do: stream)}
+      end)
+      |> Stream.reject(&(&1 == <<>>))
+      |> Enum.reduce(output, &Sink.write(&2, &1))
+      |> Sink.finish()
+    catch
+      kind, reason ->
+        Sink.release(output)
+        with {:path, path} <- sink, do: File.rm(path)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
   end
 
-  @doc """
-  List all document type names registered in soffice.
-
-  Creates a `TypeDetection` instance and calls `getElementNames()` via `XNameAccess`.
-  Stashes the result in `conn.private.types`.
-  """
-  @spec types(t()) :: t()
-  def types(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
-
-  def types(%__MODULE__{} = conn) do
-    conn =
-      call(
-        conn,
-        C.create_instance_with_context(conn.smgr_oid, "com.sun.star.document.TypeDetection"),
-        :interface
-      )
-
-    conn
-    |> call_reply(&C.qi_td_name_access/1, :qi)
-    |> call(C.get_type_element_names(), :strings)
-    |> stash_private(:types)
+  # Letting go of something soffice no longer has is not a failure of the job.
+  defp release(fun) do
+    fun.()
+  rescue
+    URP.Error -> :ok
   end
 
-  @doc """
-  Query the soffice locale string over URP.
-
-  Reads `ooLocale` from `/org.openoffice.Setup/L10N` via the configuration API.
-  Stashes the result in `conn.private.locale`.
-  """
-  @spec locale(t()) :: t()
-  def locale(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
-
-  def locale(%__MODULE__{} = conn) do
-    conn
-    |> call(C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
-    |> call_reply(&C.qi_locale_msf/1, :qi)
-    |> call(C.create_locale_config_access(), :interface)
-    |> call_reply(&C.qi_locale_na/1, :qi)
-    |> call(C.get_locale(), :string)
-    |> stash_private(:locale)
+  defp temp_url(prefix) do
+    id = :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
+    "file:///tmp/#{prefix}_#{id}"
   end
+
+  ## Settings
 
   @doc """
   Apply soffice configuration settings via
@@ -432,491 +152,71 @@ defmodule URP.Bridge do
   Each setting is a `{path, property, value}` triplet where `path` is the
   registry node (e.g. `"org.openoffice.Office.Common/Cache/GraphicManager"`),
   `property` is the property name, and `value` is a boolean, integer, or string.
-
-  Settings sharing the same `path` are batched into a single ConfigurationUpdateAccess
-  call for efficiency.
+  Settings sharing a `path` are committed together.
   """
-  @spec apply_settings(t(), list()) :: t()
-  def apply_settings(%__MODULE__{error: e} = conn, _settings) when not is_nil(e), do: conn
-  def apply_settings(conn, []), do: conn
+  @spec apply_settings(Connection.t(), [URP.setting()]) :: :ok
+  def apply_settings(conn, settings) do
+    for {path, group} <- Enum.group_by(settings, &elem(&1, 0)) do
+      access = configuration(conn, "ConfigurationUpdateAccess", "/" <> path)
 
-  def apply_settings(%__MODULE__{} = conn, settings) do
-    settings
-    |> Enum.group_by(fn {path, _prop, _val} -> path end)
-    |> Enum.reduce(conn, fn {nodepath, props}, conn ->
-      apply_setting_group(conn, nodepath, props)
-    end)
-  end
-
-  defp apply_setting_group(%__MODULE__{error: e} = conn, _, _) when not is_nil(e), do: conn
-
-  defp apply_setting_group(conn, nodepath, props) do
-    conn =
-      conn
-      |> call(C.get_value_by_name(conn.ctx_oid, @config_provider_path), :qi)
-      |> then(&call(&1, C.qi_settings_msf(&1.reply), :qi))
-      |> then(&call(&1, C.create_config_update_access(nodepath), :interface))
-
-    if conn.error do
-      conn
-    else
-      update_oid = conn.reply
-
-      conn
-      |> call(C.qi_name_replace(update_oid), :qi)
-      |> then(fn conn ->
-        Enum.reduce(props, conn, fn {_path, name, value}, conn ->
-          call(conn, C.replace_by_name(name, value), :void)
-        end)
-      end)
-      |> call(C.qi_changes_batch(update_oid), :qi)
-      |> call(C.commit_changes(), :void)
-    end
-  end
-
-  @doc """
-  Load a document from in-memory bytes via XInputStream.
-
-  No shared filesystem needed — bytes are streamed over the URP socket.
-  soffice calls `readBytes()` on our exported stream object.
-  Stashes the document OID on `conn.doc_oid`.
-  """
-  @spec load_document_stream(t(), binary()) :: t()
-  def load_document_stream(%__MODULE__{error: e} = conn, _bytes) when not is_nil(e), do: conn
-
-  def load_document_stream(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
-    load_from_input_source(conn, bytes)
-  end
-
-  @doc """
-  Load a document from a local file via XInputStream.
-
-  Like `load_document_stream/2` but reads from a file on demand instead of
-  holding the entire document in memory. The file must be accessible to the
-  Elixir node (not soffice).
-  Stashes the document OID on `conn.doc_oid`.
-  """
-  @spec load_document_file_stream(t(), Path.t()) :: t()
-  def load_document_file_stream(%__MODULE__{error: e} = conn, _path) when not is_nil(e),
-    do: conn
-
-  def load_document_file_stream(%__MODULE__{} = conn, path) when is_binary(path) do
-    with {:ok, %{size: size}} <- File.stat(path),
-         {:ok, fd} <- File.open(path, [:read, :binary, :raw]) do
-      conn = load_from_input_source(conn, {:file, fd, size})
-      if conn.error, do: release_input(conn), else: conn
-    else
-      {:error, reason} ->
-        %{conn | error: "#{path}: #{:file.format_error(reason)}"}
-    end
-  end
-
-  @doc """
-  Load a document from an enumerable via XInputStream.
-
-  Like `load_document_stream/2` but pulls chunks lazily from any `Enumerable`
-  (e.g. `File.stream!/2`, an S3 download stream). A demand-driven reader keeps
-  at most the requested data buffered and feeds soffice on demand.
-  Stashes the document OID on `conn.doc_oid`.
-  """
-  @spec load_document_enum_stream(t(), Enumerable.t()) :: t()
-  def load_document_enum_stream(%__MODULE__{error: e} = conn, _enumerable)
-      when not is_nil(e),
-      do: conn
-
-  def load_document_enum_stream(%__MODULE__{} = conn, enumerable) do
-    reader = URP.Stream.start_enum_reader(enumerable)
-    conn = load_from_input_source(conn, {:enum, <<>>, reader, conn.recv_timeout})
-    if conn.error, do: release_input(conn), else: conn
-  end
-
-  @doc """
-  Load a document by writing bytes to soffice's filesystem via XSimpleFileAccess.
-
-  Instead of streaming bytes through XInputStream (which causes thousands of
-  tiny read/seek round-trips), this writes the entire document to a temp file
-  on soffice's filesystem and loads from a `file://` URL.
-
-  Stashes the document OID on `conn.doc_oid` and the temp file URL on
-  `conn.cleanup_url`. The caller should delete the temp file after conversion
-  via `delete_file/2`.
-  """
-  @spec load_document_write(t(), binary()) :: t()
-  def load_document_write(%__MODULE__{error: e} = conn, _bytes) when not is_nil(e), do: conn
-
-  def load_document_write(%__MODULE__{} = conn, bytes) when is_binary(bytes) do
-    conn = seed_protocol_caches(conn)
-    conn = ensure_sfa(conn)
-    url = temp_url("urp_in")
-
-    conn
-    |> call(C.sfa_open_file_write(conn.sfa_oid, url), :interface)
-    |> call_reply(&C.qi_sfa_output/1, :qi)
-    |> call(C.write_bytes(bytes), :void)
-    |> call(C.close_output(), :void)
-    |> load_document(url)
-    |> then(&%{&1 | cleanup_url: url})
-  end
-
-  @doc "Delete a temp file on soffice's filesystem via XSimpleFileAccess.kill()."
-  @spec delete_file(t(), String.t()) :: t()
-  def delete_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
-
-  def delete_file(%__MODULE__{sfa_oid: sfa_oid} = conn, url) when is_binary(sfa_oid) do
-    call(conn, C.sfa_kill(sfa_oid, url), :void)
-  end
-
-  defp delete_file_preserving_error(conn, url) do
-    reply = conn.reply
-    conn = attempt_cleanup(conn, &delete_file(&1, url))
-    %{conn | reply: reply}
-  end
-
-  @doc """
-  Store a document to soffice's filesystem and read back the result.
-
-  Uses `store_to_url/4` to write the converted output to a temp file on
-  soffice's filesystem, then reads it back in one shot via `read_file/2`.
-  Replaces hundreds of round-trips with ~6. Stashes the output bytes in
-  `conn.reply`.
-  """
-  @spec store_document_write(t(), keyword()) :: t()
-  def store_document_write(%__MODULE__{error: e} = conn, _opts) when not is_nil(e), do: conn
-
-  def store_document_write(%__MODULE__{doc_oid: doc_oid} = conn, opts) when is_binary(doc_oid) do
-    filter = Keyword.fetch!(opts, :filter)
-    filter_data = Keyword.get(opts, :filter_data, [])
-    url = temp_url("urp_out")
-
-    conn =
-      %{conn | output_url: url}
-      |> store_to_url(url, filter, filter_data)
-      |> read_file(url)
-
-    conn = delete_file_preserving_error(conn, url)
-    if conn.pending, do: conn, else: %{conn | output_url: nil}
-  end
-
-  @doc """
-  Read a file from soffice's filesystem via XSimpleFileAccess.
-
-  Opens the file, reads all bytes in one frame, closes the stream.
-  Stashes the file contents in `conn.reply`.
-  """
-  @spec read_file(t(), String.t()) :: t()
-  def read_file(%__MODULE__{error: e} = conn, _url) when not is_nil(e), do: conn
-
-  def read_file(%__MODULE__{} = conn, url) do
-    conn = ensure_sfa(conn)
-
-    conn =
-      conn
-      |> call(C.sfa_open_file_read(conn.sfa_oid, url), :interface)
-      |> call_reply(&C.qi_sfa_input/1, :qi)
-      |> call(C.available(), :int32)
-      |> call_reply(&C.read_bytes/1, :read_bytes)
-
-    if conn.error do
-      conn
-    else
-      bytes = conn.reply
-      %{call(conn, C.close_input(), :void) | reply: bytes}
-    end
-  end
-
-  defp load_from_input_source(conn, source) do
-    conn = seed_protocol_caches(conn)
-    stream_oid = "elixir-in-#{:erlang.unique_integer([:positive])}"
-    conn = %{conn | input_ctx: %{source: source, seekable_cache: nil, input_cache: nil}}
-
-    conn =
-      conn
-      |> call(C.qi_loader(conn.desktop_oid), :qi)
-      |> send_frame(
-        C.load_component_from_url("private:stream", [
-          C.hidden_property(),
-          C.input_stream_property(stream_oid)
-        ])
-      )
-
-    if conn.error do
-      conn
-    else
-      # soffice will call readBytes/available/closeInput/seek/getPosition/getLength on our stream
-      try do
-        {reply, conn} = URP.Stream.recv_handling_input(conn, source, stream_oid)
-
-        case P.parse_interface_reply(reply) do
-          {:ok, doc_oid} -> %{conn | doc_oid: doc_oid}
-          {:error, message} -> %{conn | error: message}
-        end
-      rescue
-        e in URP.SocketError -> %{conn | error: e.reason}
-        error -> %{conn | error: "input stream failed: #{Exception.message(error)}"}
+      for {_path, name, value} <- group do
+        UNO.call(conn, access, :replace_by_name, [name, UNO.any(value)])
       end
+
+      UNO.call(conn, access, :commit_changes)
     end
-  end
 
-  @doc """
-  Store a document via XOutputStream.
-
-  No shared filesystem needed — output bytes are streamed back over the URP socket.
-  soffice calls `writeBytes()` on our exported stream object.
-
-  Stashes the result in `conn.reply`:
-
-    * no sink (default) — `conn.reply` is the accumulated output bytes
-    * `sink: {:path, path}` — writes to file, `conn.reply` is `:ok`
-    * `sink: fun/1` — calls with each chunk, `conn.reply` is `:ok`
-  """
-  @spec store_to_stream(t(), keyword()) :: t()
-  def store_to_stream(conn, opts \\ [])
-
-  def store_to_stream(%__MODULE__{error: e} = conn, _opts) when not is_nil(e), do: conn
-
-  def store_to_stream(%__MODULE__{doc_oid: doc_oid} = conn, opts)
-      when is_binary(doc_oid) do
-    filter = Keyword.fetch!(opts, :filter)
-    filter_data = Keyword.get(opts, :filter_data, [])
-    sink = Keyword.get(opts, :sink)
-
-    stream_oid = "elixir-out-#{:erlang.unique_integer([:positive])}"
-
-    props = store_props(filter, filter_data, [C.output_stream_property(stream_oid)])
-
-    conn =
-      conn
-      |> call(C.qi_storable(doc_oid), :qi)
-      |> send_frame(C.store_to_url("private:stream", props))
-
-    if conn.error do
-      conn
-    else
-      try do
-        {reply, result, conn} = URP.Stream.recv_handling_output(conn, sink)
-
-        case {P.parse_exception(reply), result} do
-          {message, _result} when is_binary(message) ->
-            remove_partial_sink(sink)
-            %{conn | error: message, reply: nil}
-
-          {nil, {:error, message}} ->
-            remove_partial_sink(sink)
-            %{conn | error: message, reply: nil}
-
-          {nil, result} ->
-            %{conn | reply: result}
-        end
-      rescue
-        e in URP.SocketError ->
-          remove_partial_sink(sink)
-          %{conn | error: e.reason, reply: nil}
-
-        error ->
-          remove_partial_sink(sink)
-          %{conn | error: "output stream failed: #{Exception.message(error)}", reply: nil}
-      end
-    end
-  end
-
-  ## SimpleFileAccess — lazily created for write-based document loading
-
-  defp ensure_sfa(%__MODULE__{sfa_oid: oid} = conn) when is_binary(oid), do: conn
-
-  defp ensure_sfa(%__MODULE__{} = conn) do
-    conn =
-      call(
-        conn,
-        C.create_instance_with_context(conn.smgr_oid, "com.sun.star.ucb.SimpleFileAccess"),
-        :interface
-      )
-
-    conn
-    |> stash(:sfa_oid)
-    |> call_reply(&C.qi_sfa/1, :qi)
-  end
-
-  ## Handshake
-
-  # Both sides send requestChange simultaneously. We use the minimum signed
-  # int32 nonce to guarantee we lose, letting soffice drive commitChange.
-  defp handshake!(%__MODULE__{sock: sock} = conn) do
-    P.recv_frame(sock)
-
-    P.send_frame(sock, C.request_change())
-
-    # requestChange reply: we lost the nonce negotiation (expected)
-    <<@reply_byte, 0::32>> = P.recv_frame(sock)
-    P.send_frame(sock, P.reply(<<1::32-signed>>))
-    P.recv_frame(sock)
-    P.send_frame(sock, P.reply())
-
-    conn
-  end
-
-  ## Bootstrap — ComponentContext → ServiceManager → Desktop
-
-  defp bootstrap(conn) do
-    tid = :crypto.strong_rand_bytes(20)
-
-    conn = call(conn, C.qi_initial(tid), :qi)
-    conn = %{conn | ctx_oid: conn.reply}
-    conn = call(conn, C.qi_component_ctx(conn.ctx_oid), :qi)
-    conn = call(conn, C.get_service_manager(), :interface)
-    conn = %{conn | smgr_oid: conn.reply}
-    conn = call(conn, C.create_desktop(conn.smgr_oid), :interface)
-    %{conn | desktop_oid: conn.reply}
-  end
-
-  ## Property list helpers
-
-  defp store_props(filter, filter_data, extra \\ []) do
-    props = [C.filter_name_property(filter)]
-    props = if filter_data != [], do: props ++ [C.filter_data_property(filter_data)], else: props
-    props ++ extra
-  end
-
-  defp temp_url(prefix) do
-    id = :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
-    "file:///tmp/#{prefix}_#{id}"
-  end
-
-  defp remove_partial_sink({:path, path}) do
-    File.rm(path)
     :ok
   end
 
-  defp remove_partial_sink(_sink), do: :ok
+  ## Diagnostics
 
-  ## Send + receive + parse
-
-  defp call(%__MODULE__{} = conn, frame) do
-    conn
-    |> send_frame(frame)
-    |> await_reply()
+  @doc "The soffice version string, such as `\"26.2.0.3\"`."
+  @spec version(Connection.t()) :: String.t()
+  def version(conn) do
+    access = configuration(conn, "ConfigurationAccess", "/org.openoffice.Setup/Product")
+    UNO.call(conn, access, :get_by_name, ["ooSetupVersionAboutBox"])
   end
 
-  defp call(%__MODULE__{error: e} = conn, _frame, _parser) when not is_nil(e), do: conn
-
-  defp call(%__MODULE__{} = conn, frame, parser) do
-    conn
-    |> call(frame)
-    |> parse_reply(parser)
+  @doc "The soffice locale, such as `\"en-US\"`."
+  @spec locale(Connection.t()) :: String.t()
+  def locale(conn) do
+    access = configuration(conn, "ConfigurationAccess", "/org.openoffice.Setup/L10N")
+    UNO.call(conn, access, :get_by_name, ["ooLocale"])
   end
 
-  # The frame went out and nothing came back in time: soffice still owes a reply.
-  defp await_reply(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
-
-  defp await_reply(%__MODULE__{} = conn) do
-    case recv_reply(conn) do
-      %{error: :timeout} = conn -> %{conn | pending: :reply}
-      conn -> conn
-    end
+  @doc "Every service name registered in the UNO service manager."
+  @spec services(Connection.t()) :: [String.t()]
+  def services(conn) do
+    UNO.call(conn, conn.service_manager, :get_available_service_names)
   end
 
-  defp call_reply(%__MODULE__{error: e} = conn, _builder, _parser) when not is_nil(e), do: conn
-
-  defp call_reply(%__MODULE__{} = conn, builder, parser),
-    do: call(conn, builder.(conn.reply), parser)
-
-  defp parse_reply(%__MODULE__{error: e} = conn, _parser) when not is_nil(e), do: conn
-  defp parse_reply(conn, :qi), do: parse_safely(conn, :qi, &P.parse_qi_reply/1)
-
-  defp parse_reply(conn, :interface),
-    do: parse_safely(conn, :interface, &P.parse_interface_reply/1)
-
-  defp parse_reply(conn, :string),
-    do: parse_safely(conn, :string, &P.parse_any_string_reply/1)
-
-  defp parse_reply(conn, :strings),
-    do: parse_safely(conn, :strings, &P.parse_string_sequence_reply/1)
-
-  defp parse_reply(conn, :int32), do: parse_safely(conn, :int32, &P.parse_int32_reply/1)
-
-  defp parse_reply(conn, :read_bytes),
-    do: parse_safely(conn, :read_bytes, &P.parse_read_bytes_reply/1)
-
-  defp parse_reply(conn, :void) do
-    try do
-      case P.parse_exception(conn.reply) do
-        nil -> conn
-        message -> %{conn | error: message, reply: nil}
-      end
-    rescue
-      error ->
-        %{conn | error: "malformed URP void reply: #{Exception.message(error)}", reply: nil}
-    end
+  @doc "Every filter name registered in soffice."
+  @spec filters(Connection.t()) :: [String.t()]
+  def filters(conn) do
+    UNO.call(
+      conn,
+      UNO.create_instance(conn, "com.sun.star.document.FilterFactory"),
+      :get_element_names
+    )
   end
 
-  defp parse_safely(conn, parser, fun) do
-    handle_parsed(conn, fun.(conn.reply))
-  rescue
-    error ->
-      %{conn | error: "malformed URP #{parser} reply: #{Exception.message(error)}", reply: nil}
+  @doc "Every document type name registered in soffice."
+  @spec types(Connection.t()) :: [String.t()]
+  def types(conn) do
+    UNO.call(
+      conn,
+      UNO.create_instance(conn, "com.sun.star.document.TypeDetection"),
+      :get_element_names
+    )
   end
 
-  defp handle_parsed(conn, {:ok, value}), do: %{conn | reply: value}
-  defp handle_parsed(conn, {:error, msg}), do: %{conn | error: msg, reply: nil}
+  defp configuration(conn, service, nodepath) do
+    provider = UNO.call(conn, conn.context, :get_value_by_name, [@config_provider])
 
-  defp send_frame(%__MODULE__{error: e} = conn, _frame) when not is_nil(e), do: conn
-
-  defp send_frame(%__MODULE__{} = conn, frame) do
-    P.send_frame(conn.sock, frame)
-    conn
-  rescue
-    e in URP.SocketError -> %{conn | error: e.reason}
-    e -> %{conn | error: Exception.message(e)}
-  end
-
-  defp recv_reply(%__MODULE__{error: e} = conn) when not is_nil(e), do: conn
-
-  defp recv_reply(%__MODULE__{} = conn) do
-    payload = P.recv_frame(conn.sock, conn.recv_timeout, conn.max_frame_size)
-
-    if P.is_reply?(payload) do
-      %{conn | reply: payload}
-    else
-      case URP.Stream.try_handle_input(conn, payload) do
-        {:handled, conn} ->
-          recv_reply(conn)
-
-        :not_input ->
-          %{func_id: func_id, tid: new_tid} = P.parse_request(payload)
-          conn = if new_tid, do: %{conn | reply_tid: new_tid}, else: conn
-
-          if not P.one_way?(func_id),
-            do: P.send_frame(conn.sock, URP.Stream.inject_tid(P.reply(), conn.reply_tid))
-
-          recv_reply(conn)
-      end
-    end
-  rescue
-    e in URP.SocketError -> %{conn | error: e.reason}
-    e -> %{conn | error: Exception.message(e)}
-  end
-
-  # Protocol parsing uses process-local read caches. Pool checkout scopes these
-  # values to one connection and persists the updated maps back onto the worker.
-  defp capture_protocol_caches(conn) do
-    %{
-      conn
-      | tid_cache: Process.get(:urp_tid_cache, conn.tid_cache),
-        oid_cache: Process.get(:urp_oid_cache, conn.oid_cache)
-    }
-  end
-
-  defp seed_protocol_caches(%__MODULE__{} = conn) do
-    if is_nil(Process.get(:urp_tid_cache)), do: Process.put(:urp_tid_cache, conn.tid_cache)
-    if is_nil(Process.get(:urp_oid_cache)), do: Process.put(:urp_oid_cache, conn.oid_cache)
-    conn
-  end
-
-  defp stash(%__MODULE__{error: e} = conn, _field) when not is_nil(e), do: conn
-  defp stash(conn, field), do: Map.put(conn, field, conn.reply)
-
-  defp stash_private(%__MODULE__{error: e} = conn, _key) when not is_nil(e), do: conn
-
-  defp stash_private(%__MODULE__{private: private} = conn, key) do
-    %{conn | private: Map.put(private, key, conn.reply)}
+    UNO.call(conn, provider, :create_instance_with_arguments, [
+      "com.sun.star.configuration." <> service,
+      UNO.named_values(nodepath: nodepath)
+    ])
   end
 end

@@ -1,16 +1,14 @@
 defmodule URP.SocketError do
   @moduledoc """
-  Raised when the socket to `soffice` fails during a call.
+  Raised by the functions ending in `!` when there was no answer to be had.
 
-  `reason` is the atom `:gen_tcp` reported — `:timeout`, `:closed`, or a POSIX
-  error. Conversion functions return that atom as-is, so a caller can tell a
-  `soffice` that stopped answering from a document it refused, which arrives as
-  a message string.
+  `reason` is the atom the non-raising function returns: `:timeout`, `:closed`,
+  `:unavailable`, `:protocol_error` or a POSIX error from the socket.
   """
 
   defexception [:reason, :message]
 
-  @type t :: %__MODULE__{reason: :timeout | :closed | :inet.posix(), message: String.t()}
+  @type t :: %__MODULE__{reason: atom(), message: String.t()}
 
   @impl true
   @spec exception(keyword()) :: t()
@@ -23,5 +21,7 @@ defmodule URP.SocketError do
   @spec describe(atom()) :: String.t()
   defp describe(:timeout), do: "soffice did not answer in time"
   defp describe(:closed), do: "soffice closed the connection"
+  defp describe(:unavailable), do: "the pool is not running"
+  defp describe(:protocol_error), do: "the exchange with soffice went wrong; see the log"
   defp describe(reason), do: "socket failed: #{:inet.format_error(reason)}"
 end

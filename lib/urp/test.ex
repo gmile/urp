@@ -1,72 +1,34 @@
 defmodule URP.Test do
   @moduledoc """
-  Test helpers for stubbing URP conversions without a running soffice.
-
-  Uses `NimbleOwnership` for per-process stub isolation, so async tests work
-  without global state.
-
-  ## Setup
-
-  No setup needed — the ownership server starts with the `:urp` application.
-
-  ## Usage
+  Stub `URP.convert/2` in tests, without a running soffice.
 
       test "generates invoice PDF" do
-        URP.Test.stub(fn _input, _opts ->
-          {:ok, "%PDF-fake"}
-        end)
+        URP.Test.stub(fn _input, _opts -> {:ok, "%PDF-fake"} end)
 
         assert {:ok, _pdf} = MyApp.generate_invoice(order)
       end
 
-  The stub intercepts all `URP.convert/2` calls made by the current process
-  (or its children via `$callers` propagation).
+  The stub is called with the input and options `convert/2` was given, after
+  the options have been checked, and what it returns is what `convert/2`
+  returns: `{:ok, path}`, `{:ok, bytes}` or `:ok` to match the `:output` asked
+  for, or `{:error, reason}`.
 
-  ## Stub function
-
-  The stub receives `(input, opts)` where `input` is whatever was passed to
-  `URP.convert/2` (a path, `{:binary, bytes}`, or an enumerable) and `opts`
-  is the keyword list including `:output`, `:filter`, etc.
-
-  Return the expected shape for the given `:output` mode:
-
-    * `{:ok, path}` — default (temp file) or `output: path`
-    * `{:ok, binary}` — when `output: :binary`
-    * `:ok` — when `output: fun/1`
-    * `{:error, message}` — for errors
-
-  ## Process allowances
-
-  Stubs are scoped to the process that called `stub/1`. For processes
-  started with `Task`, `$callers` propagation handles this automatically.
-  GenServers and other independently started processes must use `allow/2`:
-
-      test "async worker" do
-        URP.Test.stub(fn _, _ -> {:ok, "pdf"} end)
-        worker = start_my_worker()
-        URP.Test.allow(self(), worker)
-      end
+  A stub belongs to the process that set it, so async tests are safe. Tasks
+  started by that process use it too; a process started some other way has to
+  be given it with `allow/2`.
   """
 
   @ownership __MODULE__.Ownership
 
-  # The key used in NimbleOwnership for global stubs
   @stub_key :urp_stub
 
   @doc """
-  Register a stub for URP conversions in the current test process.
+  Answer `URP.convert/2` with `fun` for the current process.
 
-  ## Examples
-
-      iex> URP.Test.stub(fn _input, _opts -> {:ok, "fake PDF"} end)
+      iex> URP.Test.stub(fn {:binary, bytes}, _opts -> {:ok, String.upcase(bytes)} end)
       :ok
       iex> URP.convert({:binary, "hello"}, filter: "writer_pdf_Export", output: :binary)
-      {:ok, "fake PDF"}
-
-      iex> URP.Test.stub(fn {:binary, bytes}, _opts -> {:ok, byte_size(bytes)} end)
-      :ok
-      iex> URP.convert({:binary, "hello"}, filter: "writer_pdf_Export", output: :binary)
-      {:ok, 5}
+      {:ok, "HELLO"}
   """
   @spec stub((term(), keyword() -> term())) :: :ok
   def stub(fun) when is_function(fun, 2) do
@@ -78,12 +40,7 @@ defmodule URP.Test do
     :ok
   end
 
-  @doc """
-  Allow `allowed_pid` to use the stub registered by `owner_pid`.
-
-  Usually not needed for `Task`, which propagates `$callers`. Use this for
-  GenServers and other processes that don't propagate `$callers`.
-  """
+  @doc "Let `allowed_pid` use the stub set by `owner_pid`."
   @spec allow(pid(), pid() | (-> pid() | [pid()])) :: :ok
   def allow(owner_pid \\ self(), allowed_pid) do
     :ok = NimbleOwnership.allow(@ownership, owner_pid, allowed_pid, @stub_key)

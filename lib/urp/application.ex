@@ -5,16 +5,8 @@ defmodule URP.Application do
 
   @impl true
   def start(_type, _args) do
-    config = Application.get_env(:urp, :default, [])
-
     children = [
-      {NimblePool,
-       worker: {URP.Pool, config},
-       pool_size: Keyword.get(config, :pool_size, 1),
-       lazy: true,
-       name: URP.Pool.Default},
       {DynamicSupervisor, strategy: :one_for_one, name: URP.PoolSupervisor},
-      {Task.Supervisor, name: URP.DrainSupervisor},
       {NimbleOwnership, name: URP.Test.Ownership}
     ]
 

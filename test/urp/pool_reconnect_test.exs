@@ -10,9 +10,6 @@ defmodule URP.PoolReconnectTest do
   end
 
   setup do
-    Application.ensure_all_started(:telemetry)
-    Application.ensure_all_started(:nimble_pool)
-
     :telemetry.attach(
       @handler_id,
       [:urp, :connection, :retry],
@@ -113,33 +110,32 @@ defmodule URP.PoolReconnectTest do
     assert Enum.sort([first, second]) == ["127.0.0.1", "127.0.0.2"]
   end
 
-  test "checkout timeout returns an error and emits start plus exception" do
+  test "a job nobody takes in time is an error, and the span still closes" do
     port = unused_port!()
-    pool_name = :checkout_timeout_test
+    pool_name = :timeout_test
     handler_id = "#{@handler_id}-call-span"
 
     :telemetry.attach_many(
       handler_id,
-      [[:urp, :call, :start], [:urp, :call, :exception]],
+      [[:urp, :call, :start], [:urp, :call, :stop]],
       &__MODULE__.handle_event/4,
       self()
     )
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    _pool =
-      start_supervised!(
-        {URP.Pool,
-         name: pool_name,
-         host: "localhost",
-         port: port,
-         pool_size: 1,
-         backoff_initial: 10,
-         backoff_max: 30}
-      )
+    start_supervised!(
+      {URP.Pool,
+       name: pool_name,
+       host: "localhost",
+       port: port,
+       pool_size: 1,
+       backoff_initial: 10,
+       backoff_max: 30}
+    )
 
-    assert {:error, message} = URP.Pool.version(pool_name, timeout: 20)
-    assert message =~ "pool checkout failed"
+    assert {:error, :timeout} =
+             URP.Pool.run(pool_name, :version, [timeout: 20], &URP.Bridge.version/1)
 
     assert_receive {:telemetry_event, [:urp, :call, :start], %{system_time: system_time},
                     metadata}
@@ -147,8 +143,8 @@ defmodule URP.PoolReconnectTest do
     assert is_integer(system_time)
     assert metadata.operation == :version
 
-    assert_receive {:telemetry_event, [:urp, :call, :exception], %{duration: duration}, metadata}
+    assert_receive {:telemetry_event, [:urp, :call, :stop], %{duration: duration}, metadata}
     assert duration > 0
-    assert metadata.kind == :exit
+    assert metadata.result == :error
   end
 end

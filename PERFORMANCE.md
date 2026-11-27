@@ -60,50 +60,25 @@ cold `soffice --convert-to` process and Gotenberg using the 33 KB
 
 This is a process-overhead check, not an apples-to-apples transport
 benchmark: URP reuses a live office process, while the CLI measurement
-starts a new process for every conversion. One Gotenberg request was a
-323 ms outlier; the median remained close to the previous run.
+starts a new process for every conversion.
 
-## I/O strategies
+## How a document travels
 
-URP supports two I/O transfer strategies via the `:io` option, benchmarked
-with `benchmarks/io_bench.exs`:
+A document goes to `soffice` over the URP socket and is written to a temp
+file on its side; the result is read back from another. Both are moved a
+chunk at a time (1 MiB unless the pool's `:chunk_size` says otherwise), so
+neither end holds more of the document than that in one message, and nothing
+has to be shared with `soffice` on disk.
 
-```sh
-nix develop --command mix run benchmarks/io_bench.exs
-```
+Moving 50 MB each way through LibreOffice 26.2.5.1 on a local socket:
 
-**File I/O** (`:file`, default) writes temp files on soffice's filesystem
-and transfers them over URP in ~6 round-trips. **Stream I/O** (`:stream`)
-pipes bytes over the URP socket via XInputStream/XOutputStream — no temp
-disk, but more round-trips.
-
-Current results on Elixir 1.20.2 / OTP 29.0.3:
-
-| Strategy | 2.7 MB | 16.2 MB | 35.0 MB |
-|----------|--------|---------|---------|
-| File → file | 1.13 s | 7.66 s | 39.17 s |
-| File → stream | 1.19 s | 8.06 s | 37.19 s |
-| Stream → file | 1.72 s | 11.59 s | 41.53 s |
-| Stream → stream | 1.64 s | 9.06 s | 46.02 s |
-
-Stream input remains the bottleneck because ZIP-based formats (docx,
-xlsx, pptx) require thousands of XInputStream/XSeekable random-access
-round-trips, but its measured penalty now ranges from roughly 12% to 52%
-depending on document size and output mode. Stream output remains within
-about 5% of file output. The 35 MB fixture completes only one iteration
-per scenario with the default 10-second Benchee window, so treat those
-figures as directional rather than statistically stable.
-
-Soffice writes stream output in fixed
-[32 767-byte chunks](https://github.com/LibreOffice/core/blob/libreoffice-26-2-0/sfx2/source/doc/docfile.cxx#L2573),
-so the round-trip count is predictable.
-
-| Strategy | Input | Output | Best for |
-|----------|-------|--------|----------|
-| `io: :file` | fast | fast | Default — best throughput |
-| `io: {:file, :stream}` | fast | chunked | Large outputs without single big allocation |
-| `io: {:stream, :file}` | slow | fast | No temp disk for input |
-| `io: :stream` | slow | chunked | No temp disk at all |
+| Chunk | Upload | Read back |
+|-------|--------|-----------|
+| whole | 34 ms | 61 ms |
+| 4 MB | 37 ms | 25 ms |
+| 1 MB | 39 ms | 31 ms |
+| 256 KB | 71 ms | 58 ms |
+| 64 KB | 163 ms | 150 ms |
 
 ## Container image
 

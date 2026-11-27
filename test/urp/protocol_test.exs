@@ -5,292 +5,215 @@ defmodule URP.ProtocolTest do
 
   import Bitwise
 
-  describe "parse_request/1 — long header" do
-    test "basic long header with 8-bit func_id" do
-      # LONGHEADER | REQUEST | NEWTYPE, func_id=3, cached type (tc=22, cache=1)
-      header = <<0xC0 ||| 0x20, 3, 22, 0::16>>
-      %{func_id: 3, body: <<>>} = P.parse_request(header)
+  @reader P.reader()
+  @interface "com.sun.star.io.XInputStream"
+
+  @null <<0, 0xFFFF::16>>
+
+  describe "decode_message/2 — request" do
+    test "reads an 8-bit function id from a long header" do
+      assert {{:request, 3}, @reader} = P.decode_message(<<0xC0, 3>>, @reader)
     end
 
-    test "FUNCTIONID16 reads 16-bit func_id" do
-      # LONGHEADER | REQUEST | FUNCTIONID16 (0x04), func_id=300
-      header = <<0xC0 ||| 0x04, 300::16>>
-      %{func_id: 300, body: <<>>} = P.parse_request(header)
+    test "reads a 16-bit function id when FUNCTIONID16 is set" do
+      assert {{:request, 300}, @reader} = P.decode_message(<<0xC0 ||| 0x04, 300::16>>, @reader)
     end
 
-    test "MOREFLAGS byte is skipped" do
-      # LONGHEADER | REQUEST | MOREFLAGS (0x01), flags2=0x80
-      header = <<0xC0 ||| 0x01, 0x80, 5>>
-      %{func_id: 5, body: <<>>} = P.parse_request(header)
+    test "skips the MOREFLAGS byte" do
+      assert {{:request, 5}, @reader} = P.decode_message(<<0xC0 ||| 0x01, 0x80, 5>>, @reader)
     end
 
-    test "skips NEWTYPE with cached type" do
-      # LONGHEADER | REQUEST | NEWTYPE, func_id=0, cached type (tc=22, cache=5)
-      body = "remaining"
-      header = <<0xC0 ||| 0x20, 0, 22, 5::16>> <> body
-      %{func_id: 0, body: ^body} = P.parse_request(header)
-    end
-
-    test "skips NEWTYPE with new type (includes type name)" do
-      type_name = "com.sun.star.uno.XInterface"
-      encoded_name = P.enc_str(type_name)
-      body = "remaining"
-      # tc = 22 | 0x80 (new), cache=1
-      header = <<0xC0 ||| 0x20, 0, 22 ||| 0x80, 1::16>> <> encoded_name <> body
-      %{func_id: 0, body: ^body} = P.parse_request(header)
-    end
-
-    test "skips NEWOID" do
-      oid = "some-oid-123"
-      body = "remaining"
-      # LONGHEADER | REQUEST | NEWOID
-      header = <<0xC0 ||| 0x10, 7>> <> P.enc_str(oid) <> <<3::16>> <> body
-      %{func_id: 7, body: ^body} = P.parse_request(header)
-    end
-
-    test "skips NEWTID" do
-      tid = "some-tid"
-      body = "remaining"
-      # LONGHEADER | REQUEST | NEWTID
-      header = <<0xC0 ||| 0x08, 2>> <> P.enc_str(tid) <> <<0::16>> <> body
-      %{func_id: 2, body: ^body} = P.parse_request(header)
-    end
-
-    test "all flags combined" do
-      type_name = "com.sun.star.io.XInputStream"
-      oid = "stream-42"
-      tid = "tid-1"
-      body = <<1, 2, 3>>
-
-      # LONGHEADER | REQUEST | MOREFLAGS | NEWTYPE | NEWOID | NEWTID
-      flags = 0xC0 ||| 0x01 ||| 0x20 ||| 0x10 ||| 0x08
-      # MUSTREPLY
-      flags2 = 0x80
-
-      header =
-        <<flags, flags2, 3>> <>
+    test "remembers the type and object a header puts in cache slots" do
+      frame =
+        <<0xC0 ||| 0x01 ||| 0x20 ||| 0x10 ||| 0x08, 0x80, 3>> <>
           <<22 ||| 0x80, 5::16>> <>
-          P.enc_str(type_name) <>
-          P.enc_str(oid) <>
+          P.enc_str(@interface) <>
+          P.enc_str("stream-42") <>
           <<7::16>> <>
-          P.enc_str(tid) <>
+          P.enc_str("tid-1") <>
           <<1::16>> <>
-          body
+          <<1, 2, 3>>
 
-      %{func_id: 3, body: ^body} = P.parse_request(header)
+      assert {{:request, 3}, reader} = P.decode_message(frame, @reader)
+      assert reader == %{types: %{5 => @interface}, oids: %{7 => "stream-42"}}
+    end
+
+    test "leaves an uncached object out of the cache" do
+      frame = <<0xC0 ||| 0x10, 3>> <> P.enc_str("once") <> <<0xFFFF::16>>
+
+      assert {{:request, 3}, @reader} = P.decode_message(frame, @reader)
+    end
+
+    test "reads a 6-bit function id from a short header" do
+      assert {{:request, 42}, @reader} = P.decode_message(<<42, 1, 2, 3>>, @reader)
+    end
+
+    test "reads a 14-bit function id when FUNCTIONID14 is set" do
+      assert {{:request, 773}, @reader} = P.decode_message(<<0x40 ||| 0x03, 0x05, 1>>, @reader)
     end
   end
 
-  describe "parse_request/1 — short header" do
-    test "6-bit func_id" do
-      body = <<1, 2, 3>>
-      # Short header: bit 7 clear, func_id in lower 6 bits
-      header = <<42>> <> body
-      %{func_id: 42, body: ^body} = P.parse_request(header)
+  describe "decode_message/2 — reply" do
+    test "returns the body for decode/3 to read" do
+      assert {{:reply, <<12, 3, "abc">>}, _reader} =
+               P.decode_message(<<0x80, 12, 3, "abc">>, @reader)
     end
 
-    test "14-bit func_id (FUNCTIONID14)" do
-      body = <<1, 2, 3>>
-      # Short header with bit 6 set: func_id = bits[5:0] << 8 | next_byte
-      # func_id = 0x03 << 8 | 0x05 = 773
-      header = <<0x40 ||| 0x03, 0x05>> <> body
-      %{func_id: 773, body: ^body} = P.parse_request(header)
-    end
-  end
+    test "steps over the thread id" do
+      frame = <<0x80 ||| 0x08>> <> P.enc_str("tid-1") <> <<0xFFFF::16>> <> <<1>>
 
-  describe "one_way?/1" do
-    test "release (func_id 2) is one-way" do
-      assert P.one_way?(2)
+      assert {{:reply, <<1>>}, _reader} = P.decode_message(frame, @reader)
     end
 
-    test "other func_ids are not one-way" do
-      refute P.one_way?(0)
-      refute P.one_way?(1)
-      refute P.one_way?(3)
-      refute P.one_way?(7)
-    end
-  end
+    test "returns the message of an exception" do
+      frame =
+        <<0x80 ||| 0x20, 19 ||| 0x80, 0::16>> <>
+          P.enc_str("com.sun.star.io.IOException") <> P.enc_str("file not found") <> @null
 
-  describe "is_reply?/1" do
-    test "long header reply" do
-      assert P.is_reply?(<<0x80, 0, 0, 0, 0>>)
+      assert {{:exception, "file not found"}, _reader} = P.decode_message(frame, @reader)
     end
 
-    test "long header reply with exception" do
-      assert P.is_reply?(<<0x80 ||| 0x20, "rest">>)
+    test "names the exception when it carries no message" do
+      frame =
+        <<0x80 ||| 0x20, 19 ||| 0x80, 0::16>> <>
+          P.enc_str("com.sun.star.io.IOException") <> P.enc_str("") <> @null
+
+      assert {{:exception, "com.sun.star.io.IOException"}, reader} =
+               P.decode_message(frame, @reader)
+
+      assert {{:exception, "com.sun.star.io.IOException"}, _reader} =
+               P.decode_message(<<0x80 ||| 0x20, 19, 0::16, 0>> <> @null, reader)
     end
 
-    test "long header request is not a reply" do
-      refute P.is_reply?(<<0xC0, 0>>)
-    end
+    test "remembers the object an exception names as its context" do
+      frame =
+        <<0x80 ||| 0x20, 19, 0::16>> <> P.enc_str("denied") <> P.enc_str("object-9") <> <<3::16>>
 
-    test "short header is not a reply" do
-      refute P.is_reply?(<<0x03, "body">>)
+      assert {{:exception, "denied"}, %{oids: %{3 => "object-9"}}} =
+               P.decode_message(frame, @reader)
     end
   end
 
-  describe "parse_exception/1" do
-    test "extracts message from exception with new type" do
-      message = "file not found"
-
-      # Reply with EXCEPTION flag, Any body: new exception type (tc=19|0x80) + cache + name + message
-      exc_type = "com.sun.star.io.IOException"
-
-      payload =
-        <<0x80 ||| 0x20>> <>
-          <<19 ||| 0x80, 0::16>> <>
-          P.enc_str(exc_type) <>
-          P.enc_str(message)
-
-      assert P.parse_exception(payload) == message
+  describe "decode/3" do
+    test "reads a string out of an any" do
+      assert {"25.8.1.1", <<>>, _reader} =
+               P.decode(:any, <<12>> <> P.enc_str("25.8.1.1"), @reader)
     end
 
-    test "extracts message from exception with cached type" do
-      message = "access denied"
-      # Reply with EXCEPTION flag, Any body: cached exception type (tc=19) + cache + message
-      payload = <<0x80 ||| 0x20>> <> <<19, 0::16>> <> P.enc_str(message)
-      assert P.parse_exception(payload) == message
+    test "reads a void any as nil" do
+      assert {nil, <<>>, _reader} = P.decode(:any, <<0>>, @reader)
     end
 
-    test "returns fallback for malformed exception" do
-      # Reply with EXCEPTION flag but truncated body
-      payload = <<0x80 ||| 0x20>>
-      assert P.parse_exception(payload) == "UNO exception (could not parse message)"
+    test "reads an object reference out of an any, learning its type" do
+      binary =
+        <<22 ||| 0x80, 4::16>> <> P.enc_str(@interface) <> P.enc_str("object-1") <> <<0xFFFF::16>>
+
+      assert {"object-1", <<>>, %{types: %{4 => @interface}}} = P.decode(:any, binary, @reader)
     end
 
-    test "returns nil for non-exception reply" do
-      payload = <<0x80, 0x00>>
-      refute P.parse_exception(payload)
-    end
-  end
+    test "remembers an object reference and resolves it from its cache slot" do
+      {oid, <<>>, reader} =
+        P.decode({:interface, nil}, P.enc_str("document-1") <> <<7::16>>, @reader)
 
-  describe "parse_any_string_reply/1" do
-    test "extracts string from any(string) reply" do
-      # Reply: LONGHEADER, any body: TC_STRING (12) + encoded string
-      payload = <<0x80, 12>> <> P.enc_str("25.8.1.1")
-      assert P.parse_any_string_reply(payload) == {:ok, "25.8.1.1"}
+      assert oid == "document-1"
+      assert {"document-1", <<>>, _reader} = P.decode({:interface, nil}, <<0, 7::16>>, reader)
     end
 
-    test "returns error for exception reply" do
-      payload = <<0x80 ||| 0x20, 19, 0::16>> <> P.enc_str("some error")
-      assert {:error, "some error"} = P.parse_any_string_reply(payload)
-    end
-  end
-
-  describe "interface OID cache" do
-    setup do
-      previous = Process.get(:urp_oid_cache)
-      Process.delete(:urp_oid_cache)
-
-      on_exit(fn ->
-        if previous,
-          do: Process.put(:urp_oid_cache, previous),
-          else: Process.delete(:urp_oid_cache)
-      end)
+    test "reads a null object reference as nil" do
+      assert {nil, <<>>, _reader} = P.decode({:interface, nil}, <<0, 0xFFFF::16>>, @reader)
     end
 
-    test "stores and resolves cached interface references" do
-      assert P.parse_interface_reply(<<0x80>> <> P.enc_str("document-1") <> <<7::16>>) ==
-               {:ok, "document-1"}
+    test "reads a sequence of strings" do
+      binary = <<2>> <> P.enc_str("foo") <> P.enc_str("bar")
 
-      assert P.parse_interface_reply(<<0x80>> <> P.enc_str("") <> <<7::16>>) ==
-               {:ok, "document-1"}
+      assert {["foo", "bar"], <<>>, _reader} = P.decode({:sequence, :string}, binary, @reader)
+      assert {[], <<>>, _reader} = P.decode({:sequence, :string}, <<0>>, @reader)
     end
 
-    test "reports an unknown cached interface reference" do
-      assert P.parse_interface_reply(<<0x80>> <> P.enc_str("") <> <<9::16>>) ==
-               {:error, "unknown cached OID index 9"}
+    test "reads a sequence whose count takes the extended form" do
+      binary = <<0xFF, 2::32>> <> P.enc_str("a") <> P.enc_str("b")
+
+      assert {["a", "b"], <<>>, _reader} = P.decode({:sequence, :string}, binary, @reader)
+    end
+
+    test "leaves what follows the value" do
+      assert {7, <<9>>, _reader} = P.decode(:long, <<7::32, 9>>, @reader)
     end
   end
 
-  describe "parse_string_sequence_reply/1" do
-    test "parses empty sequence" do
-      payload = <<0x80, 0>>
-      assert P.parse_string_sequence_reply(payload) == {:ok, []}
+  describe "encode/2" do
+    test "writes an any as its type and then its value" do
+      assert IO.iodata_to_binary(P.encode(:any, {:string, "x"})) == <<12, 1, "x">>
+      assert IO.iodata_to_binary(P.encode(:any, {:long, -1})) == <<6, 255, 255, 255, 255>>
+      assert IO.iodata_to_binary(P.encode(:any, {:void, nil})) == <<0>>
     end
 
-    test "parses sequence with multiple strings" do
-      payload = <<0x80>> <> <<2>> <> P.enc_str("foo") <> P.enc_str("bar")
-      assert P.parse_string_sequence_reply(payload) == {:ok, ["foo", "bar"]}
+    test "names a sequence type after its element" do
+      property = {:struct, "com.sun.star.beans.PropertyValue", [:string, :long, :any, :long]}
+      encoded = IO.iodata_to_binary(P.encode(:any, {{:sequence, property}, []}))
+
+      assert encoded ==
+               <<20 ||| 0x80, 0xFFFF::16>> <>
+                 P.enc_str("[]com.sun.star.beans.PropertyValue") <> <<0>>
     end
 
-    test "parses sequence with long count encoding" do
-      # Count >= 255 uses 0xFF + 4-byte uint32
-      payload = <<0x80, 0xFF, 2::32>> <> P.enc_str("a") <> P.enc_str("b")
-      assert P.parse_string_sequence_reply(payload) == {:ok, ["a", "b"]}
+    test "writes a struct as its members in order" do
+      struct = {:struct, "com.sun.star.beans.NamedValue", [:string, :any]}
+
+      assert IO.iodata_to_binary(P.encode(struct, ["nodepath", {:boolean, true}])) ==
+               P.enc_str("nodepath") <> <<2, 1>>
     end
 
-    test "returns error for exception reply" do
-      payload = <<0x80 ||| 0x20, 19, 0::16>> <> P.enc_str("some error")
-      assert {:error, "some error"} = P.parse_string_sequence_reply(payload)
+    test "writes an object reference uncached, and null as an empty one" do
+      assert IO.iodata_to_binary(P.encode({:interface, @interface}, "object-1")) ==
+               P.enc_str("object-1") <> <<0xFFFF::16>>
+
+      assert IO.iodata_to_binary(P.encode({:interface, @interface}, nil)) == <<0, 0xFFFF::16>>
+    end
+
+    test "round-trips through decode/3" do
+      for {type, value} <- [
+            boolean: true,
+            long: -5,
+            hyper: 1 <<< 40,
+            string: "héllo",
+            bytes: <<0, 255>>
+          ] do
+        encoded = IO.iodata_to_binary(P.encode(type, value))
+        assert {^value, <<>>, _reader} = P.decode(type, encoded, @reader)
+      end
+    end
+  end
+
+  describe "request/5" do
+    test "spells out the type, object and thread, caching none of them" do
+      frame = IO.iodata_to_binary(P.request(3, @interface, "object-1", "tid-1", long: 7))
+
+      assert {{:request, 3}, @reader} = P.decode_message(frame, @reader)
+      assert String.ends_with?(frame, P.enc_str("tid-1") <> <<0xFFFF::16>> <> @null <> <<7::32>>)
     end
   end
 
   describe "enc_str/1 and dec_str/1" do
-    test "short string roundtrip" do
-      assert {s, ""} = P.dec_str(P.enc_str("hello"))
-      assert s == "hello"
+    test "round-trips a short string" do
+      assert P.dec_str(P.enc_str("hello")) == {"hello", <<>>}
+      assert P.dec_str(P.enc_str("")) == {"", <<>>}
     end
 
-    test "empty string" do
-      assert {s, ""} = P.dec_str(P.enc_str(""))
-      assert s == ""
-    end
-
-    test "254-byte string uses 1-byte length" do
-      s = String.duplicate("x", 254)
-      <<len, _::binary>> = P.enc_str(s)
-      assert len == 254
-    end
-
-    test "255-byte string uses 5-byte length" do
-      s = String.duplicate("x", 255)
-      <<0xFF, len::32, _::binary>> = P.enc_str(s)
-      assert len == 255
+    test "uses a one-byte length through 254 bytes and five bytes from 255" do
+      assert <<254, _::binary-size(254)>> = P.enc_str(String.duplicate("x", 254))
+      assert <<0xFF, 255::32, _::binary-size(255)>> = P.enc_str(String.duplicate("x", 255))
     end
 
     test "decodes with trailing data" do
-      encoded = P.enc_str("hello") <> "extra"
-      assert {"hello", "extra"} = P.dec_str(encoded)
+      assert P.dec_str(P.enc_str("hello") <> "extra") == {"hello", "extra"}
     end
   end
 
   describe "enc_count/1" do
-    test "uses the compact form through 254" do
-      assert P.enc_count(0) == <<0>>
+    test "uses the compact form through 254 and the extended form from 255" do
       assert P.enc_count(254) == <<254>>
-    end
-
-    test "uses the extended form from 255" do
       assert P.enc_count(255) == <<0xFF, 255::32>>
-      assert P.enc_count(65_536) == <<0xFF, 65_536::32>>
-    end
-  end
-
-  describe "request/2" do
-    test "minimal request — no type, oid, tid" do
-      header = P.request(5)
-      # LONGHEADER | REQUEST, func_id=5
-      assert <<0xC0, 5>> = header
-    end
-
-    test "with new type" do
-      header = P.request(0, type: {:new, "com.sun.star.uno.XInterface", 1})
-      <<flags, 0, tc, cache::16, rest::binary>> = header
-      # NEWTYPE
-      assert (flags &&& 0x20) != 0
-      # tc_interface | tc_new
-      assert tc == (22 ||| 0x80)
-      assert cache == 1
-      {"com.sun.star.uno.XInterface", ""} = P.dec_str(rest)
-    end
-
-    test "with cached type" do
-      header = P.request(0, type: {:cached, 3})
-      <<flags, 0, tc, cache::16>> = header
-      assert (flags &&& 0x20) != 0
-      assert tc == 22
-      assert cache == 3
     end
   end
 end
