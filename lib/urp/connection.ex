@@ -115,6 +115,16 @@ defmodule URP.Connection do
   defp known(value, _returns), do: value
 
   @doc """
+  Tell soffice we are done with an object it handed us, so that it can let go
+  of it. There is no reply to wait for.
+  """
+  @spec release(t(), String.t()) :: :ok
+  def release(conn, oid) do
+    # Alone among requests, a release carries no current context.
+    P.send_frame(conn.sock, P.header(2, @interface, oid, conn.tid))
+  end
+
+  @doc """
   Stop the job here if its caller has stopped waiting for it.
 
   For the points between the steps of a job, where going on would be work

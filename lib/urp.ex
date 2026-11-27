@@ -14,7 +14,7 @@ defmodule URP do
         host: "localhost",
         port: 2002,
         pool_size: 1,           # connections, each converting one document at a time
-        chunk_size: 1_048_576,  # bytes of a document moved per message
+        chunk_size: 1_048_576,  # bytes of a result read back per message
         drain_timeout: 300_000, # ms soffice may stay silent before a connection is dropped
         connect_timeout: 5_000, # ms
         backoff_initial: 500,   # ms, first delay before reconnecting
@@ -184,10 +184,9 @@ defmodule URP do
   @doc """
   Convert a document via LibreOffice.
 
-  `input` is a file path, read from the local disk a chunk at a time, or
-  `{:binary, bytes}` for a document already in memory. Either way it is sent
-  over the socket and `soffice` works from a temp file of its own, so nothing
-  has to be shared with it on disk.
+  `input` is a file path or `{:binary, bytes}` for a document already in
+  memory. Either way it is sent over the socket and `soffice` loads it from
+  memory, so nothing has to be shared with it on disk.
 
   ## Options
 

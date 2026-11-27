@@ -27,7 +27,8 @@ show = fn
   show, :any, {type, value} -> show.(show, type, value)
   _show, {:interface, _}, _oid -> "<object>"
   show, {:sequence, _}, items -> "[" <> Enum.map_join(items, ", ", &show.(show, :item, &1)) <> "]"
-  show, :item, {_struct, [name, value]} -> "#{name}: #{show.(show, :any, value)}"
+  show, :item, {{:struct, _, _}, [name, value]} -> "#{name}: #{show.(show, :any, value)}"
+  show, :item, {type, value} -> show.(show, type, value)
   show, :item, [name, _handle, value, _state] -> "#{name}: #{show.(show, :any, value)}"
   _show, _type, value -> inspect(value, printable_limit: 60)
 end
