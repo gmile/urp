@@ -123,7 +123,7 @@
               ];
             };
             mixEnv = "";
-            hash = "sha256-wG1z4+BtT+UxoR8+5KF3Ec/fmeZix1j1G/IPXuc+kH0=";
+            hash = "sha256-t2LyniPT6E77gm+ZYrVnYsYIGoauOw4lNbRqjtHvSgs=";
           };
           mix =
             {
