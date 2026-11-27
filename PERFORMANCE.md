@@ -80,6 +80,41 @@ Moving 50 MB each way through LibreOffice 26.2.5.1 on a local socket:
 | 256 KB | 71 ms | 58 ms |
 | 64 KB | 163 ms | 150 ms |
 
+## Round trips
+
+`benchmarks/calls.exs` lists every round trip one conversion makes, with its
+time, by tracing the library from outside:
+
+```sh
+mix run benchmarks/calls.exs test/fixtures/sample3.docx
+```
+
+A document that fits in one chunk takes 13: three to upload it, one to load
+it, two to export it, three to read the result back, two to close the
+document and two to delete the temp files. For the 34 KB fixture that is
+80 ms, of which 48 ms is `soffice` loading, 24 ms exporting, 4 ms closing and
+a quarter of a millisecond is spent on this side.
+
+## What the VM spends
+
+`benchmarks/profile.exs` measures a run of conversions from inside the VM:
+CPU time, garbage collection, and the functions with the most time and the
+most memory allocated in them.
+
+```sh
+mix run benchmarks/profile.exs test/fixtures/sample3.docx 100
+```
+
+| Document | Wall | CPU in the VM | Collected |
+|----------|------|---------------|-----------|
+| 34 KB docx | 82 ms | 1.5 ms | 42 KiB |
+| 8.7 MB JPEG | 1367 ms | 2.1 ms | 63 KiB |
+
+The CPU time is almost all socket calls: one send and two receives, for the
+header and the body, per round trip. A document never lands on a process
+heap; chunks are passed along as references to the binaries the socket
+produced.
+
 ## Container image
 
 See `benchmarks/Dockerfile.soffice-debian`. Minimal Debian trixie-slim
